@@ -66,6 +66,28 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(party_candidates({'text': 'X', 'counterparty_account': 'ES9100000000000000000001'}, ctx), ['C1'])
             self.assertEqual(party_candidates({'text': 'TRANSFERENCIA NOVA TRANSPORTES GLOBAL'}, ctx), ['C1'])
 
+    def test_final_delta_masters_merge_only_when_opted_in(self):
+        # Contingency for a delta-only masters_final: default keeps the per-file override.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture(root)
+            write(root/'masters/fx_rates.csv', ['date', 'currency', 'units_per_eur'],
+                  [{'date': '2025-12-31', 'currency': 'ZAR', 'units_per_eur': '19.5'}])
+            write(root/'final/masters_final/customers.csv', ['customer_id', 'name'],
+                  [{'customer_id': 'C2', 'name': 'Final'}, {'customer_id': 'C1', 'name': 'Renamed'}])
+            write(root/'final/masters_final/fx_rates.csv', ['date', 'currency', 'units_per_eur'],
+                  [{'date': '2026-01-02', 'currency': 'ZAR', 'units_per_eur': '19.9'}])
+            with patch.dict('os.environ', {'RECON_FINAL_MASTERS_MERGE': ''}):
+                ctx = Context(root, 'final')
+            self.assertEqual(sorted(ctx.fx_rates), ['2026-01-02'])
+            with patch.dict('os.environ', {'RECON_FINAL_MASTERS_MERGE': '1'}):
+                ctx = Context(root, 'final')
+            self.assertEqual(ctx.customers['C1']['name'], 'Renamed')
+            self.assertEqual(sorted(ctx.fx_rates), ['2025-12-31', '2026-01-02'])
+            self.assertEqual(ctx.master_coverage['fx_rates']['merged_base_rows'], 1)
+            self.assertEqual(ctx.master_coverage['customers']['merged_base_rows'], 0)
+            self.assertEqual(ctx.categories, {'UNIDENTIFIED'})
+
     def test_empty_override_fails_instead_of_silently_using_base(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

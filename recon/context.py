@@ -3,10 +3,15 @@ from decimal import Decimal
 from pathlib import Path
 import csv
 import gzip
+import os
 import re
 import unicodedata
 
 D = Decimal
+# Opt-in FINAL contingency (RECON_FINAL_MASTERS_MERGE=1): merge masters_final over the base by key.
+# Categories stay a closed official list and are never merged.
+FINAL_MERGE_KEYS = {'customers': ('customer_id',), 'suppliers': ('supplier_id',),
+                    'bank_accounts': ('account_id',), 'payment_terms': ('code',), 'fx_rates': ('date', 'currency')}
 
 def norm(value):
     return re.sub(r'[^A-Z0-9]', '', unicodedata.normalize('NFKD', str(value or '')).encode('ascii','ignore').decode().upper())
@@ -55,6 +60,15 @@ class Context:
         rows = list(read_csv(path))
         self.master_coverage[name] = {'source': source, 'path': str(path),
                                       'exists': path.is_file(), 'rows': len(rows)}
+        keys = FINAL_MERGE_KEYS.get(name)
+        if source == 'final' and rows and keys and os.environ.get('RECON_FINAL_MASTERS_MERGE') == '1':
+            # Contingency (opt-in): a masters_final file that ships only changed rows. Rows of the
+            # base snapshot whose key FINAL does not restate stay valid; FINAL wins on every key.
+            listed = {tuple(r.get(k) for k in keys) for r in rows}
+            added = [r for r in read_csv(self.masters_dir / (name + '.csv'))
+                     if tuple(r.get(k) for k in keys) not in listed]
+            rows += added
+            self.master_coverage[name].update(merged_base_rows=len(added), rows=len(rows))
         if source == 'final' and name in ('customers', 'suppliers'):
             # masters_final shows current names and accounts only (DATA_DICTIONARY "Masters are a
             # snapshot"; POLICIES 5.5/6: renames and bank changes). Earlier lines of the phase still
