@@ -66,6 +66,11 @@
   .list li { padding:22px 0; border-bottom:1px solid var(--line); display:flex; gap:28px; }
   .list li .n { color:var(--acc); font-weight:800; min-width:50px; }
   .list li span.d { color:#cfcfcf; }
+  .docframe { height:560px; overflow:hidden; background:#fff; border-radius:6px; }
+  .docframe img { width:100%; height:100%; object-fit:cover; display:block; }
+  .bgimg { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:.16; z-index:-1;
+           filter:grayscale(1); }
+  .slide { z-index:0; }
   .progress { position:fixed; left:0; top:0; height:3px; background:var(--acc); transition:width .4s ease; }
 </style>
 </head>
@@ -75,6 +80,7 @@
 
 <!-- 1 TITLE -->
 <section class="slide">
+  <img class="bgimg" src="video_assets/stock_accounting_team.jpg" alt="" onerror="this.remove()">
   <div class="title-wrap">
     <div class="kicker anim">Claude Code Hackathon · Madrid · 7 November 2026</div>
     <h1 class="anim d1">Team 10 — <span class="acc">Close the Books</span></h1>
@@ -86,6 +92,7 @@
 
 <!-- 2 PROBLEM -->
 <section class="slide">
+  <img class="bgimg" src="video_assets/stock_paper_invoices.jpg" alt="" onerror="this.remove()">
   <div class="kicker anim">The problem</div>
   <h1 class="anim d1">Every bank line must be explained: which invoices it pays, how much, or what it is</h1>
   <div class="rule anim d1"></div>
@@ -98,6 +105,38 @@
   <div class="why anim d6"><b>Why it is hard:</b> references are cut or mistyped · one payment can cover hundreds of
     invoices · key facts live only in PDFs and payment advices · <b>10 exception types</b> to flag</div>
   <div class="foot"><span>Source: challenge README and POLICIES (Grupo Valtermia, synthetic data)</span><span class="pg"></span></div>
+</section>
+
+<!-- 2b DOCUMENTS -->
+<section class="slide">
+  <div class="kicker">Why it is hard · a real example from the dataset</div>
+  <h1 class="anim">Key facts live only in documents, <span class="acc">never in the bank line</span></h1>
+  <div class="rule"></div>
+  <div class="body" style="gap:60px">
+    <div class="col anim d1">
+      <div class="docframe"><img src="video_assets/invoice_retention.png" alt="Invoice with retention clause"
+           style="object-position:50% 38%"></div>
+      <div class="lbl"><span class="acc">10%</span> guarantee retention — written only in the invoice PDF</div>
+    </div>
+    <div class="col anim d3">
+      <div class="docframe"><img src="video_assets/remittance_advice.png" alt="Customer remittance advice"
+           style="object-position:50% 30%"></div>
+      <div class="lbl"><span class="acc">37</span> invoices and <span class="acc">3</span> deductions (late-delivery penalties, co-marketing) — only in the customer's advice</div>
+    </div>
+  </div>
+  <div class="foot"><span>Source: official synthetic dataset (Grupo Valtermia) — invoice FV24-0106262, advice REM/2025/1161</span><span class="pg"></span></div>
+</section>
+
+<!-- 2c ONE LINE -> 37 INVOICES -->
+<section class="slide">
+  <div class="kicker">What the solver does</div>
+  <h1 class="anim">One bank line settles <span class="acc">37 invoices</span>; the solver reads the advice and flags the <span class="acc">3 disputes</span></h1>
+  <div class="rule"></div>
+  <div class="anim d2" style="flex:1;display:flex;justify-content:center;align-items:flex-start">
+    <img src="video_assets/one_line_37_invoices.png" alt="One bank line to 37 invoices"
+         style="height:640px;border-radius:6px;box-shadow:0 0 0 2px #2a2a2a">
+  </div>
+  <div class="foot"><span>Source: official synthetic dataset, bank line of 2025-06-02 (+109,868.89 EUR) and its remittance advice</span><span class="pg"></span></div>
 </section>
 
 <!-- 3 PHASE 1 -->
