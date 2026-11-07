@@ -110,6 +110,36 @@ class BatchTests(unittest.TestCase):
         self.item('API-1','INV1','100',party='S1')
         self.rows('payment_runs',[dict(run_id='RUN12345678',run_type='transfers',execution_date='2025-05-10',debtor_account_id='ES01-A',end_to_end_id='RUN12345678-1',beneficiary='Valves Parker Co., Ltd.',currency='EUR',transfer_amount='100',document_number='INV1',document_type='INVOICE',document_amount='100')])
         self.assertIsNone(BatchMatcher(self.ctx).reconcile(self.txn('100','TT IN VALVES PARKER CO., LTD. DEVOLUCION SALDO A FAVOR')))
+    def _dd_three_collections(self, extra=()):
+        for iid, number in (('ARI-1','INV1'),('ARI-2','INV2'),('ARI-3','INV3')):
+            self.item(iid,number,'50');self.ctx.items[iid]['open_amount']=D('0')
+        base=dict(account_id='ES01-A',currency='EUR',debtor_name='Buyer',mandate_id='VTM-DE-0001477',amount='50',re_presentation='N')
+        self.rows('direct_debit_batches',[dict(base,batch_id='B20250401',collection_date='2025-04-01',end_to_end_id='E1',remittance_info='INV1'),
+                                          dict(base,batch_id='B20250502',collection_date='2025-05-02',end_to_end_id='E2',remittance_info='INV2'),
+                                          dict(base,batch_id='B20250527',collection_date='2025-05-27',end_to_end_id='E3',remittance_info='INV3')]
+                                         + [dict(base, **row) for row in extra])
+    def test_md06_refund_returns_collection_of_its_delay_window(self):
+        # POLICIES 3 RETURNED: MD06 is a refund request weeks after the debit (TRAIN 21-75 days);
+        # the debit of the last three weeks is the next collection of the mandate.
+        self._dd_three_collections()
+        result=BatchMatcher(self.ctx).reconcile(self.txn('-50','RUECKLASTSCHRIFT MD06 MREF+VTM-DE-0001477'))
+        self.assertEqual([(r['item_id'],r['exception']) for r in result],[('ARI-2','RETURNED')])
+    def test_short_reason_code_returns_latest_collection(self):
+        self._dd_three_collections()
+        result=BatchMatcher(self.ctx).reconcile(self.txn('-50','RUECKLASTSCHRIFT AM04 MREF+VTM-DE-0001477'))
+        self.assertEqual([(r['item_id'],r['exception']) for r in result],[('ARI-3','RETURNED')])
+    def test_re_presentation_names_the_returned_collection(self):
+        # POLICIES 5.10: the later batch row flagged re_presentation=Y names the returned invoice.
+        self._dd_three_collections(extra=[dict(batch_id='B20250620',collection_date='2025-06-20',end_to_end_id='E4',
+                                               remittance_info='INV1',re_presentation='Y')])
+        result=BatchMatcher(self.ctx).reconcile(self.txn('-50','RUECKLASTSCHRIFT MD06 MREF+VTM-DE-0001477'))
+        self.assertEqual([(r['item_id'],r['exception']) for r in result],[('ARI-1','RETURNED')])
+    def test_re_presentation_outside_horizon_ignored(self):
+        self._dd_three_collections(extra=[dict(batch_id='B20250901',collection_date='2025-09-01',end_to_end_id='E4',
+                                               remittance_info='INV1',re_presentation='Y')])
+        result=BatchMatcher(self.ctx).reconcile(self.txn('-50','RUECKLASTSCHRIFT MD06 MREF+VTM-DE-0001477'))
+        self.assertEqual([(r['item_id'],r['exception']) for r in result],[('ARI-2','RETURNED')])
+
     def test_return_cannot_precede_source_payment(self):
         self.item('API-1','INV1','100')
         self.rows('payment_runs',[dict(run_id='RUN12345678',run_type='transfers',execution_date='2025-06-02',debtor_account_id='ES01-A',end_to_end_id='RUN12345678-1',beneficiary='Supplier',currency='EUR',transfer_amount='100',document_number='INV1',document_type='INVOICE',document_amount='100')])

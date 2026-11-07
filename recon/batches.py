@@ -112,6 +112,7 @@ class BatchMatcher:
         self.by_account = defaultdict(list)
         self.return_details = defaultdict(list)
         self.card_orders = defaultdict(list)
+        self.represented = defaultdict(list)
         self.name_party = defaultdict(set)
         for mapping in (getattr(ctx, 'customers', {}), getattr(ctx, 'suppliers', {})):
             for pid, party in mapping.items():
@@ -206,6 +207,8 @@ class BatchMatcher:
                     for row in rows:
                         for field in ('end_to_end_id','mandate_id'):
                             self.return_details[norm(row[field])].append((folder,row))
+                        if row.get('re_presentation') == 'Y':
+                            self.represented[norm(row['mandate_id'])].append(row)
                 elif folder == 'cheque_deposits':
                     for row in rows:
                         self.return_details[norm(row['cheque_number'])].append((folder,row))
@@ -682,6 +685,50 @@ class BatchMatcher:
             return None
         return self._allocate({'kind': 'card_settlements', 'rows': list(hits.values())}, txn, returned=True)
 
+    def _returned_collection(self, txn, matches):
+        """Choose which earlier direct-debit collection a return reverses (POLICIES 3 RETURNED, 5.10).
+
+        The SEPA reason code fixes the delay: MD06 is a debtor refund request raised weeks after
+        the debit (TRAIN golden: 21-75 days), every other R-code comes back within days (2-15).
+        A later batch row of the same mandate and amount flagged re_presentation=Y names the
+        returned invoice (POLICIES 5.10); when it names exactly one candidate, that candidate
+        wins. Otherwise the latest collection inside the delay window, else all candidates.
+        """
+        if len(matches) < 2 or not all(m[3].get('mandate_id') for m in matches):
+            return matches
+        raw = ' '.join(str(txn.get(k) or '') for k in ('text', 'remittance_info', 'ref1', 'ref2')).upper()
+        codes = set(re.findall(r'(?<![A-Z0-9])(AM04|MD06|MD01|MD07|AC01|AC04|AC06|MS02|MS03|SL01|AG01|AG02|'
+                               r'RR04|BE05|FF01|MD02|RC01|RR01|RR02|RR03|SL02|SL03|SL11|SL12|SL13|SL14)(?![A-Z0-9])',
+                               raw))
+        try:
+            booked = date.fromisoformat(txn['booking_date'])
+        except (KeyError, ValueError):
+            return matches
+        def delay(m):
+            try:
+                return (booked - date.fromisoformat(m[0])).days
+            except ValueError:
+                return None
+        pool = matches
+        if len(codes) == 1:
+            low, high = (21, 75) if codes == {'MD06'} else (1, 15)
+            inside = [m for m in matches if delay(m) is not None and low <= delay(m) <= high]
+            if inside:
+                pool = inside
+        cash = abs(money(txn['amount']))
+        named = set()
+        for m in pool:
+            for row in self.represented.get(norm(m[3].get('mandate_id', '')), ()):
+                if (row['currency'] == txn['currency'] and abs(money(row['amount']) - cash) <= CENT
+                        and row.get('collection_date', '') > txn['booking_date']
+                        and _days(row['collection_date'], txn['booking_date']) <= 60):
+                    named.add(norm(row.get('remittance_info', '')))
+        if named:
+            chosen = [m for m in pool if norm(m[3].get('remittance_info', '')) in named]
+            if len({tuple(r['item_id'] for r in m[1]) for m in chosen}) == 1:
+                return chosen
+        return pool
+
     def reconcile(self, txn):
         amount = money(txn['amount'])
         text = norm(' '.join(str(txn.get(k,'') or '') for k in
@@ -782,24 +829,15 @@ class BatchMatcher:
                         result = self._allocate({'kind':kind,'rows':[detail]},txn,returned=True)
                         if result:
                             batch = norm(detail.get('batch_id', detail.get('deposit_id', '')))
-                            matches.append((detail_date,result,len(batch) >= 8 and batch in text))
+                            matches.append((detail_date,result,len(batch) >= 8 and batch in text,detail))
             # A return quoting the original batch ('REM 02241004067') reverses a collection
             # of that batch; otherwise the latest earlier collection is the returned one.
-            if any(named for _,_,named in matches):
+            if any(m[2] for m in matches):
                 matches = [m for m in matches if m[2]]
-            # SEPA reason MD06 is a debtor refund request, raised weeks after the debit (POLICIES 3
-            # RETURNED, any reason code); TRAIN windows show 21-69 days. A collection of the last three
-            # weeks is then the next debit of the same mandate, not the refunded one.
-            if re.search(r'(?<![A-Z0-9])MD06(?![A-Z0-9])', ' '.join(str(txn.get(k) or '') for k in ('text', 'remittance_info')).upper()):
-                try:
-                    cutoff = date.fromordinal(date.fromisoformat(txn['booking_date']).toordinal() - 21).isoformat()
-                except (KeyError, ValueError):
-                    cutoff = ''
-                older = [m for m in matches if cutoff and m[0] <= cutoff]
-                if older:
-                    matches = older
-            latest = max((d for d,_,_ in matches),default='')
-            unique = {tuple((r['item_id'],r['amount']) for r in m): m for d,m,_ in matches if d == latest}
+            else:
+                matches = self._returned_collection(txn, matches)
+            latest = max((m[0] for m in matches),default='')
+            unique = {tuple((r['item_id'],r['amount']) for r in m[1]): m[1] for m in matches if m[0] == latest}
             if len(unique) == 1:
                 return next(iter(unique.values()))
         return self._supplier_direct_debit(txn)
