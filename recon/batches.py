@@ -58,6 +58,16 @@ def next_business_day(iso):
             return day.isoformat()
         day += timedelta(days=1)
 
+def _printed_key(text):
+    """Batch files print one invoice as 'FV24-0417472' or 'RECIBO 0417472': compare the
+    trailing 5+ digit run when there is one, else the whole normalised token."""
+    token = norm(text)
+    tail = re.search(r'(\d{5,})$', token)
+    return tail.group(1) if tail else token
+
+def _same_printed(a, b):
+    return a == b or (a.isdigit() and b.isdigit() and (a.endswith(b) or b.endswith(a)))
+
 def unique_small_subset(amounts, target, count, max_candidates=256, max_checks=100000):
     """Prove a unique 2–4 member subset in integer cents; fail closed on budget.
 
@@ -722,9 +732,10 @@ class BatchMatcher:
                 if (row['currency'] == txn['currency'] and abs(money(row['amount']) - cash) <= CENT
                         and row.get('collection_date', '') > txn['booking_date']
                         and _days(row['collection_date'], txn['booking_date']) <= 60):
-                    named.add(norm(row.get('remittance_info', '')))
+                    named.add(_printed_key(row.get('remittance_info', '')))
         if named:
-            chosen = [m for m in pool if norm(m[3].get('remittance_info', '')) in named]
+            chosen = [m for m in pool if any(_same_printed(_printed_key(m[3].get('remittance_info', '')), n)
+                                             for n in named)]
             if len({tuple(r['item_id'] for r in m[1]) for m in chosen}) == 1:
                 return chosen
         return pool

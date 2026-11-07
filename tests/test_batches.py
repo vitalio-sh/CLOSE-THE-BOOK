@@ -134,6 +134,16 @@ class BatchTests(unittest.TestCase):
                                                remittance_info='INV1',re_presentation='Y')])
         result=BatchMatcher(self.ctx).reconcile(self.txn('-50','RUECKLASTSCHRIFT MD06 MREF+VTM-DE-0001477'))
         self.assertEqual([(r['item_id'],r['exception']) for r in result],[('ARI-1','RETURNED')])
+    def test_re_presentation_printed_without_prefix(self):
+        # The re-presented row may print 'RECIBO 0000001' for the collected 'INV0000001'.
+        for iid, number in (('ARI-1','INV0000001'),('ARI-2','INV0000002')):
+            self.item(iid,number,'50');self.ctx.items[iid]['open_amount']=D('0')
+        base=dict(account_id='ES01-A',currency='EUR',debtor_name='Buyer',mandate_id='VTM-DE-0001477',amount='50',re_presentation='N')
+        self.rows('direct_debit_batches',[dict(base,batch_id='B20250401',collection_date='2025-04-10',end_to_end_id='E1',remittance_info='INV0000001'),
+                                          dict(base,batch_id='B20250502',collection_date='2025-05-02',end_to_end_id='E2',remittance_info='INV0000002'),
+                                          dict(base,batch_id='B20250620',collection_date='2025-06-20',end_to_end_id='E3',remittance_info='RECIBO 0000001',re_presentation='Y')])
+        result=BatchMatcher(self.ctx).reconcile(self.txn('-50','RUECKLASTSCHRIFT MD06 MREF+VTM-DE-0001477'))
+        self.assertEqual([(r['item_id'],r['exception']) for r in result],[('ARI-1','RETURNED')])
     def test_re_presentation_outside_horizon_ignored(self):
         self._dd_three_collections(extra=[dict(batch_id='B20250901',collection_date='2025-09-01',end_to_end_id='E4',
                                                remittance_info='INV1',re_presentation='Y')])
