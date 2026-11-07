@@ -220,7 +220,7 @@ def _cash(item,txn):
         return abs(dec(txn['orig_amount'])),True
     return None,False
 
-def _exception(item, cash, txn, ctx, fx=False):
+def _exception(item, cash, txn, ctx, fx=False, grace=0):
     opened=dec(item.get('open_amount',item.get('total_amount')))
     if opened <= 0:return 'DUPLICATE_PAYMENT',cash
     if abs(cash-opened)<=CENT:return ('FX_DIFFERENCE' if fx and item.get('kind')!='credit' else ''),opened
@@ -245,7 +245,7 @@ def _exception(item, cash, txn, ctx, fx=False):
     if pct and opened==total:
         expected=(total*(D(1)-pct/D(100))).quantize(CENT,rounding=ROUND_HALF_UP)
         try:
-            deadline=date.fromisoformat(item['issue_date'])+timedelta(days=int(term['discount_days'])+3)
+            deadline=date.fromisoformat(item['issue_date'])+timedelta(days=int(term['discount_days'])+3+grace)
             if abs(cash-expected)<=CENT and date.fromisoformat(txn['booking_date'])<=deadline:
                 return ('FX_DIFFERENCE' if fx else 'SHORT_DISCOUNT'),opened
         except (ValueError,KeyError,TypeError):pass
@@ -391,12 +391,14 @@ def _net_referenced(txn, invoices, credits, refs, ctx):
         if selected is None:
             return None
     rows = {i['item_id']: row(txn, i['item_id'], i['open_amount']) for i in invoices + explicit_credits}
+    settled = invoices + explicit_credits + [deductions[k][2] for k in selected if deductions[k][1] == 'credit']
+    from .adjusted import newest_grace
     for index in selected:
         amount, kind, item = deductions[index]
         if kind == 'credit':
             rows[item['item_id']] = row(txn, item['item_id'], item['open_amount'])
         else:
-            exc, applied = _exception(item, dec(item['open_amount'])-amount, txn, ctx)
+            exc, applied = _exception(item, dec(item['open_amount'])-amount, txn, ctx, grace=newest_grace(item, settled))
             rows[item['item_id']] = row(txn, item['item_id'], applied, exc)
     return [rows[key] for key in sorted(rows)]
 

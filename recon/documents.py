@@ -11,7 +11,7 @@ work, not the total memory needed for retained parsed advices and invoice indexe
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 import csv
@@ -509,6 +509,21 @@ class DocumentMatcher:
         except (ValueError, KeyError, InvalidOperation):
             return False
 
+    def _newest_group_discount(self, txn, item, cash, resolved):
+        """TRAIN: the newest invoice of a multi-document settlement keeps its terms discount
+        up to 10 days after the POLICIES §3 deadline (814 SHORT_DISCOUNT vs 37 PARTIAL); the
+        exact cent signature of the terms is still required."""
+        from .adjusted import discount_terms, newest_grace
+        grace = newest_grace(item, [i for _, i in resolved])
+        terms = discount_terms(item, self.ctx) if grace else None
+        if terms is None or abs(terms[0] - cash) > CENT:
+            return False
+        try:
+            booked = date.fromisoformat(txn['booking_date'])
+            return date.fromisoformat(item['issue_date']) <= booked <= terms[1] + timedelta(days=grace)
+        except (ValueError, KeyError, TypeError):
+            return False
+
     def _withholding_rate_matches(self, item, balance, cash):
         """POLICIES §3: tax withheld at source by MX/BR/MA customers at 1.25 %, 1.5 % or 10 %."""
         if item.get('side', 'AR') != 'AR' or not str(item.get('item_id', '')).startswith('ARI-'):
@@ -582,7 +597,8 @@ class DocumentMatcher:
             reason = norm(line.reason)
             if not credit and abs(line.paid) < balance - CENT:
                 if any(x in reason for x in ('DISCOUNT','PRONTOPAGO','SKONTO')):
-                    accepted = self._discount_within_terms(txn, item, amount)
+                    accepted = (self._discount_within_terms(txn, item, amount)
+                                or self._newest_group_discount(txn, item, amount, resolved))
                     exc = 'SHORT_DISCOUNT' if accepted else 'PARTIAL'
                     if accepted:
                         amount = balance
@@ -595,6 +611,9 @@ class DocumentMatcher:
                 elif not reason and balance == money(item.get('total_amount', '0')) and self._discount_within_terms(txn, item, amount):
                     # POLICIES §3 SHORT_DISCOUNT is defined by terms, booking date
                     # and cash, not by an advice reason column.
+                    exc, amount = 'SHORT_DISCOUNT', balance
+                elif not reason and balance == money(item.get('total_amount', '0')) and self._newest_group_discount(txn, item, amount, resolved):
+                    # The newest invoice of a multi-document advice keeps its discount a little longer.
                     exc, amount = 'SHORT_DISCOUNT', balance
                 elif not reason and self._withholding_rate_matches(item, balance, amount):
                     # POLICIES §3 SHORT_WITHHOLDING: MX/BR/MA customers, fixed rates.

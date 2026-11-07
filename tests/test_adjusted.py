@@ -56,9 +56,19 @@ class QuotedSetTests(unittest.TestCase):
 
     def test_quoted_invoices_with_one_late_discount(self):
         items = [invoice('A', 'FV25-00001', '100', payment_terms='D2'), invoice('B', 'FV25-00002', '50')]
+        items[0]['issue_date'] = '2024-12-20'   # older than B: no group grace
         rows = reconcile(txn('148', 'Alice Water Works FV25-00001 FV25-00002'), ctx(items))
         self.assertEqual({r['item_id']: (r['amount'], r['exception']) for r in rows},
                          {'A': ('98.00', 'PARTIAL'), 'B': ('50.00', '')})
+
+    def test_newest_invoice_of_a_group_keeps_discount_ten_more_days(self):
+        items = [invoice('A', 'FV25-00001', '100', payment_terms='D2'), invoice('B', 'FV25-00002', '50')]
+        items[1]['issue_date'] = '2024-12-20'
+        rows = reconcile(txn('148', 'Alice Water Works FV25-00001 FV25-00002'), ctx(items))   # 14 days: deadline + 1
+        self.assertEqual({r['item_id']: (r['amount'], r['exception']) for r in rows},
+                         {'A': ('100.00', 'SHORT_DISCOUNT'), 'B': ('50.00', '')})
+        t = txn('148', 'Alice Water Works FV25-00001 FV25-00002'); t['booking_date'] = '2025-01-25'
+        self.assertEqual({r['item_id']: r['exception'] for r in reconcile(t, ctx(items))}, {'A': 'PARTIAL', 'B': ''})
 
     def test_quoted_withholding_with_netted_credit(self):
         a = invoice('A', 'FV25-00001', '100'); cr = invoice('CR', 'AB25-00001', '20'); cr['kind'] = 'credit'
@@ -103,6 +113,7 @@ class AdjustedSetTests(unittest.TestCase):
     def test_one_late_discount_among_full_invoices(self):
         from recon.adjusted import adjusted_sets
         items = [invoice('A', 'F1', '100', payment_terms='D2'), invoice('B', 'F2', '55.55'), invoice('C', 'F3', '31.17')]
+        items[0]['issue_date'] = '2024-12-20'
         rows = adjusted_sets(txn('153.55', 'Alice Water Works PAYMENT'), ctx(items))
         self.assertEqual({r['item_id']: (r['amount'], r['exception']) for r in rows},
                          {'A': ('98.00', 'PARTIAL'), 'B': ('55.55', '')})
@@ -112,6 +123,12 @@ class AdjustedSetTests(unittest.TestCase):
         items = [invoice('A', 'F1', '100'), invoice('B', 'F2', '50'), invoice('C', 'F3', '31.17')]
         rows = adjusted_sets(txn('135', 'Alice Water Works PAYMENT'), ctx(items, 'BR'))
         self.assertEqual({r['item_id']: r['exception'] for r in rows}, {'A': 'SHORT_WITHHOLDING', 'B': 'SHORT_WITHHOLDING'})
+
+    def test_stale_invoices_are_not_set_members(self):
+        from recon.adjusted import adjusted_sets
+        items = [invoice('A', 'F1', '100', payment_terms='D2'), invoice('B', 'F2', '55.55')]
+        items[0]['issue_date'] = '2024-12-20'; items[1]['issue_date'] = '2021-06-01'
+        self.assertIsNone(adjusted_sets(txn('153.55', 'Alice Water Works PAYMENT'), ctx(items)))
 
     def test_plain_subset_or_two_patterns_abstain(self):
         from recon.adjusted import adjusted_sets

@@ -59,14 +59,28 @@ def withholding_value(item, ctx, rate):
     return total - half_up(total * rate)
 
 
-def _late(txn, deadline):
+# TRAIN: when one transfer settles several invoices and the discounted one is the newest of
+# them, the discount is accepted up to 10 days after the deadline (814 SHORT_DISCOUNT vs 37
+# PARTIAL); a single invoice, or an older one in a group, is late right after the deadline.
+GROUP_NEWEST_GRACE_DAYS = 10
+
+
+def _late(txn, deadline, grace=0):
     try:
-        return date.fromisoformat(txn['booking_date']) > deadline
+        return date.fromisoformat(txn['booking_date']) > deadline + timedelta(days=grace)
     except (KeyError, TypeError, ValueError):
         return True
 
 
-def item_options(item, txn, ctx, fx, rate=None):
+def newest_grace(item, group):
+    """Extra days of discount acceptance for the newest invoice of a multi-document settlement."""
+    invoices = [i for i in group if i.get('kind') != 'credit']
+    if len(group) < 2 or not invoices:
+        return 0
+    return GROUP_NEWEST_GRACE_DAYS if item.get('issue_date', '') >= max(i.get('issue_date', '') for i in invoices) else 0
+
+
+def item_options(item, txn, ctx, fx, rate=None, grace=0):
     """Ways an invoice can be settled by part of this cash: (cash value, exception, row amount)."""
     opened = dec(item.get('open_amount'))
     full = 'FX_DIFFERENCE' if fx else ''
@@ -77,7 +91,7 @@ def item_options(item, txn, ctx, fx, rate=None):
     terms = discount_terms(item, ctx)
     if terms is not None:
         value, deadline = terms
-        if _late(txn, deadline):
+        if _late(txn, deadline, grace):
             options.append((value, 'PARTIAL', value))
         else:
             options.append((value, 'FX_DIFFERENCE' if fx else 'SHORT_DISCOUNT', opened))
@@ -101,7 +115,8 @@ def explain_set(txn, ctx, invoices, credits=()):
     solutions = []
     patterns = [None] + list(WITHHOLDING_RATES)
     for rate in patterns:
-        choices = [item_options(i, txn, ctx, fx, rate) for i in invoices]
+        group = list(invoices) + list(credits)
+        choices = [item_options(i, txn, ctx, fx, rate, newest_grace(i, group)) for i in invoices]
         if any(not c for c in choices):
             continue
         if sum(len(c) > 1 for c in choices) > MAX_DISCOUNT_ITEMS:
@@ -217,6 +232,7 @@ def truncated_reference(txn, ctx):
 
 
 MAX_SET_ITEMS = 24
+SET_HORIZON_DAYS = 730
 
 
 def _subsets_for_targets(values, targets, limit=2):
@@ -252,8 +268,14 @@ def adjusted_sets(txn, ctx):
     parties = party_candidates(txn, ctx)
     for pid in parties:
         invoices = [ctx.items[i] for i in ctx.by_party.get(pid, ())]
+        try:
+            horizon = (date.fromisoformat(txn['booking_date']) - timedelta(days=SET_HORIZON_DAYS)).isoformat()
+        except (KeyError, TypeError, ValueError):
+            return None
+        # Items open for years are stale balances, not part of a current unreferenced transfer.
         invoices = [i for i in invoices if i.get('side') == 'AR' and i.get('kind') == 'invoice'
-                    and i.get('entity') == txn.get('entity') and _eligible(i, txn) and dec(i.get('open_amount')) > 0]
+                    and i.get('entity') == txn.get('entity') and _eligible(i, txn) and dec(i.get('open_amount')) > 0
+                    and i.get('issue_date', '') >= horizon]
         solutions = []
         currencies = sorted({i.get('currency') for i in invoices})
         for currency in currencies:
@@ -294,7 +316,7 @@ def adjusted_sets(txn, ctx):
                 rows.append(row(txn, item['item_id'], opened, 'FX_DIFFERENCE' if fx else 'SHORT_WITHHOLDING'))
             elif index == detail:
                 value, deadline = discount_terms(item, ctx)
-                if _late(txn, deadline):
+                if _late(txn, deadline, newest_grace(item, [group[k] for k in ids])):
                     rows.append(row(txn, item['item_id'], value, 'PARTIAL'))
                 else:
                     rows.append(row(txn, item['item_id'], opened, 'FX_DIFFERENCE' if fx else 'SHORT_DISCOUNT'))

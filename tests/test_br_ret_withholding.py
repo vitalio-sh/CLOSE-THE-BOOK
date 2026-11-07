@@ -52,6 +52,12 @@ class BrazilRetTests(unittest.TestCase):
                 self.assertEqual(row['amount'], '90.00')
                 self.assertNotEqual(row['exception'], 'SHORT_WITHHOLDING')
 
+    def test_unexplained_line_with_exact_withholding_signature_is_tax(self):
+        # TRAIN Oct 2024 window: advices list withheld lines with no reason and the golden
+        # labels them SHORT_WITHHOLDING at the full open amount (POLICIES 3).
+        row = self.rows(reason='')[0]
+        self.assertEqual((row['amount'], row['exception']), ('100.00', 'SHORT_WITHHOLDING'))
+
     def test_country_is_required_and_narrowly_brazilian(self):
         for country in ('ES', 'MX', 'MA', ''):
             with self.subTest(country=country):
