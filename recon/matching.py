@@ -449,8 +449,13 @@ def _stated_service_month(raw, booking_date):
             continue
         try:
             booked = date.fromisoformat(booking_date)
-            year = (int(match[2]) if len(match[2]) == 4 else 2000 + int(match[2])) if match[2] else booked.year - (month >= booked.month)
-            return f'{year:04d}-{month:02d}', bool(match[2])
+            stated_year = (int(match[2]) if len(match[2]) == 4 else 2000 + int(match[2])) if match[2] else None
+            # A bank text cut after '20' of '2024' ('SERVICE OCTOBER 20') is not the year 2020:
+            # a two-digit year more than a year before the booking is read as no year.
+            if stated_year is not None and len(match[2]) == 2 and stated_year < booked.year - 1:
+                stated_year = None
+            year = stated_year if stated_year is not None else booked.year - (month >= booked.month)
+            return f'{year:04d}-{month:02d}', stated_year is not None
         except (TypeError, ValueError):
             return None
     return None

@@ -254,6 +254,12 @@ class MatchingTests(unittest.TestCase):
         b=invoice('I2','FV25-00002');b['issue_date']='2025-01-01'
         t=txn('100','Alice Water Works MANT. DICIEMBRE')
         self.assertEqual(reconcile(t,context([a,b]))[0]['item_id'],'I2')
+    def test_service_month_with_cut_year_digits(self):
+        # Bank text cut after '20' of '2024': the month still selects the invoice.
+        a=invoice();a['issue_date']='2024-11-01'
+        b=invoice('I2','FV25-00002');b['issue_date']='2024-12-02'
+        t=txn('100','Alice Water Works SERVICE OCTOBER 20');t['booking_date']='2025-01-02'
+        self.assertEqual(reconcile(t,context([a,b]))[0]['item_id'],'I1')
     def test_service_month_ambiguous_or_missing_does_not_guess_fifo(self):
         a=invoice();b=invoice('I2','FV25-00002');b['issue_date']='2025-01-02'
         c=context([a,b])
