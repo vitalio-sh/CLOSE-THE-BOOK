@@ -192,6 +192,10 @@ def match(ph, st) -> None:
         _match_text_refs(ph, st)
     except Exception as e:
         print(f"  remittance text-refs pass failed: {e!r}")
+    try:
+        _match_po_refs(ph, st)
+    except Exception as e:
+        print(f"  remittance po-refs pass failed: {e!r}")
     make = _entity_resolver(ph)
     # reference digits -> advices (header refs), entity from the index row
     by_ref = {}
@@ -548,3 +552,54 @@ _WHT = re.compile(r"^(?:RET|RET\.|RETENC\w*|RETEN\w*|WHT|W/H|WITHHOLD\w*|IRRF|IS
 def _is_withholding(reason: str) -> bool:
     r = (reason or "").strip().upper()
     return bool(r) and "RETRASO" not in r and bool(_WHT.match(r))
+
+
+def _match_po_refs(ph, st):
+    """Customer order numbers (ar_invoices.customer_po) and/or our numbers quoted in the text (POLICIES §5.5 'the
+    customer's PO number instead of ours'): >= 2 items named exactly, truncated ones by prefix, the rest of the cash
+    completed by <= 3 other open items of the same customer; claimed only when one single combination matches."""
+    from . import advice_big as A
+    info = item_info(ph)
+    bykey, bycust = {}, {}
+    for iid, r in info.items():
+        if r.get("item_type") not in ("ARI", "ARC"):
+            continue
+        for k in (A.nrm(r.get("po")), A.nrm(r.get("document_number"))):
+            if len(k) >= 4:
+                bykey.setdefault((r["entity"], k), []).append(iid)
+        bycust.setdefault((r["entity"], r.get("party_id")), []).append(iid)
+    for row in bank_rows(ph):
+        t = row["bank_txn_id"]
+        amt = row["amount"] or 0
+        if amt <= 0 or st.claimed(t) or _fx_target(row):
+            continue
+        ent = row.get("entity") or ""
+        raw = " | ".join(str(row.get(c) or "") for c in ("text", "remittance_info"))
+        toks = A.text_tokens_po(raw)
+        hits = [i for k in toks for i in bykey.get((ent, k), [])]
+        if len(set(hits)) < 2:
+            continue
+        custs = {info[i].get("party_id") for i in hits}
+        if len(custs) != 1:
+            continue
+        cust = next(iter(custs))
+        bd = str(row.get("booking_date") or "")[:10]
+        cur = row.get("currency")
+        pool = {}
+        for i in bycust.get((ent, cust), []):
+            r = info[i]
+            op = st.open.get(i, 0.0)
+            if op <= 0.005 or str(r.get("issue_date") or "")[:10] > bd or r.get("currency") != cur:
+                continue
+            keys = {A.nrm(r.get("po")), A.nrm(r.get("document_number"))} - {""}
+            pool[i] = (keys, op, r["item_type"] == "ARC", "")
+        if len(pool) > 80:
+            continue
+        sol = None
+        for filler, mf in ((None, 0), ([i for i in pool if not info[i].get("po") and info[i]["item_type"] == "ARI"], 3),
+                           (list(pool), 3)):
+            sol = A.solve_refs(toks, pool, amt, filler, max_fill=mf, min_sure=2)
+            if sol:
+                break
+        if sol and len(sol) >= 2:
+            st.assign(t, [(i, pool[i][1], "") for i in sol])

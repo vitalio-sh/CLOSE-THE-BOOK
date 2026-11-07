@@ -315,3 +315,66 @@ def _product(groups):
 def _combos(lst, k):
     import itertools
     return itertools.combinations(lst, k)
+
+
+_ALTOK = re.compile(r"[A-Za-z]*[-/]?\d[\d/\-]*")
+
+
+def text_tokens_po(raw: str) -> list:
+    """Alphanumeric reference tokens normalised (OC872088, PED-44397 -> PED44397, 2024/3336 -> 20243336)."""
+    out = []
+    for m in _ALTOK.finditer((raw or "").upper()):
+        n = nrm(m.group(0))
+        if len(n) >= 4 and any(c.isdigit() for c in n):
+            out.append(n)
+    return out
+
+
+def solve_refs(tokens, pool, amount, filler=None, max_fill=4, max_combos=4096, min_sure=1):
+    """pool: {item_id: (keys:set of normalised refs, open_amount, is_cn, related_key)}.
+    Tokens naming exactly one item (exact key) are sure; tokens that are a prefix of keys (truncated) are ambiguous
+    (choose <= 1). `filler`: item_ids (no ref of their own) that may complete the sum, up to max_fill of them.
+    Unique exact combination or None."""
+    import itertools
+    sure, amb = set(), []
+    for t in dict.fromkeys(tokens):
+        ex = [i for i, v in pool.items() if t in v[0]]
+        if len(ex) == 1:
+            sure.add(ex[0])
+            continue
+        if ex:
+            return None
+        pre = [i for i, v in pool.items() if len(t) >= 4 and any(k.startswith(t) and len(k) > len(t) for k in v[0])]
+        if pre:
+            amb.append(pre)
+    if len(sure) < max(1, min_sure):
+        return None
+    amb = [[i for i in a if i not in sure] for a in amb]
+    amb = [a for a in amb if a]
+    n = 1
+    for a in amb:
+        n *= len(a) + 1
+        if n > max_combos:
+            return None
+    cents = round(amount * 100)
+    val = {i: (-1 if v[2] else 1) * round(v[1] * 100) for i, v in pool.items()}
+    fill = [i for i in (filler or []) if i not in sure]
+    sols = set()
+    for pick in itertools.product(*[[None] + a for a in amb]):
+        chosen = set(sure)
+        if any(p is not None and p in chosen for p in pick) or len({p for p in pick if p}) != len([p for p in pick if p]):
+            continue
+        chosen |= {p for p in pick if p}
+        rest = cents - sum(val[i] for i in chosen)
+        cand = [i for i in fill if i not in chosen]
+        for k in range(0, max_fill + 1):
+            if k and len(cand) > 40:
+                break
+            for sub in itertools.combinations(cand, k):
+                if abs(sum(val[i] for i in sub) - rest) <= 1:
+                    sols.add(frozenset(chosen | set(sub)))
+                    if len(sols) > 1:
+                        return None
+            if sols:
+                break
+    return sorted(next(iter(sols))) if len(sols) == 1 else None
