@@ -216,5 +216,93 @@ def truncated_reference(txn, ctx):
     return [row(txn, item['item_id'], applied, exception)]
 
 
+MAX_SET_ITEMS = 24
+
+
+def _subsets_for_targets(values, targets, limit=2):
+    """Meet-in-the-middle exact subsets (integer cents) for several targets at once."""
+    middle = len(values) // 2
+
+    def sums(start, stop):
+        result = [(0, ())]
+        for index in range(start, stop):
+            result += [(total + values[index], ids + (index,)) for total, ids in result]
+        return result
+    right = {}
+    for total, ids in sums(middle, len(values)):
+        right.setdefault(total, []).append(ids)
+    found = {target: [] for target in targets}
+    for total, left in sums(0, middle):
+        for target in targets:
+            for tail in right.get(target - total, ()):
+                if len(found[target]) <= limit:
+                    found[target].append(left + tail)
+    return found
+
+
+def adjusted_sets(txn, ctx):
+    """Several invoices of one identified payer, no usable reference, one documented difference.
+
+    Either exactly one invoice is paid net of its early-payment discount (in terms or late) and
+    the others in full, or every invoice is paid net of one withholding rate. Groups are capped
+    at 24 open invoices, and a plain exact subset or a second pattern makes the line ambiguous.
+    """
+    if dec(txn['amount']) <= 0:
+        return None
+    parties = party_candidates(txn, ctx)
+    for pid in parties:
+        invoices = [ctx.items[i] for i in ctx.by_party.get(pid, ())]
+        invoices = [i for i in invoices if i.get('side') == 'AR' and i.get('kind') == 'invoice'
+                    and i.get('entity') == txn.get('entity') and _eligible(i, txn) and dec(i.get('open_amount')) > 0]
+        solutions = []
+        currencies = sorted({i.get('currency') for i in invoices})
+        for currency in currencies:
+            target, fx = target_for(txn, currency)
+            group = sorted((i for i in invoices if i.get('currency') == currency), key=lambda i: i['item_id'])
+            if target is None or len(group) < 2:
+                continue
+            if len(group) > MAX_SET_ITEMS:
+                return None
+            cents = int(target * 100)
+            opens = [int(dec(i['open_amount']) * 100) for i in group]
+            deltas = {}
+            for j, item in enumerate(group):
+                terms = discount_terms(item, ctx)
+                if terms is not None:
+                    deltas[j] = (opens[j] - int(terms[0] * 100), terms)
+            targets = {cents} | {cents + d for d, _ in deltas.values()}
+            found = _subsets_for_targets(opens, sorted(targets))
+            solutions += [('plain', ids, None, fx, group) for ids in found[cents] if len(ids) >= 2]
+            for j, (delta, terms) in deltas.items():
+                solutions += [('discount', ids, j, fx, group) for ids in found[cents + delta] if len(ids) >= 2 and j in ids]
+            customer = getattr(ctx, 'customers', {}).get(pid, {})
+            if customer.get('country') in WITHHOLDING_COUNTRIES:
+                for rate in WITHHOLDING_RATES:
+                    values = [int(v * 100) if (v := withholding_value(i, ctx, rate)) is not None else -10 ** 12 for i in group]
+                    solutions += [('withholding', ids, rate, fx, group) for ids in _subsets_for_targets(values, [cents])[cents]
+                                  if len(ids) >= 2]
+        if not solutions:
+            continue
+        if len(solutions) != 1 or solutions[0][0] == 'plain':
+            return None
+        kind, ids, detail, fx, group = solutions[0]
+        rows = []
+        for index in ids:
+            item = group[index]
+            opened = dec(item['open_amount'])
+            if kind == 'withholding':
+                rows.append(row(txn, item['item_id'], opened, 'FX_DIFFERENCE' if fx else 'SHORT_WITHHOLDING'))
+            elif index == detail:
+                value, deadline = discount_terms(item, ctx)
+                if _late(txn, deadline):
+                    rows.append(row(txn, item['item_id'], value, 'PARTIAL'))
+                else:
+                    rows.append(row(txn, item['item_id'], opened, 'FX_DIFFERENCE' if fx else 'SHORT_DISCOUNT'))
+            else:
+                rows.append(row(txn, item['item_id'], opened, 'FX_DIFFERENCE' if fx else ''))
+        return sorted(rows, key=lambda r: r['item_id'])
+    return None
+
+
 def reconcile_adjusted(txn, ctx):
-    return single_adjusted(txn, ctx) or truncated_reference(txn, ctx)
+    return single_adjusted(txn, ctx) or truncated_reference(txn, ctx) or adjusted_sets(txn, ctx)

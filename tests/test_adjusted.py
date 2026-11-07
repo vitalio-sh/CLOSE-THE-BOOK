@@ -97,3 +97,23 @@ class TruncatedReferenceTests(unittest.TestCase):
         self.assertIsNone(truncated_reference(txn('200', 'Alice Water Works INV INV24-0115'), ctx(items)))
         items = [invoice('A', 'INV24-0115652', '500'), invoice('B', 'INV24-0221000', '300')]
         self.assertIsNone(truncated_reference(txn('200', 'Alice Water Works INV24-0221000 INV24-0115'), ctx(items)))
+
+
+class AdjustedSetTests(unittest.TestCase):
+    def test_one_late_discount_among_full_invoices(self):
+        from recon.adjusted import adjusted_sets
+        items = [invoice('A', 'F1', '100', payment_terms='D2'), invoice('B', 'F2', '55.55'), invoice('C', 'F3', '31.17')]
+        rows = adjusted_sets(txn('153.55', 'Alice Water Works PAYMENT'), ctx(items))
+        self.assertEqual({r['item_id']: (r['amount'], r['exception']) for r in rows},
+                         {'A': ('98.00', 'PARTIAL'), 'B': ('55.55', '')})
+
+    def test_withholding_on_every_invoice(self):
+        from recon.adjusted import adjusted_sets
+        items = [invoice('A', 'F1', '100'), invoice('B', 'F2', '50'), invoice('C', 'F3', '31.17')]
+        rows = adjusted_sets(txn('135', 'Alice Water Works PAYMENT'), ctx(items, 'BR'))
+        self.assertEqual({r['item_id']: r['exception'] for r in rows}, {'A': 'SHORT_WITHHOLDING', 'B': 'SHORT_WITHHOLDING'})
+
+    def test_plain_subset_or_two_patterns_abstain(self):
+        from recon.adjusted import adjusted_sets
+        items = [invoice('A', 'F1', '100', payment_terms='D2'), invoice('B', 'F2', '50'), invoice('C', 'F3', '98')]
+        self.assertIsNone(adjusted_sets(txn('148', 'Alice Water Works PAYMENT'), ctx(items)))
