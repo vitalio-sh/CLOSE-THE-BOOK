@@ -169,7 +169,7 @@ def classify(txn,ctx):
       ('INSURANCE',r'PRIMA SEGURO|INSURANCE PREMIUM|POLIZA SEGURO|ASSURANCE'),
       ('LOAN_REPAYMENT',r'AMORTIZACION|LOAN REPAYMENT|CUOTA PRESTAMO|PRES [A-Z]{2}[0-9]+'),
       ('LOAN_DRAWDOWN',r'DISPOSICION PRESTAMO|LOAN DRAWDOWN|ABONO PRESTAMO'),
-      ('FX_DEAL',r'FX DEAL|FOREX DEAL|COMPRA DIVISAS|VENTA DIVISAS|COMPRAVENTA DIVISAS|OPERACION CAMBIO'),
+      ('FX_DEAL',r'FX DEAL|FOREX DEAL|COMPRA DIVISAS?|VENTA DIVISAS?|COMPRAVENTA DIVISAS?|OPERACION CAMBIO'),
     ]
     category=None
     for cat,pattern in rules:
@@ -417,14 +417,23 @@ def reconcile(txn,ctx):
     # It is restricted to one well-identified party and same-currency open invoices.
     byparty=defaultdict(list)
     cash=abs(dec(txn['amount']))
+    # FX receipts carry the instructed amount in the invoice currency (orig_amount):
+    # several invoices in that currency are matched against it, flagged FX_DIFFERENCE.
+    orig_ccy=txn.get('orig_currency') or ''
+    orig_cash=abs(dec(txn['orig_amount'])) if orig_ccy and orig_ccy!=txn.get('currency') and txn.get('orig_amount') else None
     for item in candidates:
         opened=dec(item.get('open_amount'))
-        if item.get('kind')=='invoice' and item.get('currency')==txn.get('currency') and 0<opened<cash:
-            byparty[item['party_id']].append(item)
+        if item.get('kind')!='invoice':
+            continue
+        if item.get('currency')==txn.get('currency') and 0<opened<cash:
+            byparty[(item['party_id'],False)].append(item)
+        elif orig_cash is not None and item.get('currency')==orig_ccy and 0<opened<orig_cash:
+            byparty[(item['party_id'],True)].append(item)
     solutions=[]
-    for party,group in byparty.items():
+    for (party,fx_group),group in byparty.items():
+        target=orig_cash if fx_group else cash
         group.sort(key=lambda i:i['item_id'])
-        found = subset_solutions([int(dec(i['open_amount'])*100) for i in group], int(cash*100), minimum=2)
+        found = subset_solutions([int(dec(i['open_amount'])*100) for i in group], int(target*100), minimum=2)
         if found is None:
             continue
         if len(found) > 1:
@@ -437,9 +446,10 @@ def reconcile(txn,ctx):
         # included an omitted credit note. Demand at least two invoice anchors.
         supported_size = found and (len(found[0]) <= 6 or len(anchors) >= 2)
         if supported_size and anchors.issubset({group[i]['item_id'] for i in found[0]}):
-            solutions.append(tuple(group[i] for i in found[0]))
-    if len(solutions)==1:
-        return [row(txn,item['item_id'],item['open_amount']) for item in solutions[0]]
+            solutions.append((tuple(group[i] for i in found[0]),fx_group))
+    if len(solutions)==1 and solutions[0] is not None:
+        chosen,fx_group=solutions[0]
+        return [row(txn,item['item_id'],item['open_amount'],'FX_DIFFERENCE' if fx_group else '') for item in chosen]
     explained=[]
     for item in candidates:
         cash,fx=_cash(item,txn)
