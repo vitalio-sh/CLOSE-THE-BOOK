@@ -26,7 +26,7 @@ import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
 
-ADVICE_CACHE_VERSION = 1
+ADVICE_CACHE_VERSION = 2
 CENT = Decimal('0.01')
 MONEY = r'-?\d[\d.,]*[.,]\d{2}'
 
@@ -61,6 +61,8 @@ class Advice:
     source: str
     payment_date: str = ''
     short_refs: bool = False
+    # E-mail advices list gross documents and state the cash sent separately.
+    stated_total: str = ''
 
     @property
     def total(self):
@@ -93,7 +95,7 @@ def xlsx_rows(path):
 
 def parse_advice(path, meta, pdf_tool=None):
     path = Path(path)
-    ref = currency = payment_date = ''
+    ref = currency = payment_date = stated_total = ''
     lines = []
     short_refs = False
     if path.suffix == '.csv':
@@ -141,6 +143,10 @@ def parse_advice(path, meta, pdf_tool=None):
         cur = re.search(MONEY + r'\s+([A-Z]{3})\b', text)
         if cur:
             currency = cur[1]
+        if path.suffix == '.txt':
+            stated = re.search(r'(?:payment of|importe de)\s+(' + MONEY + r')\s+([A-Z]{3})\b', text, re.I)
+            if stated:
+                stated_total = str(money(stated[1]))
         for line in text.splitlines():
             m = re.match(r'^\s*(\S+)\s+\d{2}/\d{2}/\d{2,4}\s+(' + MONEY + r')(.*)$', line)
             if not m:
@@ -157,7 +163,7 @@ def parse_advice(path, meta, pdf_tool=None):
             lines.append(Line(number, gross, paid, reason))
     if not lines:
         return None
-    return Advice(ref, meta.get('entity', ''), meta.get('payer_name', ''), meta.get('received_date', ''), currency, lines, str(path), payment_date, short_refs)
+    return Advice(ref, meta.get('entity', ''), meta.get('payer_name', ''), meta.get('received_date', ''), currency, lines, str(path), payment_date, short_refs, stated_total)
 
 def _advice_payload(advice):
     data = asdict(advice)
@@ -184,7 +190,11 @@ def _restore_advice(data, path):
         if not gross.is_finite() or not paid.is_finite():
             raise ValueError('Non-finite advice amounts')
         lines.append(Line(line['number'], gross, paid, line['reason'], line['document_date']))
-    return Advice(**{k: data[k] for k in fields}, lines=lines, source=str(path), short_refs=data['short_refs'])
+    stated = data.get('stated_total', '')
+    if not isinstance(stated, str):
+        raise ValueError('Invalid advice stated total')
+    return Advice(**{k: data[k] for k in fields}, lines=lines, source=str(path), short_refs=data['short_refs'],
+                  stated_total=stated)
 
 
 def cached_parse_advice(path, meta, pdf_tool, cache_dir, backend=''):
@@ -537,6 +547,63 @@ class DocumentMatcher:
         return any(abs(cash - (total * (1 - rate)).quantize(CENT, rounding=ROUND_HALF_UP)) <= CENT
                    for rate in (Decimal('0.0125'), Decimal('0.015'), Decimal('0.10')))
 
+    def _stated_shortfall_plan(self, txn, resolved, stated):
+        """Explain why the cash stated in an e-mail advice is below its gross documents.
+
+        Returns {line index: (amount, exception)} or None. Order: tax withheld on
+        every invoice (POLICIES §3 SHORT_WITHHOLDING), a unique set of terms
+        discounts (§3 SHORT_DISCOUNT within booking date + 3 days grace, else
+        PARTIAL for the discounted cash), else the last listed invoice is part
+        paid (§3 PARTIAL; TRAIN history lists the part-paid document last).
+        """
+        shortfall = sum((line.gross for line, _ in resolved), Decimal(0)) - stated
+        if shortfall <= CENT:
+            return None
+        invoices = [(k, line, item) for k, (line, item) in enumerate(resolved)
+                    if item.get('kind') != 'credit' and not item['item_id'].startswith(('ARC-', 'APC-'))
+                    and line.gross > 0 and money(item.get('total_amount', '0')) == line.gross
+                    and money(item.get('open_amount', item['total_amount'])) == line.gross]
+        customers = getattr(self.ctx, 'customers', {})
+        countries = {customers.get(item.get('party_id'), {}).get('country') for _, _, item in invoices}
+        if invoices and countries <= {'MX', 'BR', 'MA'}:
+            for rate in (Decimal('0.0125'), Decimal('0.015'), Decimal('0.10')):
+                cut = sum((line.gross - (line.gross * (1 - rate)).quantize(CENT, rounding=ROUND_HALF_UP)
+                           for _, line, _ in invoices), Decimal(0))
+                if abs(cut - shortfall) <= CENT:
+                    return {k: (line.gross, 'SHORT_WITHHOLDING') for k, line, _ in invoices}
+        terms_master = getattr(self.ctx, 'payment_terms', {})
+        eligible = []
+        for k, line, item in invoices:
+            terms = terms_master.get(item.get('payment_terms'), {})
+            try:
+                pct = Decimal(str(terms.get('early_payment_discount_pct') or 0))
+                days = (date.fromisoformat(txn['booking_date']) - date.fromisoformat(item['issue_date'])).days
+                limit = int(terms.get('discount_days') or 0) + 3
+            except (ValueError, KeyError, InvalidOperation):
+                continue
+            if pct > 0 and days >= 0:
+                eligible.append((k, line, (line.gross * pct / 100).quantize(CENT, rounding=ROUND_HALF_UP), days <= limit))
+        solutions = []
+        if eligible:
+            from itertools import combinations
+            if len(eligible) <= 16:
+                groups = (combo for size in range(1, len(eligible) + 1) for combo in combinations(eligible, size))
+            else:
+                groups = iter([tuple(eligible)] + [(e,) for e in eligible])
+            for combo in groups:
+                if abs(sum((c[2] for c in combo), Decimal(0)) - shortfall) <= CENT:
+                    solutions.append(combo)
+                    if len(solutions) > 1:
+                        break
+        if len(solutions) == 1:
+            return {k: ((line.gross, 'SHORT_DISCOUNT') if within else (line.gross - discount, 'PARTIAL'))
+                    for k, line, discount, within in solutions[0]}
+        last = len(resolved) - 1
+        if invoices and invoices[-1][0] == last and invoices[-1][1].gross - shortfall > CENT:
+            line = invoices[-1][1]
+            return {last: (line.gross - shortfall, 'PARTIAL')}
+        return None
+
     def _rows(self, txn, advice, strong_ref):
         if advice.entity and txn.get('entity') != advice.entity:
             return None
@@ -572,8 +639,20 @@ class DocumentMatcher:
             if not txn.get('orig_amount') or txn.get('orig_currency') != advice_currency:
                 return None
             cash = abs(money(txn['orig_amount']))
+        plan = {}
         if abs(advice.total - cash) > CENT:
-            return None
+            # Only an e-mail advice whose stated cash equals the bank cash may
+            # explain a gap; its listed lines carry gross amounts only.
+            try:
+                stated = Decimal(advice.stated_total) if advice.stated_total else None
+            except InvalidOperation:
+                stated = None
+            if (stated is None or abs(stated - cash) > CENT
+                    or any(line.paid != line.gross for line, _ in resolved)):
+                return None
+            plan = self._stated_shortfall_plan(txn, resolved, stated)
+            if not plan:
+                return None
         if not strong_ref:
             text = norm(' '.join(str(txn.get(k, '')) for k in ('text', 'counterparty_name', 'remittance_info')))
             # POLICIES §5.5: the bank text often carries a trade name; the advice
@@ -586,7 +665,7 @@ class DocumentMatcher:
                        for payer in names):
                 return None
         out = []
-        for line, item in resolved:
+        for index, (line, item) in enumerate(resolved):
             iid = item['item_id']
             balance = money(item.get('open_amount', item['total_amount']))
             if balance <= 0 or abs(line.paid) > balance + CENT:
@@ -595,6 +674,12 @@ class DocumentMatcher:
             exc = ''
             amount = abs(line.paid)
             reason = norm(line.reason)
+            if index in plan:
+                amount, exc = plan[index]
+                if fx and not credit and exc not in ('PARTIAL', 'SHORT_DISPUTE'):
+                    exc = 'FX_DIFFERENCE'
+                out.append({'bank_txn_id': txn['bank_txn_id'], 'item_id': iid, 'amount': f'{amount:.2f}', 'category': '', 'exception': exc})
+                continue
             if not credit and abs(line.paid) < balance - CENT:
                 if any(x in reason for x in ('DISCOUNT','PRONTOPAGO','SKONTO')):
                     accepted = (self._discount_within_terms(txn, item, amount)

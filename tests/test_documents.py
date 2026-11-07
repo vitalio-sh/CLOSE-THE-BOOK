@@ -133,6 +133,42 @@ class DocumentTests(unittest.TestCase):
         rows=matcher._rows(txn,advice,True)
         self.assertEqual((rows[0]['amount'],rows[0]['exception']),('98.50','PARTIAL'))
 
+    def test_email_advice_stated_cash_explains_shortfall(self):
+        with TemporaryDirectory() as d:
+            p=Path(d)/'a.txt'
+            p.write_text('Subject: Payment advice 241001847586\n\nPlease be advised that we have sent a payment of 150.00 EUR on 10/01/2024 covering:\n\n'
+                         '  FV25-001         10/06/24        100.00\n  FV25-003         14/08/24        110.00\n\nKind regards,\n')
+            a=parse_advice(p,{'entity':'ES01'})
+            self.assertEqual((a.total,a.stated_total),(D('210.00'),'150.00'))
+        ctx=self.make_context(Path('.'))
+        ctx.items['ARI-3']={**ctx.items['ARI-1'],'item_id':'ARI-3','total_amount':D(110),'open_amount':D(110)}
+        ctx.by_number['FV25003']=['ARI-3']
+        ctx.payment_terms={'D2N30':{'early_payment_discount_pct':'2.00','discount_days':'10'}}
+        ctx.customers={'CES':{'country':'ES'},'CMA':{'country':'MA'}}
+        for i in ('ARI-1','ARI-3'):
+            ctx.items[i].update(issue_date='2024-09-25',party_id='CES',payment_terms='T30')
+        matcher=self.matcher_without_files(ctx)
+        txn={'bank_txn_id':'BT1','entity':'ES01','booking_date':'2024-10-01','amount':'150','currency':'EUR'}
+        # Last listed document is part paid.
+        rows=matcher._rows(txn,a,True)
+        self.assertEqual([(r['item_id'],r['amount'],r['exception']) for r in rows],[('ARI-1','100.00',''),('ARI-3','50.00','PARTIAL')])
+        # A terms discount within booking date + grace explains the gap exactly.
+        ctx.items['ARI-3']['payment_terms']='D2N30';a.stated_total='207.80';txn['amount']='207.80'
+        rows=matcher._rows(txn,a,True)
+        self.assertEqual([(r['amount'],r['exception']) for r in rows],[('100.00',''),('110.00','SHORT_DISCOUNT')])
+        txn['booking_date']='2024-10-20'
+        rows=matcher._rows(txn,a,True)
+        self.assertEqual([(r['amount'],r['exception']) for r in rows],[('100.00',''),('107.80','PARTIAL')])
+        # Withholding applies to every invoice of an MX/BR/MA customer.
+        for i in ('ARI-1','ARI-3'):
+            ctx.items[i].update(party_id='CMA',payment_terms='T30')
+        a.stated_total='189.00';txn['amount']='189.00'
+        rows=matcher._rows(txn,a,True)
+        self.assertEqual([(r['amount'],r['exception']) for r in rows],[('100.00','SHORT_WITHHOLDING'),('110.00','SHORT_WITHHOLDING')])
+        # Stated cash must equal the bank cash.
+        txn['amount']='188.00'
+        self.assertIsNone(matcher._rows(txn,a,True))
+
     def test_missing_pdf_tool_is_observable(self):
         with TemporaryDirectory() as d:
             root=Path(d);p=root/'remittance_advices';p.mkdir()
