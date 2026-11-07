@@ -134,7 +134,7 @@
   <div class="rule"></div>
   <div class="anim d2" style="flex:1;display:flex;justify-content:center;align-items:flex-start">
     <img src="video_assets/one_line_37_invoices.png" alt="One bank line to 37 invoices"
-         style="height:640px;border-radius:6px;box-shadow:0 0 0 2px #2a2a2a">
+         style="height:560px;border-radius:6px;box-shadow:0 0 0 2px #2a2a2a">
   </div>
   <div class="foot"><span>Source: official synthetic dataset, bank line of 2025-06-02 (+109,868.89 EUR) and its remittance advice</span><span class="pg"></span></div>
 </section>
@@ -351,6 +351,7 @@
     document.getElementById('stage').style.transform = `translate(-50%, -50%) scale(${k})`;
   }
   addEventListener('resize', fit); fit();
+  if (location.search.includes('export')) { document.querySelector('.hint').style.display = 'none'; }
   show((parseInt(location.hash.slice(1), 10) || 1) - 1);
 })();
 </script>
