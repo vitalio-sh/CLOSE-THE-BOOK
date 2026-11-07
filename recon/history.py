@@ -5,6 +5,7 @@ items absent from it must never be reintroduced as payable balances. This helper
 only restores their identity/metadata for duplicate and return handling.
 """
 from collections import defaultdict
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 import re
@@ -65,6 +66,8 @@ indices are preserved. Call once before constructing cached matcher indices.
             first_date = booking
         for token in reference_tokens(txn):
             refs[token].add(txn.get('entity', ''))
+    if first_date is not None:
+        result['batch_reference_tokens'] = _batch_references(ctx, phase_dir, first_date, refs)
     result['reference_tokens'] = len(refs)
     if first_date is None:
         result['skipped_reason'] = 'No dated transactions'
@@ -102,3 +105,34 @@ indices are preserved. Call once before constructing cached matcher indices.
                 result['added_count'] += 1
     result['seconds'] = round(time.monotonic() - start, 3)
     return result
+
+def _batch_references(ctx, phase_dir, first_date, refs):
+    """Invoice numbers printed in direct-debit batch files of the phase and the six months before.
+
+    A returned collection re-opens the printed invoice. When that invoice was collected
+    before the phase began it is closed and absent from the opening snapshot, so its
+    identity is restored at zero balance like a bank-text reference. Entity comes from
+    the batch file name (``AU01_NSW_202507.csv``).
+    """
+    try:
+        floor = (date.fromisoformat(first_date).replace(day=1) - timedelta(days=183)).strftime('%Y%m')
+    except ValueError:
+        return 0
+    added = 0
+    roots = [phase_dir] + [Path(p) for p in getattr(ctx, 'history_dirs', ())]
+    seen = set()
+    for n, root in enumerate(roots):
+        for path in sorted((Path(root) / 'direct_debit_batches').glob('*.csv')):
+            if path.name.startswith('._') or path.name in seen:
+                continue
+            month = re.search(r'_(\d{6})(?:_\d+)?\.csv$', path.name)
+            if n and (not month or month.group(1) < floor):
+                continue
+            seen.add(path.name)
+            entity = path.name.split('_')[0]
+            for row in read_csv(path):
+                token = norm(row.get('remittance_info', ''))
+                if len(token) >= 5 and any(c.isdigit() for c in token) and entity not in refs[token]:
+                    refs[token].add(entity)
+                    added += 1
+    return added

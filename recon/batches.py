@@ -13,6 +13,9 @@ import unicodedata
 D = Decimal
 ZERO = D('0')
 CENT = D('.01')
+# Return narratives (normalised, no spaces): Spanish/English/French plus German SEPA
+# R-transactions ('RUECKLASTSCHRIFT AM04 MREF+...').
+RETURN_WORDS = ('DEVOL', 'RETURN', 'IMPAY', 'REJECT', 'RUECKLASTSCHRIFT', 'RUCKLASTSCHRIFT')
 
 def norm(value):
     return re.sub('[^A-Z0-9]', '', unicodedata.normalize('NFKD', str(value or '')).encode('ascii', 'ignore').decode().upper())
@@ -170,7 +173,7 @@ class BatchMatcher:
         self.ref_lengths = {len(key) for key in self.by_ref if key}
         self.return_lengths = {len(key) for key in self.return_details if key}
 
-    def _resolve(self, row, kind, txn, reserved=None):
+    def _resolve(self, row, kind, txn, reserved=None, require_exact=False):
         number_field = {'payment_runs':'document_number','direct_debit_batches':'remittance_info',
                         'card_settlements':'order_number','cheque_deposits':'stub_reference'}[kind]
         number = norm(row[number_field])
@@ -205,6 +208,9 @@ class BatchMatcher:
             score = 0
             printed = norm(item.get('document_number', item.get('supplier_invoice_number','')))
             explicit = printed == number or any(len(token) >= 5 and printed.endswith(token) for token in re.findall(r'[0-9]+', row[number_field]))
+            if require_exact and printed != number:
+                # A return re-opens the printed collected invoice, never a substitute.
+                continue
             if printed == number:
                 score += 8
             elif explicit:
@@ -248,7 +254,7 @@ class BatchMatcher:
         out = {}
         reserved = defaultdict(lambda: ZERO)
         for detail in group['rows']:
-            item = self._resolve(detail, group['kind'], txn, reserved=reserved)
+            item = self._resolve(detail, group['kind'], txn, reserved=reserved, require_exact=returned)
             if item is None:
                 return None
             iid = item['item_id']
@@ -379,7 +385,7 @@ class BatchMatcher:
             if group.get('mixed_aggregated'):
                 continue
             reverse = amount * group['direction'] < 0
-            if reverse and not any(word in text for word in ('DEVOL','RETURN','IMPAY','REJECT')):
+            if reverse and not any(word in text for word in RETURN_WORDS):
                 continue
             if reverse and group['date'] > txn['booking_date']:
                 continue
@@ -404,7 +410,7 @@ class BatchMatcher:
         if confirming:
             return confirming
         # Only explicit return text activates reverse-direction receipt matching.
-        if amount < 0 and any(word in text for word in ('DEVOL','RETURN','IMPAY','REJECT')):
+        if amount < 0 and any(word in text for word in RETURN_WORDS):
             matches = []
             references = {text[start:start+length] for length in self.return_lengths
                           for start in range(len(text)-length+1)}
@@ -418,7 +424,9 @@ class BatchMatcher:
                         if abs(money(detail['amount'])-abs(amount)) > CENT:
                             continue
                         detail_date = detail.get('collection_date',detail.get('deposit_date',''))
-                        if detail_date > txn['booking_date']:
+                        # A return always follows its collection; a same-day receipt of the
+                        # same mandate and amount is the next collection, not the returned one.
+                        if detail_date >= txn['booking_date']:
                             continue
                         result = self._allocate({'kind':kind,'rows':[detail]},txn,returned=True)
                         if result:
