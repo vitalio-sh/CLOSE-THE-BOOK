@@ -36,15 +36,16 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         # precede matching, which would read the credit as a short payment.
         from .credit_groups import reconcile_early
         handlers.append(('credit_early', lambda txn: reconcile_early(txn, ctx)))
+        # Cross-border receipts short by a scheduled intermediary fee (POLICIES §3) go before
+        # matching: an exact unreferenced subset of old invoices must not take them.
+        from .residual_fees import ResidualFees
+        handlers.append(('residual_fees', ResidualFees(ctx).reconcile))
         handlers.append(('matching', lambda txn: reconcile(txn, ctx)))
         from .financial_sequences import FinancialSequences
         handlers.append(('financial_sequences', FinancialSequences(ctx).reconcile))
         # Receipts net of credit notes (POLICIES 2, 5.9) that no ordinary rule explained.
         from .credit_groups import reconcile as credit_reconcile
         handlers.append(('credit_groups', lambda txn: credit_reconcile(txn, ctx)))
-        # Unreferenced cross-border receipts short by a fixed intermediary fee (POLICIES §3).
-        from .residual_fees import ResidualFees
-        handlers.append(('residual_fees', ResidualFees(ctx).reconcile))
         handlers.append(('refnoise', lambda txn: refnoise.reconcile(txn, ctx)))
         # Quoted invoices with one TRAIN partial share or a unique rest (cut lists, ar_n_to_m).
         from .matching import quoted_groups, quoted_only
