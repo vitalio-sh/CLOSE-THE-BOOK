@@ -322,6 +322,11 @@ def adjusted_sets(txn, ctx):
                     solutions += [('withholding', ids, rate, fx, group) for ids in _subsets_for_targets(values, [cents])[cents]
                                   if len(ids) >= 2]
         if not solutions:
+            multi = _multi_discount_set(txn, ctx, invoices)
+            if multi is False:
+                return None
+            if multi:
+                return multi
             continue
         if len(solutions) != 1 or solutions[0][0] == 'plain':
             return None
@@ -340,6 +345,76 @@ def adjusted_sets(txn, ctx):
                     rows.append(row(txn, item['item_id'], opened, 'FX_DIFFERENCE' if fx else 'SHORT_DISCOUNT'))
             else:
                 rows.append(row(txn, item['item_id'], opened, 'FX_DIFFERENCE' if fx else ''))
+        return sorted(rows, key=lambda r: r['item_id'])
+    return None
+
+
+# Enumeration budget per half of a payer's pool (each invoice absent, full, or net of discount).
+MULTI_DISCOUNT_STATES = 60000
+
+
+def _option_states(options):
+    states = [(0, ())]
+    for choice in options:
+        states = [(total + value, picks + (k,)) for total, picks in states for k, value in enumerate(choice)]
+        if len(states) > MULTI_DISCOUNT_STATES:
+            return None
+    return states
+
+
+def _multi_discount_set(txn, ctx, invoices):
+    """Several invoices of one payer, two or more of them net of their early-payment discount.
+
+    TRAIN (ar_discount_late, ar_short_discount): unreferenced transfers settle several invoices and
+    take the terms discount on more than one of them, each in terms (SHORT_DISCOUNT, full amount)
+    or late (PARTIAL for the discounted cash), POLICIES 3. Each invoice is absent, paid in full or
+    paid net of its discount; only a single exact combination with at least two discounted
+    invoices is accepted. Returns rows, None (no combination) or False (ambiguous / too large).
+    """
+    for currency in sorted({i.get('currency') for i in invoices}):
+        target, fx = target_for(txn, currency)
+        group = sorted((i for i in invoices if i.get('currency') == currency), key=lambda i: i['item_id'])
+        if target is None or len(group) < 2 or len(group) > MAX_SET_ITEMS:
+            continue
+        options, terms = [], []
+        for item in group:
+            opened = int(dec(item['open_amount']) * 100)
+            found = discount_terms(item, ctx)
+            terms.append(found)
+            options.append([0, opened] + ([int(found[0] * 100)] if found is not None else []))
+        if sum(t is not None for t in terms) < 2:
+            continue
+        middle = len(group) // 2
+        left, right = _option_states(options[:middle]), _option_states(options[middle:])
+        if left is None or right is None:
+            return False
+        tails = {}
+        for total, picks in right:
+            tails.setdefault(total, []).append(picks)
+        cents = int(target * 100)
+        solutions = []
+        for total, picks in left:
+            for tail in tails.get(cents - total, ()):
+                choice = picks + tail
+                if sum(1 for c in choice if c == 2) >= 2:
+                    solutions.append(choice)
+                    if len(solutions) > 1:
+                        return False
+        if not solutions:
+            continue
+        choice = solutions[0]
+        members = [group[k] for k, c in enumerate(choice) if c]
+        rows = []
+        for item, c, found in zip(group, choice, terms):
+            if not c:
+                continue
+            opened = dec(item['open_amount'])
+            if c == 1:
+                rows.append(row(txn, item['item_id'], opened, 'FX_DIFFERENCE' if fx else ''))
+            elif _late(txn, found[1], newest_grace(item, members)):
+                rows.append(row(txn, item['item_id'], found[0], 'PARTIAL'))
+            else:
+                rows.append(row(txn, item['item_id'], opened, 'FX_DIFFERENCE' if fx else 'SHORT_DISCOUNT'))
         return sorted(rows, key=lambda r: r['item_id'])
     return None
 

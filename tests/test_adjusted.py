@@ -136,6 +136,39 @@ class AdjustedSetTests(unittest.TestCase):
         self.assertIsNone(adjusted_sets(txn('148', 'Alice Water Works PAYMENT'), ctx(items)))
 
 
+class MultiDiscountSetTests(unittest.TestCase):
+    def items(self):
+        items = [invoice('A', 'F1', '100', payment_terms='D2'), invoice('B', 'F2', '250', payment_terms='D2'),
+                 invoice('C', 'F3', '55.55'), invoice('D', 'F4', '31.17', payment_terms='D2')]
+        items[0]['issue_date'] = '2024-11-20'; items[1]['issue_date'] = '2024-12-01'
+        items[2]['issue_date'] = '2024-12-02'; items[3]['issue_date'] = '2024-12-03'
+        return items
+
+    def test_two_late_discounts_and_a_full_invoice(self):
+        from recon.adjusted import adjusted_sets
+        # 98.00 + 245.00 + 55.55: A and B both net of 2 %, both past issue + 10 + 3 days.
+        rows = adjusted_sets(txn('398.55', 'Alice Water Works PAYMENT'), ctx(self.items()))
+        self.assertEqual({r['item_id']: (r['amount'], r['exception']) for r in rows},
+                         {'A': ('98.00', 'PARTIAL'), 'B': ('245.00', 'PARTIAL'), 'C': ('55.55', '')})
+
+    def test_newest_discount_in_terms_older_one_late(self):
+        from recon.adjusted import adjusted_sets
+        items = self.items()
+        items[1]['issue_date'] = '2025-01-08'
+        rows = adjusted_sets(txn('343', 'Alice Water Works PAYMENT'), ctx(items))
+        self.assertEqual({r['item_id']: (r['amount'], r['exception']) for r in rows},
+                         {'A': ('98.00', 'PARTIAL'), 'B': ('250.00', 'SHORT_DISCOUNT')})
+
+    def test_second_combination_abstains(self):
+        from recon.adjusted import adjusted_sets
+        # Three identical discounted invoices: any two of them net of 2 % make 196.00.
+        items = [invoice('A', 'F1', '100', payment_terms='D2'), invoice('B', 'F2', '100', payment_terms='D2'),
+                 invoice('C', 'F3', '100', payment_terms='D2')]
+        for item in items:
+            item['issue_date'] = '2024-11-20'
+        self.assertIsNone(adjusted_sets(txn('196', 'Alice Water Works PAYMENT'), ctx(items)))
+
+
 class FractionPartialTests(unittest.TestCase):
     def test_round_fraction_of_one_invoice_is_partial(self):
         from recon.adjusted import fraction_partial
