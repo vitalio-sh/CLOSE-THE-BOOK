@@ -1,1 +1,0 @@
-"""Reproducible bank reconciliation pipeline."""
