@@ -1,6 +1,8 @@
 """Evidence-driven batch matching. No labels are read and balances are never mutated."""
 from collections import defaultdict
 import csv
+import hashlib
+import json
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -22,6 +24,48 @@ def _days(a, b):
         return abs((date.fromisoformat(a) - date.fromisoformat(b)).days)
     except (ValueError, TypeError):
         return 99999
+
+def unique_small_subset(amounts, target, count, max_candidates=256, max_checks=100000):
+    """Prove a unique 2–4 member subset in integer cents; fail closed on budget.
+
+    Pair sums avoid exponential search for the small beneficiary groups explicitly
+    named in bank text. The bound is deterministic, independent of machine speed.
+    """
+    if count not in (2, 3, 4) or len(amounts) > max_candidates:
+        return None
+    pairs = defaultdict(list)
+    for i, amount in enumerate(amounts):
+        for j in range(i + 1, len(amounts)):
+            total = amount + amounts[j]
+            if total <= target:
+                pairs[total].append((i, j))
+    solutions = set()
+    checks = 0
+    if count == 2:
+        candidates = pairs.get(target, ())
+        return candidates[0] if len(candidates) == 1 else None
+    for i, amount in enumerate(amounts):
+        if count == 3:
+            complements = pairs.get(target - amount, ())
+            for j, k in complements:
+                checks += 1
+                if checks > max_checks:
+                    return None
+                if i < j:
+                    solutions.add((i, j, k))
+                    if len(solutions) > 1:
+                        return None
+        else:
+            for j in range(i + 1, len(amounts)):
+                for k, l in pairs.get(target - amount - amounts[j], ()):
+                    checks += 1
+                    if checks > max_checks:
+                        return None
+                    if j < k:
+                        solutions.add((i, j, k, l))
+                        if len(solutions) > 1:
+                            return None
+    return next(iter(solutions)) if len(solutions) == 1 else None
 
 class BatchMatcher:
     def __init__(self, ctx):
@@ -51,7 +95,12 @@ class BatchMatcher:
                     with path.open(encoding='utf-8-sig', newline='') as stream:
                         for row in csv.DictReader(stream):
                             # Snapshot directories may overlap (sample is a subset of TRAIN).
-                            unique = (folder, tuple(row.items()))
+                            # Retain a compact digest rather than a second full row
+                            # tuple for every historical detail. Preserve field order
+                            # exactly as the previous tuple(row.items()) identity did.
+                            unique = hashlib.sha256(json.dumps(
+                                [folder, list(row.items())], ensure_ascii=False,
+                                separators=(',', ':')).encode('utf-8')).digest()
                             if unique in seen:
                                 continue
                             seen.add(unique)
@@ -202,6 +251,56 @@ class BatchMatcher:
                 row['exception'] = 'FX_DIFFERENCE'
         return list(out.values())
 
+    def _confirming_subset(self, txn, text, candidate_ids):
+        """Recover a small, explicitly referenced multi-beneficiary debit.
+
+        Invoice due dates do not define confirming maturity. Use the bank's run
+        reference, beneficiary count and exact net cash instead. Never emit a
+        partial group, infer missing FX evidence, or reuse already settled items.
+        """
+        raw = ' '.join(str(txn.get(k, '')) for k in
+                       ('text', 'ref1', 'ref2', 'end_to_end_id', 'remittance_info'))
+        count_match = re.search(r'\b([2-4])\s+PROVEEDORES\b', raw.upper())
+        if money(txn['amount']) >= 0 or not count_match:
+            return None
+        count = int(count_match[1])
+        runs = defaultdict(list)
+        for idx in sorted(candidate_ids):
+            group = self.groups[idx]
+            if not group['confirming'] or not group['ref'] or group['ref'] not in text:
+                continue
+            if group['account'] != txn['account_id'] or _days(txn['booking_date'], group['date']) > 120:
+                continue
+            if group['currency'] == txn['currency']:
+                cash = abs(money(txn['amount']))
+            elif txn.get('orig_currency') == group['currency'] and txn.get('orig_amount'):
+                cash = abs(money(txn['orig_amount']))
+            else:
+                continue
+            if ZERO < group['amount'] <= cash:
+                runs[(group['ref'], group['account'], group['currency'], cash)].append(group)
+        # Multiple explicit run references are not grounds for choosing one.
+        if len(runs) != 1:
+            return None
+        key, groups = next(iter(runs.items()))
+        cash = key[-1]
+        amounts = [g['amount'] / CENT for g in groups]
+        if cash / CENT != (cash / CENT).to_integral_value() or any(a != a.to_integral_value() for a in amounts):
+            return None
+        subset = unique_small_subset([int(a) for a in amounts], int(cash / CENT), count)
+        if subset is None:
+            return None
+        selected = [groups[i] for i in subset]
+        parties = {norm(r.get('beneficiary', '')) for g in selected for r in g['rows']}
+        if '' in parties or len(parties) != count:
+            return None
+        rows = self._allocate({'kind': 'payment_runs', 'rows': [r for g in selected for r in g['rows']]}, txn)
+        if not rows or any(r['exception'] == 'DUPLICATE_PAYMENT' or
+                           money(r['amount']) > money(self.ctx.items[r['item_id']]['open_amount']) + CENT
+                           for r in rows):
+            return None
+        return rows
+
     def reconcile(self, txn):
         amount = money(txn['amount'])
         text = norm(' '.join(str(txn.get(k,'') or '') for k in
@@ -244,6 +343,9 @@ class BatchMatcher:
             result = self._allocate(self.groups[ranked[0][1]],txn,returned=ranked[0][2])
             if result:
                 return result
+        confirming = self._confirming_subset(txn, text, candidates)
+        if confirming:
+            return confirming
         # Only explicit return text activates reverse-direction receipt matching.
         if amount < 0 and any(word in text for word in ('DEVOL','RETURN','IMPAY','REJECT')):
             matches = []

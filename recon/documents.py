@@ -1,11 +1,24 @@
-"""Explicit remittance evidence. No labels are used and account state is not mutated."""
+"""Explicit remittance evidence. No labels are used and balances are not mutated.
+
+Advice caching is opt-in with ctx.document_cache_dir or RECON_DOCUMENT_CACHE_DIR.
+Keys include source content, parser version, metadata and PDF backend identity.
+Only successfully parsed evidence is cached, never matching decisions or balances.
+Corrupt/unreadable caches reparse; write failures retain the fresh parsed evidence.
+Workers use ctx.document_workers or RECON_DOCUMENT_WORKERS (1–32, default 8);
+submission windows cap pending parses at twice that count. This bounds concurrent
+work, not the total memory needed for retained parsed advices and invoice indexes.
+"""
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import csv
+import hashlib
+import json
+import os
+import tempfile
 import re
 import shutil
 import subprocess
@@ -13,6 +26,7 @@ import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
 
+ADVICE_CACHE_VERSION = 1
 CENT = Decimal('0.01')
 MONEY = r'-?\d[\d.,]*[.,]\d{2}'
 
@@ -145,6 +159,96 @@ def parse_advice(path, meta, pdf_tool=None):
         return None
     return Advice(ref, meta.get('entity', ''), meta.get('payer_name', ''), meta.get('received_date', ''), currency, lines, str(path), payment_date, short_refs)
 
+def _advice_payload(advice):
+    data = asdict(advice)
+    data.pop('source')  # Source is rebound to the current verified input path.
+    for line in data['lines']:
+        line['gross'], line['paid'] = str(line['gross']), str(line['paid'])
+    return data
+
+
+def _restore_advice(data, path):
+    if not isinstance(data, dict) or type(data.get('short_refs')) is not bool:
+        raise ValueError('Invalid advice cache object')
+    fields = ('reference', 'entity', 'payer', 'received', 'currency', 'payment_date')
+    if any(not isinstance(data.get(k), str) for k in fields):
+        raise ValueError('Invalid advice cache metadata')
+    if not isinstance(data.get('lines'), list) or not data['lines']:
+        raise ValueError('Empty or invalid cached advice lines')
+    lines = []
+    for line in data['lines']:
+        if not isinstance(line, dict) or any(not isinstance(line.get(k), str) for k in
+                                          ('number', 'gross', 'paid', 'reason', 'document_date')):
+            raise ValueError('Invalid advice line types')
+        gross, paid = Decimal(line['gross']), Decimal(line['paid'])
+        if not gross.is_finite() or not paid.is_finite():
+            raise ValueError('Non-finite advice amounts')
+        lines.append(Line(line['number'], gross, paid, line['reason'], line['document_date']))
+    return Advice(**{k: data[k] for k in fields}, lines=lines, source=str(path), short_refs=data['short_refs'])
+
+
+def cached_parse_advice(path, meta, pdf_tool, cache_dir, backend=''):
+    """Return (advice, cache outcome, write_failed); cache is only an optimization."""
+    if cache_dir is None or (path.suffix == '.pdf' and not pdf_tool):
+        return parse_advice(path, meta, pdf_tool), 'disabled', False
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    identity = json.dumps({'version': ADVICE_CACHE_VERSION, 'sha256': digest.hexdigest(),
+                           'format': path.suffix, 'backend': backend if path.suffix == '.pdf' else '',
+                           'metadata': {k: meta.get(k, '') for k in ('entity', 'payer_name', 'received_date')}},
+                          sort_keys=True, separators=(',', ':'))
+    key = hashlib.sha256(identity.encode()).hexdigest()
+    cache = Path(cache_dir) / (key + '.json')
+    status = 'miss'
+    try:
+        envelope = json.loads(cache.read_text(encoding='utf-8'))
+        data = envelope['advice']
+        payload = json.dumps(data, sort_keys=True, separators=(',', ':'))
+        if (envelope.get('identity') != identity or
+                envelope.get('payload_sha256') != hashlib.sha256(payload.encode()).hexdigest()):
+            raise ValueError('Advice cache identity or checksum mismatch')
+        return _restore_advice(data, path), 'hit', False
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, KeyError, TypeError, InvalidOperation):
+        status = 'corrupt'
+    advice = parse_advice(path, meta, pdf_tool)
+    if advice is None:
+        return None, status, False  # Unsupported/failed parsing is never cached as evidence.
+    temporary = None
+    try:
+        data = _advice_payload(advice)
+        payload = json.dumps(data, sort_keys=True, separators=(',', ':'))
+        envelope = {'identity': identity, 'advice': data,
+                    'payload_sha256': hashlib.sha256(payload.encode()).hexdigest()}
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=cache.parent,
+                                         prefix='.' + key, suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(envelope, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, cache)
+        return advice, status, False
+    except OSError:
+        return advice, status, True
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def document_workers(ctx):
+    value = getattr(ctx, 'document_workers', os.environ.get('RECON_DOCUMENT_WORKERS', '8'))
+    try:
+        return max(1, min(32, int(value)))
+    except (TypeError, ValueError):
+        return 8
+
 class DocumentMatcher:
     """Complete-group matching with exact advice reference or payer+cash evidence."""
     def __init__(self, ctx):
@@ -166,10 +270,21 @@ class DocumentMatcher:
                     self.payer_ids[(party.get('entity'), norm(party[key]))].add(pid)
         self._missing_numbers = set()
         tool = shutil.which('pdftotext')
+        workers = document_workers(ctx)
+        cache_dir = getattr(ctx, 'document_cache_dir', os.environ.get('RECON_DOCUMENT_CACHE_DIR')) or None
+        backend = str(tool or '')
+        if tool:
+            try:
+                stat = Path(tool).stat()
+                backend += f'|{stat.st_size}|{stat.st_mtime_ns}'
+            except OSError:
+                pass
         self.stats = {'pdf_tool_available': bool(tool), 'files_total': 0, 'parsed': 0,
                       'skipped_pdfs': 0, 'parse_errors': 0, 'unsupported_or_empty': 0, 'warnings': [], 'changed_layout_files': 0,
                       'changed_layout_rows': 0, 'short_reference_unresolved_rows': 0,
-                      'short_reference_ambiguous_rows': 0}
+                      'short_reference_ambiguous_rows': 0, 'workers': workers, 'max_in_flight': workers * 2,
+                      'cache_enabled': cache_dir is not None, 'cache_version': ADVICE_CACHE_VERSION,
+                      'cache_hits': 0, 'cache_misses': 0, 'cache_corruptions': 0, 'cache_write_errors': 0}
         if not index.exists():
             return
         with index.open(encoding='utf-8-sig') as f:
@@ -180,12 +295,22 @@ class DocumentMatcher:
             self.stats['warnings'].append(f"pdftotext unavailable: {self.stats['skipped_pdfs']} PDF remittance advices were skipped")
         def parse(meta):
             try:
-                return parse_advice(root / meta['file'], meta, tool)
+                advice, status, write_failed = cached_parse_advice(root / meta['file'], meta, tool, cache_dir, backend)
+                return advice, status, write_failed, None
             except (ValueError, KeyError, OSError, InvalidOperation, ET.ParseError, subprocess.SubprocessError, zipfile.BadZipFile) as exc:
-                self.errors.append((meta['file'], str(exc)))
-                return None
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            for advice in pool.map(parse, metadata):
+                return None, 'error', False, (meta['file'], str(exc))
+        def results(pool):
+            # executor.map eagerly submits inputs; bounded windows cap pending work.
+            for start in range(0, len(metadata), workers * 2):
+                yield from pool.map(parse, metadata[start:start + workers * 2])
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for advice, status, write_failed, error in results(pool):
+                if error:
+                    self.errors.append(error)
+                if status in ('hit', 'miss', 'corrupt'):
+                    self.stats[{'hit':'cache_hits', 'miss':'cache_misses', 'corrupt':'cache_corruptions'}[status]] += 1
+                if write_failed:
+                    self.stats['cache_write_errors'] += 1
                 if advice is None:
                     continue
                 self.advice_count += 1

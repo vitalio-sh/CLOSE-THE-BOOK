@@ -4,20 +4,26 @@ Attach ``ctx.pdf_facts = PdfFacts(ctx)``. ``get(iid)`` returns extracted hints;
 ``resolve(iid)`` returns a uniquely documented replacement or the original iid.
 Budget exhaustion returns no new evidence, never a guessed fact. Runtime is
 bounded by max_documents and a cumulative active-time budget; repeated reads
-use a disk cache. Time when this module is unused does not spend its budget.
+use a content-addressed, versioned disk cache with atomic writes and checksums.
+Corrupt entries reparse within the same budget. Time when this module is unused
+does not spend its budget. Cold/warm runs may discover different amounts of
+optional evidence within a wall-time budget; enabling this mode is not a claim
+of output determinism across cache states.
 """
 from collections import defaultdict
 from pathlib import Path
 import csv
 import hashlib
 import json
+import os
+import tempfile
 import re
 import shutil
 import subprocess
 import time
 import unicodedata
 
-VERSION = 1
+VERSION = 2
 NS_MONTHS = [
     ('JANUARY','ENERO','JANVIER','JANUAR'),('FEBRUARY','FEBRERO','FEVRIER','FEBRUAR'),
     ('MARCH','MARZO','MARS','MARZ'),('APRIL','ABRIL','AVRIL'),('MAY','MAYO','MAI'),
@@ -70,6 +76,43 @@ def extract_facts(text):
         result['new_iban'],result['old_iban']=change[1],change[2]
     return result
 
+def _content_digest(path):
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _facts_payload(result):
+    if not isinstance(result, dict) or any(not isinstance(k, str) or
+            not (isinstance(v, str) or (k == 'instalments_count' and type(v) is int))
+            for k, v in result.items()):
+        raise ValueError('Invalid cached PDF fact types')
+    return json.dumps(result, sort_keys=True, separators=(',', ':'))
+
+
+def _write_facts_cache(cache, identity, result):
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    payload = _facts_payload(result)
+    envelope = {'version': VERSION, 'identity': identity, 'facts': result,
+                'payload_sha256': hashlib.sha256(payload.encode()).hexdigest()}
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=cache.parent,
+                                         prefix='.' + cache.name, suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(envelope, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, cache)
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
 class PdfFacts:
     def __init__(self, ctx, *, enabled=True, max_documents=4000, max_party_documents=64,
                  timeout_seconds=3, max_seconds=30, cache_dir=None):
@@ -81,6 +124,13 @@ class PdfFacts:
         self.max_seconds=max(0.0,float(max_seconds))
         self._active_seconds=0.0
         self.tool=shutil.which('pdftotext') if enabled else None
+        self._backend = str(self.tool or '')
+        if self.tool:
+            try:
+                stat = Path(self.tool).stat()
+                self._backend += f'|{stat.st_size}|{stat.st_mtime_ns}'
+            except OSError:
+                pass
         self.cache_dir=Path(cache_dir) if cache_dir is not None else Path('outputs/pdf_facts_cache')
         self.by_item=defaultdict(list)
         self.by_party=defaultdict(list)
@@ -92,7 +142,8 @@ class PdfFacts:
                     'budget_skips':0,'time_budget_skips':0,'indexed':0,'active_seconds':0.0,
                     'max_seconds':self.max_seconds,'time_budget_exhausted':False,
                     'sources_with_facts':0,'replacement_links':0,'service_month_facts':0,
-                    'pdf_tool_available':bool(self.tool),'enabled':self.enabled}
+                    'pdf_tool_available':bool(self.tool),'enabled':self.enabled,
+                    'cache_corruptions':0,'cache_write_errors':0}
         if not self.enabled:return
         # Current phase first; exact duplicate historical paths are harmless.
         roots=[Path(ctx.phase_dir)]+[Path(x) for x in getattr(ctx,'history_dirs',[])]
@@ -134,30 +185,44 @@ class PdfFacts:
         def remaining():
             return self.max_seconds-self._active_seconds-(time.monotonic()-started)
         try:
-            stat=path.stat()
-            ident=f'{VERSION}|{path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}'
-            cache=self.cache_dir/(hashlib.sha256(ident.encode()).hexdigest()+'.json')
+            # Content identity catches edits even when size/mtime are preserved.
+            identity = f'{VERSION}|{self._backend}|{_content_digest(path)}'
+            cache = self.cache_dir / (hashlib.sha256(identity.encode()).hexdigest() + '.json')
             if remaining() <= 0:
-                self.stats['time_budget_skips']+=1
+                self.stats['time_budget_skips'] += 1
                 return {}
-            if cache.exists():
-                result=json.loads(cache.read_text())
-                self.stats['cache_hits']+=1
-            else:
-                if self.stats['extractions']>=self.max_documents:
-                    self.stats['budget_skips']+=1
+            result = None
+            try:
+                entry = json.loads(cache.read_text())
+                facts = entry['facts']
+                payload = _facts_payload(facts)
+                if (entry.get('version') != VERSION or entry.get('identity') != identity or
+                        entry.get('payload_sha256') != hashlib.sha256(payload.encode()).hexdigest()):
+                    raise ValueError('PDF cache identity or checksum mismatch')
+                result = facts
+                self.stats['cache_hits'] += 1
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError, KeyError, TypeError):
+                self.stats['cache_corruptions'] += 1
+            if result is None:
+                if self.stats['extractions'] >= self.max_documents:
+                    self.stats['budget_skips'] += 1
                     return {}
-                seconds_left=remaining()
+                seconds_left = remaining()
                 if seconds_left <= 0:
-                    self.stats['time_budget_skips']+=1
+                    self.stats['time_budget_skips'] += 1
                     return {}
-                self.stats['extractions']+=1
-                text=subprocess.run([self.tool,'-layout',str(path),'-'],capture_output=True,text=True,
-                                    timeout=min(self.timeout_seconds,seconds_left),check=True).stdout
-                result=extract_facts(text)
+                self.stats['extractions'] += 1
+                text = subprocess.run([self.tool, '-layout', str(path), '-'], capture_output=True, text=True,
+                                      timeout=min(self.timeout_seconds, seconds_left), check=True).stdout
+                result = extract_facts(text)
                 if remaining() > 0:
-                    self.cache_dir.mkdir(parents=True,exist_ok=True)
-                    cache.write_text(json.dumps(result,sort_keys=True))
+                    try:
+                        _write_facts_cache(cache, identity, result)
+                    except OSError:
+                        # A disposable cache failure must not discard parsed evidence.
+                        self.stats['cache_write_errors'] += 1
             if result:self.stats['sources_with_facts']+=1
             if result.get('service_month'):self.stats['service_month_facts']+=1
             result={**result,'source':str(path),'document_number':record.get('document_number','')}

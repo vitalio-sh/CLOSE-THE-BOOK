@@ -1,6 +1,5 @@
 """Run reconciliation and publish a validated, reproducible artifact bundle."""
 import argparse
-from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -12,9 +11,13 @@ import json
 import os
 from pathlib import Path
 import shutil
+import resource
+import sys
 import tempfile
 import time
 
+from .preflight import check_inputs, digest
+from .engine import build_handlers, execute
 from .context import Context, read_csv
 from .validate import FIELDS, validate, official_structure
 
@@ -81,8 +84,19 @@ def main(argv=None):
     start = time.monotonic()
     started_at = datetime.now(timezone.utc).isoformat()
     run_id = str(uuid4())
+    stage_start = start
+    timings = {}
+    def stage(name):
+        nonlocal stage_start
+        now = time.monotonic()
+        timings[name] = round(now - stage_start, 3)
+        stage_start = now
     initial_hashes = source_hashes()
+    enabled = a.modules.split(',')
+    input_preflight = check_inputs(a.data, a.phase, enabled)
+    stage('preflight')
     ctx = Context(a.data, a.phase)
+    stage('load_context')
     print(f'Loaded {len(ctx.items)} items in {time.monotonic()-start:.1f}s', flush=True)
     print('Master coverage: ' + json.dumps(ctx.master_coverage), flush=True)
     print('Opening coverage: ' + json.dumps(ctx.opening_coverage), flush=True)
@@ -90,32 +104,20 @@ def main(argv=None):
     if not txns:
         raise ValueError('Bank transaction input is missing or empty')
     txns.sort(key=lambda t: (t['booking_date'], t['bank_txn_id']))
+    stage('load_transactions')
     from .history import enrich_referenced_closed
     history_report = enrich_referenced_closed(ctx, txns)
+    stage('historical_references')
     print('Historical references: ' + json.dumps(history_report), flush=True)
     if a.pdf_facts:
         from .pdf_facts import PdfFacts
         ctx.pdf_facts = PdfFacts(ctx, max_documents=a.pdf_max_documents, max_seconds=a.pdf_budget_seconds)
-    enabled = a.modules.split(',')
-    handlers = []
-    document_stats = None
-    if 'batches' in enabled:
-        from .batches import BatchMatcher
-        handlers.append(('batches', BatchMatcher(ctx).reconcile))
-    if 'documents' in enabled:
-        from .documents import DocumentMatcher
-        document_matcher = DocumentMatcher(ctx)
-        document_stats = document_matcher.stats
+    handlers, document_stats = build_handlers(ctx, enabled)
+    stage('initialize_matchers')
+    if document_stats is not None:
         print('Document parsing: ' + json.dumps(document_stats), flush=True)
-        handlers.append(('documents', document_matcher.reconcile))
-    if 'matching' in enabled:
-        from .matching import reconcile, classify
-        handlers.append(('category', lambda t: classify(t, ctx)))
-        handlers.append(('matching', lambda t: reconcile(t, ctx)))
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    counts = Counter()
-    rejected = Counter()
     # Same parent guarantees the candidate and destination are on one filesystem.
     with tempfile.TemporaryDirectory(prefix=f'.{out.name}.', dir=out.parent) as staging:
         candidate = Path(staging) / out.name
@@ -123,41 +125,39 @@ def main(argv=None):
         with output_stream(candidate) as f, audit_path.open('w', encoding='utf-8') as audit:
             w = csv.DictWriter(f, fieldnames=FIELDS, lineterminator='\n')
             w.writeheader()
-            for i, txn in enumerate(txns):
-                rows = None
-                source = 'unidentified'
-                for name, handler in handlers:
-                    rows = handler(txn)
-                    if rows and not ctx.proposal_valid(txn, rows):
-                        rejected[name] += 1
-                        rows = None
-                    if rows:
-                        source = name
-                        break
-                if not rows:
-                    rows = [dict(zip(FIELDS, [txn['bank_txn_id'], '', '', 'UNIDENTIFIED', 'UNIDENTIFIED']))]
-                rows = [{k: str(r.get(k, '') or '') for k in FIELDS} for r in rows]
-                w.writerows(rows)
-                ctx.apply(txn, rows)
-                counts[source] += 1
-                audit.write(json.dumps({'bank_txn_id': txn['bank_txn_id'], 'module': source,
-                                        'items': [r['item_id'] for r in rows]}) + '\n')
-                if (i+1) % 1000 == 0:
-                    print(f'{i+1}/{len(txns)} {dict(counts)} elapsed={time.monotonic()-start:.1f}s', flush=True)
+            def progress(n, total, counts):
+                if n % 1000 == 0:
+                    print(f'{n}/{total} {dict(counts)} elapsed={time.monotonic()-start:.1f}s', flush=True)
+            counts, rejected = execute(ctx, txns, handlers, w, audit, progress)
+        stage('inference_and_output')
+        generation_seconds = round(time.monotonic() - start, 3)
+        validation = validate(candidate, ctx)
+        stage('independent_validation')
+        official = official_structure(candidate, ctx)
+        stage('official_validation')
+        input_root = Path(a.data).resolve()
+        changed_inputs = [name for name, info in input_preflight['tables'].items()
+                          if not (input_root / name).is_file() or digest(input_root / name) != info['sha256']]
+        stage('verify_checked_inputs')
         report = {
-            'phase': a.phase, 'started_at': started_at, 'run_id': run_id, 'enabled_modules': enabled, 'master_coverage': ctx.master_coverage, 'opening_coverage': ctx.opening_coverage,
+            'phase': a.phase, 'started_at': started_at, 'run_id': run_id, 'enabled_modules': enabled, 'input_preflight': input_preflight, 'master_coverage': ctx.master_coverage, 'opening_coverage': ctx.opening_coverage,
             'document_parsing': document_stats, 'historical_references': history_report,
             'pdf_facts': getattr(getattr(ctx, 'pdf_facts', None), 'stats', None),
             'modules': dict(counts), 'rejected_proposals': dict(rejected), 'source_hashes': initial_hashes,
-            'seconds': round(time.monotonic()-start, 2), 'validation': validate(candidate, ctx),
-            'official_structure': official_structure(candidate, ctx),
+            'seconds': generation_seconds, 'validation': validation,
+            'official_structure': official,
+            'timings_seconds': timings,
+            'seconds_through_validation': round(time.monotonic()-start, 3),
+            'peak_rss_bytes': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == 'darwin' else 1024),
+            'checked_inputs_changed': changed_inputs,
             'sha256': hashlib.sha256(candidate.read_bytes()).hexdigest(),
             'audit_sha256': hashlib.sha256(audit_path.read_bytes()).hexdigest(),
             'artifacts': {'submission': out.name, 'audit': out.name + '.audit.jsonl',
                           'report': out.name + '.report.json'},
         }
         report['source_changed_during_run'] = initial_hashes != source_hashes()
-        valid = report['validation']['ok'] and report['official_structure']['ok'] and not report['source_changed_during_run']
+        valid = (report['validation']['ok'] and report['official_structure']['ok']
+                 and not report['source_changed_during_run'] and not changed_inputs)
         report['publication'] = 'validated' if valid else 'rejected'
         report['finished_at'] = datetime.now(timezone.utc).isoformat()
         report_path = Path(str(candidate) + '.report.json')

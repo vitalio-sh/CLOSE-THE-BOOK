@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 import re
 import unicodedata
+from .subsets import unique_subset, subset_solutions
 
 D = Decimal
 CENT = D('0.01')
@@ -177,6 +178,77 @@ def classify(txn,ctx):
     if category is None and re.search(r'\b(?:DEVOLUCION PAGO DUPLICADO|ABONO PAGO DOBLE|DUPLICATE REFUND|REFUND DUPLICATE PAYMENT)\b',t):category='SUPPLIER_REFUND' if positive else 'CUSTOMER_REFUND'
     return [row(txn,category=category)] if category else None
 
+def _net_referenced(txn, invoices, credits, refs, ctx):
+    """An explicit invoice group, with uniquely evidenced deductions only.
+
+    Unmentioned credits must name a referenced invoice via related_document.
+    Discounts must use invoice terms; no arbitrary partial split is inferred.
+    """
+    if not invoices or len({i['party_id'] for i in invoices}) != 1:
+        return None
+    cash = abs(dec(txn['amount']))
+    gross = sum((dec(i['open_amount']) for i in invoices), D(0))
+    numbers = {norm(i['document_number']) for i in invoices}
+    explicit_credits = [c for c in credits if c['item_id'] in refs]
+    fixed = sum((dec(c['open_amount']) for c in explicit_credits), D(0))
+    deficit = gross - fixed - cash
+    if deficit < 0:
+        return None
+    deductions = []
+    for credit in credits:
+        if credit in explicit_credits:
+            continue
+        if norm(credit.get('related_document')) in numbers:
+            deductions.append((dec(credit['open_amount']), 'credit', credit))
+    for item in invoices:
+        total = dec(item.get('total_amount'))
+        term = getattr(ctx, 'payment_terms', {}).get(item.get('payment_terms'), {})
+        pct = dec(term.get('early_payment_discount_pct'))
+        if total == dec(item['open_amount']) and 0 < pct < 100:
+            discounted = (total * (1 - pct / 100)).quantize(CENT, rounding=ROUND_HALF_UP)
+            deductions.append((total-discounted, 'discount', item))
+    if deficit == 0:
+        selected = ()
+    else:
+        selected = unique_subset([int(d[0]*100) for d in deductions], int(deficit*100))
+        if selected is None:
+            return None
+    rows = {i['item_id']: row(txn, i['item_id'], i['open_amount']) for i in invoices + explicit_credits}
+    for index in selected:
+        amount, kind, item = deductions[index]
+        if kind == 'credit':
+            rows[item['item_id']] = row(txn, item['item_id'], item['open_amount'])
+        else:
+            exc, applied = _exception(item, dec(item['open_amount'])-amount, txn, ctx)
+            rows[item['item_id']] = row(txn, item['item_id'], applied, exc)
+    return [rows[key] for key in sorted(rows)]
+
+def _stated_service_month(raw, booking_date):
+    """Return the service-month upper bound and whether its year is explicit.
+
+    Policy 5.6: monthly fees are invoiced at the beginning of the following
+    month. A yearless month therefore must precede the booking month.
+    """
+    from .pdf_facts import MONTHS
+    match = re.search(r'(?:SERVICE|SERVICIOS?|MANT|MAINTENANCE|MES|MONTH)\s+(?:DE\s+)?([A-Z]+)(?:\s+(20\d{2}|\d{2})\b)?', words(raw))
+    if not match or match[1] not in MONTHS:
+        return None
+    month = MONTHS[match[1]]
+    try:
+        booked = date.fromisoformat(booking_date)
+        year = (int(match[2]) if len(match[2]) == 4 else 2000 + int(match[2])) if match[2] else booked.year - (month >= booked.month)
+        return f'{year:04d}-{month:02d}', bool(match[2])
+    except (TypeError, ValueError):
+        return None
+
+def _invoice_service_month(item):
+    try:
+        issued = date.fromisoformat(item['issue_date'])
+        prior = date(issued.year, issued.month, 1) - timedelta(days=1)
+        return prior.strftime('%Y-%m')
+    except (KeyError, ValueError, TypeError):
+        return None
+
 def reconcile(txn,ctx):
     if classify(txn,ctx):
         return None  # Allow runner to label this explicit non-item operation.
@@ -236,6 +308,12 @@ def reconcile(txn,ctx):
                         and dec(ctx.items[i].get('open_amount'))>0
                         and ctx.items[i].get('entity')==txn.get('entity')]
         net_refs=[i for i in net_candidates if i['item_id'] in refs]
+        anchored = [i for i in net_refs if i.get('kind') != 'credit']
+        anchored_parties = {i['party_id'] for i in anchored}
+        credits = [i for i in net_candidates if i.get('kind') == 'credit' and i['party_id'] in anchored_parties]
+        net_rows = _net_referenced(txn, anchored, credits, refs, ctx)
+        if net_rows is not None:
+            return net_rows
         if any(i.get('kind')=='credit' for i in net_refs):
             net=sum((dec(i['open_amount'])*(-1 if i.get('kind')=='credit' else 1) for i in net_refs),D(0))
             if abs(net-abs(dec(txn['amount'])))<=CENT:
@@ -279,16 +357,24 @@ def reconcile(txn,ctx):
             exact.append((item,cash,fx))
     if exact:
         if len({x[0].get('party_id') for x in exact})!=1:return None
-        # Service-month evidence overrides FIFO only when explicitly stated in bank text and PDF.
-        if pdf_facts is not None and len(exact)>1:
-            from .pdf_facts import MONTHS
-            w=words(raw)
-            month_match=re.search(r'(?:SERVICE|SERVICIOS?|MANT|MAINTENANCE|MES|MONTH)\s+(?:DE\s+)?([A-Z]+)\s+(20\d{2}|\d{2})\b',w)
-            if month_match and month_match[1] in MONTHS:
-                year=month_match[2] if len(month_match[2])==4 else '20'+month_match[2]
-                wanted=f'{year}-{MONTHS[month_match[1]]:02d}'
-                monthly=[x for x in exact if pdf_facts.get(x[0]['item_id']).get('service_month')==wanted]
-                if len(monthly)==1:exact=monthly
+        # Explicit service month outranks FIFO. PDF facts take precedence; the
+        # documented next-month invoicing rule works without enabling PDFs.
+        if len(exact)>1:
+            stated = _stated_service_month(raw, txn.get('booking_date'))
+            if stated:
+                wanted, explicit_year = stated
+                monthly = []
+                for candidate in exact:
+                    facts = pdf_facts.get(candidate[0]['item_id']) if pdf_facts is not None else {}
+                    service = facts.get('service_month') or _invoice_service_month(candidate[0])
+                    # Yearless text can mean an older unpaid month. Do not pick
+                    # the latest year if two years remain equally plausible.
+                    matches = service == wanted if explicit_year else bool(service and service[-2:] == wanted[-2:] and service <= wanted)
+                    if matches:
+                        monthly.append(candidate)
+                if len(monthly) != 1:
+                    return None
+                exact = monthly
         exact.sort(key=lambda x:(x[0].get('issue_date',''),x[0]['item_id']))
         item,cash,fx=exact[0]
         return [row(txn,item['item_id'],item['open_amount'],'FX_DIFFERENCE' if fx and item.get('kind')!='credit' else '')]
@@ -302,19 +388,21 @@ def reconcile(txn,ctx):
             byparty[item['party_id']].append(item)
     solutions=[]
     for party,group in byparty.items():
-        if len(group)>24:continue
-        amounts=defaultdict(list)
-        for idx,item in enumerate(group):amounts[dec(item['open_amount'])].append(idx)
-        for i,a in enumerate(group):
-            rest=cash-dec(a['open_amount'])
-            for j in amounts.get(rest,()):
-                if j>i:solutions.append((a,group[j]))
-            for j in range(i+1,len(group)):
-                rest2=rest-dec(group[j]['open_amount'])
-                for k in amounts.get(rest2,()):
-                    if k>j:solutions.append((a,group[j],group[k]))
-            if len(solutions)>1:break
-        if len(solutions)>1:break
+        group.sort(key=lambda i:i['item_id'])
+        found = subset_solutions([int(dec(i['open_amount'])*100) for i in group], int(cash*100), minimum=2)
+        if found is None:
+            continue
+        if len(found) > 1:
+            solutions.extend([None, None])
+            break
+        # A noisy printed number can collide with another customer's invoice;
+        # only this party's references constrain this party's subset.
+        anchors = {i['item_id'] for i in open_refs if i.get('party_id') == party}
+        # Large amount-only combinations can coincide with a net payment that
+        # included an omitted credit note. Demand at least two invoice anchors.
+        supported_size = found and (len(found[0]) <= 6 or len(anchors) >= 2)
+        if supported_size and anchors.issubset({group[i]['item_id'] for i in found[0]}):
+            solutions.append(tuple(group[i] for i in found[0]))
     if len(solutions)==1:
         return [row(txn,item['item_id'],item['open_amount']) for item in solutions[0]]
     explained=[]
