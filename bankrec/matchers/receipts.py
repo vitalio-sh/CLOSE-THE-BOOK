@@ -59,6 +59,9 @@ STOP = {
 FX_TOL = 0.03
 FUZZY_MAX = 3000  # fuzzy (prefix / typo) reference scan only over candidate sets up to this size
 OVERPAY_STRICT = False
+# POLICIES §3 OVERPAYMENT is an excess over ONE invoice; cash far above the item (March: every true case <= 1.33x,
+# 233 false ones > 1.5x) is a multi-invoice payment with a stray reference -> leave it to ar_multi / fallback
+OVERPAY_MAX_RATIO = 1.5
 WITHHOLD = (0.0125, 0.015, 0.10)
 SEPA = {
     "AT",
@@ -775,7 +778,7 @@ def match(ph, st):
                     # within FX tolerance it is a full clearing with FX difference
                     if abs(cash - st.open.get(iid, 0)) <= FX_TOL * st.open.get(iid, 0):
                         a, e = st.open.get(iid, 0), "FX_DIFFERENCE"
-                if e == "OVERPAYMENT" and OVERPAY_STRICT:
+                if e == "OVERPAYMENT" and (OVERPAY_STRICT or cash > OVERPAY_MAX_RATIO * st.open.get(iid, 0)):
                     # cash above the single referenced item and not explained by other open items: most often a
                     # multi-invoice payment with a stray reference -> do not claim here
                     pass

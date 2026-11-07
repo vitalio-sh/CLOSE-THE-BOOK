@@ -22,7 +22,7 @@ import polars as pl
 
 from ..ctx import bank_text
 from ..refs import norm, tokens
-from .receipts import Ctx, _INST, _single_exception
+from .receipts import OVERPAY_MAX_RATIO, Ctx, _INST, _single_exception
 
 RATIOS = (0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7)
 INST_N = (2, 3, 4, 6)
@@ -422,6 +422,8 @@ def _refs(cx, st, t, r, p, R, pool, target, lc, cents):
             if abs(c - target) <= 1:
                 return st.assign(t, [(i, a, e)])
         a, e = _single_exception(cx, st, i, amt, r, cx.cust.get(p))
+        if e == "OVERPAYMENT" and amt > OVERPAY_MAX_RATIO * st.open.get(i, 0):
+            return False  # multi-invoice payment with a stray reference, not an overpayment
         if e == "PARTIAL" and inst:
             e = "" if inst[0] == inst[1] else "PARTIAL"
         return st.assign(t, [(i, a, e)])
