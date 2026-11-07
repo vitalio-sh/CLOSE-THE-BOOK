@@ -23,8 +23,8 @@ TOL = 0.011
 LEGAL = {"PTY", "LTD", "GMBH", "CO", "KG", "SARL", "SAS", "BV", "INC", "LLC", "CORP", "SLU", "SONS", "LLP", "EURL",
          "SRL", "SPA", "SAU", "LDA", "UNIPESSOAL", "GROUP", "COMPANY", "LIMITED", "HOLDING", "AND", "THE"}
 PR_REF = re.compile(r"PR(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})")
-MAX_SUBSET_ITEMS = 8
-MAX_SUBSET_SIZE = 5
+MAX_SUBSET_ITEMS = 5
+MAX_SUBSET_SIZE = 3
 
 
 def _days_before(iso: str, days: int) -> str:
@@ -193,7 +193,7 @@ def ap_paid_by_holding(ph, st):
             continue
         target_c = round(-amt * 100)
         # invoices issued up to the payment date and within ~150 days before it
-        lo_date = _days_before(bd, 150)
+        lo_date = _days_before(bd, 90)
         hi = bisect_right(dates[ent_no], bd)
         lo = bisect_left(dates[ent_no], lo_date)
         per_party = defaultdict(list)
@@ -205,7 +205,8 @@ def ap_paid_by_holding(ph, st):
             if sum(c for _, c in avail) < target_c:
                 continue
             avail.sort(key=lambda x: info[x[0]]["issue_date"] or "")
-            avail = avail[-MAX_SUBSET_ITEMS:]
+            if len(avail) > MAX_SUBSET_ITEMS:
+                avail = avail[-MAX_SUBSET_ITEMS:]
             for sol in _subset_solutions(avail, target_c):
                 found.append((len(sol), min(info[i]["issue_date"] or "" for i in sol), party, sol))
         if not found:
@@ -220,7 +221,7 @@ def ap_paid_by_holding(ph, st):
 
 def match(ph, st):
     """Registered in matchers/__init__.py before nonitem (after receipts, so AR receipts keep priority)."""
-    for fn in (ap_direct_debits, ap_paid_by_holding, ap_supplier_refunds):
+    for fn in (ap_direct_debits, ap_supplier_refunds):
         try:
             fn(ph, st)
         except Exception as e:  # never crash the run

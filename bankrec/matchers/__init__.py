@@ -33,3 +33,6 @@ try:
     MATCHERS.insert(-1, ("payments", payments.match))
 except ImportError:
     pass
+# last: document numbers in the text that add up exactly to the cash, on lines nobody else claimed
+from . import docref
+MATCHERS.append(("docref", docref.match))

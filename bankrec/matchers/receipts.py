@@ -12,6 +12,7 @@ Steps per credit line:
 from __future__ import annotations
 
 import bisect
+import math
 import re
 from collections import defaultdict
 from datetime import date, timedelta
@@ -21,11 +22,13 @@ import polars as pl
 from ..ctx import bank_text, item_info
 from ..refs import keys_for, norm, tokens
 
-STOP = {"SL", "SA", "SAU", "SLU", "SAS", "SARL", "EURL", "GMBH", "CO", "KG", "EK", "AG", "LTD", "LLC", "INC", "SRL",
-        "SPA", "BV", "SP", "ZOO", "LDA", "DE", "DEL", "LA", "LOS", "LAS", "Y", "ET", "AND", "THE", "UND", "COOP",
-        "SCOOP", "CV", "RL", "SDE", "LIMITED", "PLC", "SPZOO", "TRANSFERENCIA", "SEPA", "PAYMENT", "PAGO", "FACTURA",
-        "FRA", "FRAS", "ORD", "RECHNUNG", "VIREMENT", "ABONO", "CREDIT", "ACH", "CCD", "TRANSFER", "INVOICE", "INV"}
+# bank-text noise (payment wording), not part of customer names. Legal forms (SPA, GMBH, COOP...) are kept: they
+# are part of names (e.g. "Spa Delta S.A.") and IDF weighting makes them cheap.
+STOP = {"TRANSFERENCIA", "SEPA", "PAYMENT", "PAGO", "FACTURA", "FRA", "FRAS", "ORD", "RECHNUNG", "VIREMENT", "ABONO",
+        "CREDIT", "ACH", "CCD", "TRANSFER", "INVOICE", "INV", "CONCEPTO", "ORDENANTE", "TRANSF", "EREF", "SVWZ",
+        "NOTPROVIDED", "NONREF", "REMI", "PENDIENTE", "MATERIAL", "INMEDIATA", "ECAGGEXX"}
 FX_TOL = 0.03
+OVERPAY_STRICT = False
 WITHHOLD = (0.0125, 0.015, 0.10)
 SEPA = {"AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", "FR", "GR", "HR", "HU", "IE", "IT", "LT", "LU",
         "LV", "MT", "NL", "PL", "PT", "RO", "SE", "SI", "SK", "GB", "CH", "NO", "IS", "LI", "MC", "SM", "AD", "VA"}
@@ -83,6 +86,20 @@ class Ctx:
             for w in ws:
                 self.inv[(ent, w)].add(cid)
         self.df = {k: len(v) for k, v in self.inv.items()}
+        # per entity: sorted words (prefix lookup for truncated names) and name variants as word lists
+        self.sorted_words = defaultdict(list)
+        for (ent, w) in self.inv:
+            self.sorted_words[ent].append(w)
+        for ent in self.sorted_words:
+            self.sorted_words[ent].sort()
+        self._wcache = {}
+        self._tot = {}
+        self.variants = defaultdict(list)
+        for cid, ns in names.items():
+            for n in ns:
+                ws = set(_words(n))
+                if ws:
+                    self.variants[cid].append(ws)
         # fx
         fx = ph.masters["fx_rates"]
         self.fx = defaultdict(list)
@@ -126,17 +143,82 @@ class Ctx:
             for cid in self.by_iban.get(ib, ()):
                 if cid not in out:
                     out.append(cid)
-        score = defaultdict(float)
-        for w in set(_words(txt)):
-            cs = self.inv.get((ent, w))
-            if cs and len(cs) <= 60:
-                for cid in cs:
-                    score[cid] += 1.0 / len(cs)
-        ranked = sorted(score.items(), key=lambda kv: -kv[1])
-        for cid, s in ranked[:6]:
-            if cid not in out and s >= 0.05:
+        self.last_score = {c: 2.0 for c in out}
+        for cid, sc in self._name_rank(txt, ent)[:8]:
+            if cid not in out:
                 out.append(cid)
+                self.last_score[cid] = sc
         return out
+
+    def _name_rank(self, txt: str, ent: str) -> list:
+        """Customers whose name (a variant) is covered by the words of the bank text.
+
+        A word of the text matches a name word when equal, or when the text word is a truncated prefix of it
+        (len >= 5). Coverage is IDF-weighted over the name words; a name is accepted with >= 60 % coverage and
+        either two covered words or one rare covered word (df <= 3). Returns [(cid, score)] best first.
+        """
+        ncust = max(1, len(self.cust))
+        arr = self.sorted_words.get(ent, [])
+        matched = set()
+        for t in set(_words(txt)):
+            if (ent, t) in self.inv:
+                matched.add(t)
+            if len(t) >= 5 and arr:
+                i = bisect.bisect_left(arr, t)
+                hit = []
+                while i < len(arr) and arr[i].startswith(t):
+                    hit.append(arr[i])
+                    i += 1
+                    if len(hit) > 30:
+                        break
+                if len(hit) <= 30:
+                    matched.update(hit)
+        if not matched:
+            return []
+        # retrieve candidates only through reasonably rare words (common words such as legal forms still count
+        # for coverage); keeps the scoring loop small on large customer masters
+        cand = set()
+        for lim in (400, 150, 40):
+            cand = set()
+            for w in matched:
+                cs = self.inv.get((ent, w), ())
+                if len(cs) <= lim:
+                    cand |= cs
+            if len(cand) <= 500:
+                break
+        if not cand or len(cand) > 800:
+            return []
+
+        wcache = self._wcache.setdefault(ent, {})
+
+        def wt(w):
+            v = wcache.get(w)
+            if v is None:
+                v = wcache[w] = math.log(1.0 + ncust / max(1, len(self.inv.get((ent, w), ()))))
+            return v
+
+        out = []
+        for cid in cand:
+            best = None
+            for k, v in enumerate(self.variants.get(cid, ())):
+                tk = (ent, cid, k)
+                tot = self._tot.get(tk)
+                if tot is None:
+                    tot = self._tot[tk] = sum(wt(w) for w in v)
+                cov = [w for w in v if w in matched and (ent, w) in self.inv]
+                if not cov or tot <= 0:
+                    continue
+                frac = sum(wt(w) for w in cov) / tot
+                rare = min(len(self.inv[(ent, w)]) for w in cov)
+                if frac < 0.6 or (len(cov) < 2 and rare > 3):
+                    continue
+                key = (round(frac, 4), sum(wt(w) for w in cov))
+                if best is None or key > best:
+                    best = key
+            if best is not None:
+                out.append((cid, best))
+        out.sort(key=lambda kv: (-kv[1][0], -kv[1][1]))
+        return [(cid, k[0]) for cid, k in out]
 
 
 def _open_items(cx, st, cids, types=("ARI", "ARC")):
@@ -148,7 +230,7 @@ def _open_items(cx, st, cids, types=("ARI", "ARC")):
     return out
 
 
-def _subset(values: list, target: int, max_n: int = 28):
+def _subset(values: list, target: int, max_n: int = 28, cap: int = 8000):
     """Indices of a subset of `values` (cents, may be negative) summing to target. FIFO prefix first, then DP."""
     acc = 0
     for i, v in enumerate(values):
@@ -170,7 +252,7 @@ def _subset(values: list, target: int, max_n: int = 28):
                 if ns == target:
                     return list(new[ns])
         reach.update(new)
-        if len(reach) > 40_000:
+        if len(reach) > cap:
             break
     return None
 
@@ -208,6 +290,57 @@ def _near(a: str, b: str) -> bool:
     if len(diff) == 1:
         return True
     return len(diff) == 2 and diff[1] == diff[0] + 1 and a[diff[0]] == b[diff[1]] and a[diff[1]] == b[diff[0]]
+
+
+_INST = re.compile(r"(?:RATE|PLAZO|CUOTA|VTO|VENC\w*|INSTALMENT|INSTALLMENT)\s*\.?\s*(\d{1,2})\s*/\s*(\d{1,2})")
+
+
+def _last_instalment(txt: str) -> bool:
+    """'RATE 3/3', 'PLAZO 2/2': the bank text names instalment k of n; k == n is the last one."""
+    for m in _INST.finditer((txt or "").upper()):
+        k, n = int(m.group(1)), int(m.group(2))
+        if n >= 2 and k == n:
+            return True
+    return False
+
+
+_MONTHS = {"ENERO": 1, "JANUARY": 1, "JAN": 1, "FEBRERO": 2, "FEBRUARY": 2, "FEB": 2, "MARZO": 3, "MARCH": 3,
+           "MAR": 3, "ABRIL": 4, "APRIL": 4, "APR": 4, "MAYO": 5, "MAY": 5, "JUNIO": 6, "JUNE": 6, "JUN": 6,
+           "JULIO": 7, "JULY": 7, "JUL": 7, "AGOSTO": 8, "AUGUST": 8, "AUG": 8, "SEPTIEMBRE": 9, "SEPTEMBER": 9,
+           "SEP": 9, "SEPT": 9, "OCTUBRE": 10, "OCTOBER": 10, "OCT": 10, "NOVIEMBRE": 11, "NOVEMBER": 11, "NOV": 11,
+           "DICIEMBRE": 12, "DECEMBER": 12, "DEZ": 12, "DIC": 12, "DEC": 12}
+_MONTH_RE = re.compile(r"\b(" + "|".join(sorted(_MONTHS, key=len, reverse=True)) + r")\b\.?\s*(\d{2,4})?")
+
+
+def _service_month(txt: str):
+    """(month, year or None) named in the bank text, e.g. 'SERVICIOS MAYO 2025', 'MANT. MAYO 25'.
+
+    Full month names are taken with or without year; 3-letter abbreviations only with a year ('MAR' is a company
+    word otherwise). Exactly one month must be named."""
+    up = (txt or "").upper()
+    found = []
+    for m in _MONTH_RE.finditer(up):
+        word = m.group(1)
+        y = m.group(2)
+        if len(word) <= 3 and not y:
+            continue
+        if y:
+            y = int(y) + (2000 if len(y) == 2 else 0)
+        found.append((_MONTHS[word], y))
+    return found[0] if len(found) == 1 else None
+
+
+def _service_match(cx, iid, sm) -> bool:
+    """POLICIES §5.6: a monthly fee is invoiced at the beginning of the month after the service month."""
+    issue = cx.info[iid]["issue_date"] or ""
+    if len(issue) < 7:
+        return False
+    y, m = int(issue[:4]), int(issue[5:7])
+    mon, yr = sm
+    if yr is None:
+        return m in (mon % 12 + 1, mon)
+    nxt = (yr + 1, 1) if mon == 12 else (yr, mon + 1)
+    return (y, m) in (nxt, (yr, mon))
 
 
 def _val(cx, st, iid, cur_acc, d):
@@ -265,7 +398,6 @@ def match(ph, st):
     cx = Ctx(ph)
     ph.extra["_receipts_ctx"] = cx
     rows = [r for r in ph.bank.filter(pl.col("amount") > 0).sort("booking_date").to_dicts()]
-    settled_once = defaultdict(int)
     for r in rows:
         t = r["bank_txn_id"]
         if st.claimed(t):
@@ -274,18 +406,24 @@ def match(ph, st):
         cur = r["currency"]
         d = r["booking_date"]
         amt = r["amount"]
+        txt = bank_text(r)
         cids = cx.payers(r, ent)
         if not cids:
             continue
-        # a parent may pay for its group: extend with the group of the best payer
-        best = cids[0]
-        grp = cx.cust.get(best, {}).get("group_id")
-        fam = list(cids[:3])
-        if grp:
-            fam += [c for c in cx.group[grp] if c not in fam]
-        cands = _open_items(cx, st, fam)
-        cands = [i for i in cands if cx.info[i]["entity"] == ent or cx.info[i]["currency"] != cur or True]
-        cands = [i for i in cands if (cx.info[i]["issue_date"] or "") <= d]
+        # payer tiers: best-scoring name matches (ties included, IBAN first) are primary, the rest secondary.
+        sc = cx.last_score
+        top = max(sc.get(c, 0.0) for c in cids)
+        primary = [c for c in cids if sc.get(c, 0.0) >= top - 0.02]
+        secondary = [c for c in cids if c not in primary]
+        # a parent may pay for its group: add the group of the best payer
+        grp = cx.cust.get(primary[0], {}).get("group_id")
+        group = [c for c in cx.group[grp] if c not in cids] if grp else []
+        fam_p = list(primary) + group
+        fam_a = fam_p + secondary
+        cands_p = [i for i in _open_items(cx, st, fam_p) if (cx.info[i]["issue_date"] or "") <= d]
+        cands = [i for i in _open_items(cx, st, fam_a) if (cx.info[i]["issue_date"] or "") <= d]
+        if not cands:
+            continue
         fx = any(cx.info[i]["currency"] != cur for i in cands)
         refs = _ref_items(cx, r, cands)
         target = round(amt * 100)
@@ -296,7 +434,7 @@ def match(ph, st):
         def close(a, b):
             return abs(a - b) <= max(1, (FX_TOL if fx else 0.0) * abs(b))
 
-        # 1. referenced items explain the cash (optionally with open credit notes of the payer)
+        # 1. referenced items explain the cash (plus open credit notes, or other open items of the payer)
         if refs:
             s = sum(cents(i) for i in refs)
             if close(s, target):
@@ -308,28 +446,52 @@ def match(ph, st):
                 if idx is not None:
                     _assign_set(cx, st, t, r, refs + [cns[k] for k in idx], False)
                     continue
+            if s < target and not fx:
+                # cash larger than the referenced items: the rest is paid for other open invoices of the payer
+                others = [i for i in cands_p if i not in refs]
+                if 0 < len(others) <= 60:
+                    idx = _subset([cents(i) for i in others], target - s, 28)
+                    if idx is not None:
+                        _assign_set(cx, st, t, r, refs + [others[k] for k in idx], False)
+                        continue
             if len(refs) == 1:
                 iid = refs[0]
                 ic = cx.info[iid]["currency"]
                 cash = amt if ic == cur else cx.convert(amt, cur, ic, d)
                 a, e = _single_exception(cx, st, iid, cash, r, cx.cust.get(cx.info[iid]["party_id"]))
+                if e == "PARTIAL" and _last_instalment(txt):
+                    e = ""  # POLICIES §3: the last instalment of a plan carries no exception
                 if ic != cur and e in ("", "SHORT_DISCOUNT", "SHORT_WITHHOLDING", "SHORT_BANK_CHARGES", "OVERPAYMENT"):
                     # within FX tolerance it is a full clearing with FX difference
                     if abs(cash - st.open.get(iid, 0)) <= FX_TOL * st.open.get(iid, 0):
                         a, e = st.open.get(iid, 0), "FX_DIFFERENCE"
-                st.assign(t, [(iid, a, e)])
-                continue
-        # 2. no usable reference: exact amount / subset of the payer's open items (FIFO order)
-        inv = [i for i in cands if cx.info[i]["item_type"] == "ARI"]
-        same = [i for i in inv if close(cents(i), target)]
-        if same:
-            _assign_set(cx, st, t, r, [same[0]], cx.info[same[0]]["currency"] != cur)
+                if e == "OVERPAYMENT" and OVERPAY_STRICT:
+                    # cash above the single referenced item and not explained by other open items: most often a
+                    # multi-invoice payment with a stray reference -> do not claim here
+                    pass
+                else:
+                    st.assign(t, [(iid, a, e)])
+                    continue
+        # 2. no usable reference: exact amount of one open invoice (primary payers first), else subset (FIFO first)
+        sm = _service_month(txt)
+        for pool in (cands_p, cands):
+            inv = [i for i in pool if cx.info[i]["item_type"] == "ARI"]
+            same = [i for i in inv if close(cents(i), target)]
+            if sm is not None and len(same) > 1:
+                # the text names the service month: pay the invoice of that month (issued the month after), if any
+                by_month = sorted([i for i in same if _service_match(cx, i, sm)],
+                                  key=lambda i: 0 if int(cx.info[i]["issue_date"][5:7]) == sm[0] % 12 + 1 else 1)
+                same = by_month or same
+            if same:
+                _assign_set(cx, st, t, r, [same[0]], cx.info[same[0]]["currency"] != cur)
+                break
+        if st.claimed(t):
             continue
-        vals = [cents(i) for i in cands]
-        if not fx and 1 < len(cands) <= 60:
+        if not fx and 1 < len(cands_p) <= 60:
+            vals = [cents(i) for i in cands_p]
             idx = _subset(vals, target)
             if idx is not None:
-                _assign_set(cx, st, t, r, [cands[k] for k in idx], False)
+                _assign_set(cx, st, t, r, [cands_p[k] for k in idx], False)
                 continue
         # 3. a referenced item that is already settled -> duplicate payment
         idx_all = [i for c in cids[:2] for i in cx.by_party.get(c, ()) if st.open.get(i, 0) <= 0.005
