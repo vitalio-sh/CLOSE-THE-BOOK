@@ -81,6 +81,9 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         # Collection agencies quoting the customer's file, name cut and invoice-number tail.
         from .third_party import reconcile_agency
         handlers.append(('agency_file', lambda txn: reconcile_agency(txn, ctx)))
+        # Last: same-named payers told apart by the single exact open amount (POLICIES 5.5, 5.6).
+        from . import namesakes
+        handlers.append(('namesakes', lambda txn: namesakes.reconcile(txn, ctx)))
     return handlers, document_stats
 
 
