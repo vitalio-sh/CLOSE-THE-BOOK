@@ -3,8 +3,9 @@ from collections import defaultdict
 import csv
 import hashlib
 import json
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
+from itertools import combinations
 from pathlib import Path
 from types import MappingProxyType
 import re
@@ -28,6 +29,32 @@ def _days(a, b):
         return abs((date.fromisoformat(a) - date.fromisoformat(b)).days)
     except (ValueError, TypeError):
         return 99999
+
+def _easter(year):
+    a, b, c = year % 19, year // 100, year % 100
+    d, e = divmod(b, 4)
+    g = (b - (b + 8) // 25 + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month, day = divmod(h + l - 7 * m + 114, 31)
+    return date(year, month, day + 1)
+
+def next_business_day(iso):
+    """Roll a calendar date to the next TARGET business day (POLICIES §2 FX note uses
+    TARGET days; bank statements carry no bookings on 1 Jan, Good Friday, Easter
+    Monday, 1 May, 25/26 Dec or weekends)."""
+    try:
+        day = date.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return ''
+    while True:
+        easter = _easter(day.year)
+        if (day.weekday() < 5 and (day.month, day.day) not in ((1, 1), (5, 1), (12, 25), (12, 26))
+                and day not in (easter - timedelta(days=2), easter + timedelta(days=1))):
+            return day.isoformat()
+        day += timedelta(days=1)
 
 def unique_small_subset(amounts, target, count, max_candidates=256, max_checks=100000):
     """Prove a unique 2–4 member subset in integer cents; fail closed on budget.
@@ -341,6 +368,84 @@ class BatchMatcher:
             return None
         return rows
 
+    def _confirming_by_maturity(self, txn, text, candidate_ids):
+        """POLICIES §5.3: a confirming debit clears the documents of its run.
+
+        The bank text names the run and how many beneficiaries it pays on this
+        date ('REMESA CF010024092529 9 PROVEEDORES'). TRAIN history: a confirming
+        run debits each beneficiary transfer on its maturity, the latest due date
+        of its invoices rolled to the next TARGET business day. The selection is
+        proven by the beneficiary count and the exact cash; otherwise abstain.
+        """
+        raw = ' '.join(str(txn.get(k, '') or '') for k in
+                       ('text', 'ref1', 'ref2', 'end_to_end_id', 'remittance_info')).upper()
+        count_match = re.search(r'\b(\d{1,3})\s+PROVEEDORES\b', raw)
+        amount = money(txn['amount'])
+        if amount >= 0 or not count_match or int(count_match[1]) < 1:
+            return None
+        count = int(count_match[1])
+        runs = defaultdict(list)
+        for idx in sorted(candidate_ids):
+            group = self.groups[idx]
+            if not group['confirming'] or not group['ref'] or group['ref'] not in text:
+                continue
+            if group['account'] != txn['account_id'] or group['currency'] != txn['currency']:
+                continue
+            if _days(txn['booking_date'], group['date']) > 120:
+                continue
+            runs[group['ref']].append(group)
+        if len(runs) != 1:
+            return None
+        due_today, overdue = [], []
+        for group in next(iter(runs.values())):
+            if group['amount'] <= ZERO:
+                continue
+            rows = self._allocate(group, txn)
+            # A transfer whose documents are already settled was debited earlier.
+            if not rows or any(r['exception'] == 'DUPLICATE_PAYMENT' or
+                               money(r['amount']) > self.ctx.items[r['item_id']]['open_amount'] + CENT
+                               for r in rows):
+                continue
+            dues = [self.ctx.items[r['item_id']].get('due_date', '') for r in rows
+                    if 'C' not in r['item_id'][:3]]
+            dues = [d for d in dues if d]
+            if not dues:
+                continue
+            maturity = next_business_day(max(dues))
+            if maturity == txn['booking_date']:
+                due_today.append((group, rows))
+            elif maturity and maturity < txn['booking_date']:
+                overdue.append((group, rows))
+        cash = abs(amount)
+        total = lambda selection: sum((group['amount'] for group, _ in selection), ZERO)
+        chosen = None
+        if len(due_today) == count:
+            if total(due_today) == cash:
+                chosen = due_today
+        elif len(due_today) > count:
+            # Some transfers maturing today belong to another debit: drop at most 3.
+            if len(due_today) - count <= 3:
+                surplus = total(due_today) - cash
+                drops = [set(id(g) for g, _ in drop)
+                         for drop in combinations(due_today, len(due_today) - count)
+                         if total(drop) == surplus]
+                if len(drops) == 1:
+                    chosen = [entry for entry in due_today if id(entry[0]) not in drops[0]]
+        elif count - len(due_today) <= 2:
+            # Overdue transfers are paid with the next debit of their run.
+            rest = cash - total(due_today)
+            adds = [list(add) for add in combinations(overdue, count - len(due_today))
+                    if total(add) == rest]
+            if len(adds) == 1:
+                chosen = due_today + adds[0]
+        if not chosen:
+            return None
+        beneficiaries = {norm(r.get('beneficiary', '')) for group, _ in chosen for r in group['rows']}
+        rows = [row for _, group_rows in chosen for row in group_rows]
+        if '' in beneficiaries or len(beneficiaries) != count or len({r['item_id'] for r in rows}) != len(rows):
+            return None
+        return rows
+
     def _mixed_currency_run(self, txn, text):
         from .batch_fx import mixed_run_cash_evidence, mixed_run_rows_valid, mixed_run_allocate, signature, run_reference_ids
         matches = []
@@ -416,7 +521,8 @@ class BatchMatcher:
                                     allow_partial=not ranked[0][2])
             if result:
                 return result
-        confirming = self._confirming_subset(txn, text, candidates)
+        confirming = (self._confirming_by_maturity(txn, text, candidates)
+                      or self._confirming_subset(txn, text, candidates))
         if confirming:
             return confirming
         # Only explicit return text activates reverse-direction receipt matching.

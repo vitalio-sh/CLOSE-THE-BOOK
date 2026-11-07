@@ -181,6 +181,51 @@ class BatchTests(unittest.TestCase):
         result=BatchMatcher(self.ctx).reconcile(self.txn('-290','CF12345678 2 PROVEEDORES'))
         self.assertEqual({r['item_id']:r['amount'] for r in result},{'API-1':'100.00','APC-1':'20.00','API-2':'210.00'})
 
+    def maturity_txn(self, amount, text, day='2025-05-12'):
+        txn=self.txn(amount,text); txn['booking_date']=day
+        return txn
+
+    def test_confirming_maturity_selects_transfers_due_today(self):
+        # Nine-beneficiary style debit: transfers mature on the booking date (weekend rolls to Monday).
+        self.confirming_groups([100, 210, 440, 900, 75])
+        for iid, due in [('API-0','2025-05-10'),('API-1','2025-05-11'),('API-2','2025-05-12'),('API-3','2025-05-09'),('API-4','2025-05-26')]:
+            self.ctx.items[iid]['due_date']=due; self.ctx.items[iid]['issue_date']='2025-03-01'
+        result=BatchMatcher(self.ctx).reconcile(self.maturity_txn('-750','PAGO CONFIRMING | REMESA CF12345678 3 PROVEEDORES'))
+        self.assertEqual({r['item_id'] for r in result},{'API-0','API-1','API-2'})
+        self.assertTrue(all(r['exception']=='' for r in result))
+
+    def test_confirming_maturity_drops_surplus_only_when_unique(self):
+        self.confirming_groups([100, 210, 440, 900])
+        for n in range(4):
+            self.ctx.items[f'API-{n}']['due_date']='2025-05-12'; self.ctx.items[f'API-{n}']['issue_date']='2025-03-01'
+        matcher=BatchMatcher(self.ctx)
+        result=matcher.reconcile(self.maturity_txn('-1550','REMESA CF12345678 3 PROVEEDORES'))
+        self.assertEqual({r['item_id'] for r in result},{'API-1','API-2','API-3'})
+        # Count mismatch or wrong cash abstains.
+        self.assertIsNone(matcher.reconcile(self.maturity_txn('-1549','REMESA CF12345678 3 PROVEEDORES')))
+
+    def test_confirming_maturity_adds_unique_overdue_transfer(self):
+        self.confirming_groups([100, 210, 440])
+        for iid, due in [('API-0','2025-05-12'),('API-1','2025-04-01'),('API-2','2025-05-30')]:
+            self.ctx.items[iid]['due_date']=due; self.ctx.items[iid]['issue_date']='2025-03-01'
+        result=BatchMatcher(self.ctx).reconcile(self.maturity_txn('-310','REMESA CF12345678 2 PROVEEDORES'))
+        self.assertEqual({r['item_id'] for r in result},{'API-0','API-1'})
+
+    def test_confirming_maturity_skips_settled_transfer(self):
+        self.confirming_groups([100, 210, 440])
+        for n in range(3):
+            self.ctx.items[f'API-{n}']['due_date']='2025-05-12'; self.ctx.items[f'API-{n}']['issue_date']='2025-03-01'
+        self.ctx.items['API-2']['open_amount']=D(0)
+        result=BatchMatcher(self.ctx).reconcile(self.maturity_txn('-310','REMESA CF12345678 2 PROVEEDORES'))
+        self.assertEqual({r['item_id'] for r in result},{'API-0','API-1'})
+
+    def test_next_business_day_target_calendar(self):
+        from recon.batches import next_business_day
+        self.assertEqual(next_business_day('2025-01-01'),'2025-01-02')
+        self.assertEqual(next_business_day('2024-10-05'),'2024-10-07')
+        self.assertEqual(next_business_day('2025-04-18'),'2025-04-22')
+        self.assertEqual(next_business_day('2025-12-25'),'2025-12-29')
+
     def test_unique_subset_three_four_and_budget(self):
         from recon.batches import unique_small_subset
         self.assertEqual(unique_small_subset([100,210,440,900],750,3),(0,1,2))
