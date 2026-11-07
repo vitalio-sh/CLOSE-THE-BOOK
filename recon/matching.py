@@ -104,13 +104,14 @@ def _short_name_candidates(txn, ctx, parties):
                     found |= local
     return found
 
-def party_candidates(txn,ctx):
+def party_candidates(txn,ctx,short_names=True):
     prefixes,ibans,aliases,children,parties = _index(ctx)
     raw = text_of(txn); compact=norm(raw)
     candidates=set()
     for i in range(max(0,len(compact)-9)):
         candidates.update(prefixes.get(compact[i:i+10],()))
-    candidates.update(_short_name_candidates(txn, ctx, parties))
+    if short_names:
+        candidates.update(_short_name_candidates(txn, ctx, parties))
     for token in re.findall('[A-Za-z0-9-]{8,}',raw):
         candidates.update(ibans.get(norm(token),()))
     acct=norm(txn.get('counterparty_account'))
