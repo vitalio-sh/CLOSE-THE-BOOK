@@ -148,6 +148,13 @@ class CreditGroupTests(unittest.TestCase):
         rows = reconcile_early(txn('442.20', 'Alice Water Works FRA. FV24-0418922'), context(items))
         self.assertEqual(set(ids(rows)), {'A', 'C'})
 
+    def test_early_leaves_an_exactly_paid_quoted_invoice_alone(self):
+        # The quoted invoice settles the cash; an equal-amount invoice/credit pair is not evidence.
+        from recon.credit_groups import reconcile_early
+        items = [invoice('A', 'INV24-0125399', '1251.36'), invoice('B', 'INV25-0001234', '1251.36'),
+                 credit('C', 'CN24-0001941', '1251.36', 'INV25-0001234')]
+        self.assertIsNone(reconcile_early(txn('1251.36', 'Alice Water Works INV# INV24-0125399'), context(items)))
+
     def test_early_skips_unanchored_subsets(self):
         from recon.credit_groups import reconcile_early
         items = [invoice('A', 'F1', '100'), invoice('B', 'F2', '200'), credit('C', 'AB1', '50', 'F2'),

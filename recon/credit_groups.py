@@ -385,6 +385,12 @@ def reconcile_early(txn, ctx):
             return None
         if sols:
             rank, ids = next(iter(sols))
+            # Quoted documents that already settle the cash exactly are an ordinary payment;
+            # an extra invoice/credit pair of equal amounts would be unexplained noise.
+            printed = [ctx.items[i] for i in quoted.get(rank, ())]
+            if printed and sum(_signed(i) for i in printed) == _cents(abs(D(txn['amount']))) \
+                    and set(ids) != {i['item_id'] for i in printed}:
+                return None
             chosen = {_normed(ctx, ctx.items[i], 'document_number') for i in ids}
             for iid in quoted.get(rank, ()):
                 if iid in ids:
