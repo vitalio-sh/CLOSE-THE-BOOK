@@ -218,6 +218,8 @@ class MatchingTests(unittest.TestCase):
         self.assertIsNone(reconcile(txn('150','Alice Water Works FV25-00001 FV25-00002'),context([a,b,cr])))
     def test_group_discount_policy_and_late_partial(self):
         a=invoice(payment_terms='D2');b=invoice('I2','FV25-00002','70')
+        # The discounted invoice is the older one of the group: no newest-invoice grace (TRAIN).
+        b['issue_date']='2025-01-02'
         c=context([a,b]);c.payment_terms={'D2':{'early_payment_discount_pct':'2','discount_days':'14'}}
         t=txn('168','Alice Water Works FV25-00001 FV25-00002')
         rows={r['item_id']:r for r in reconcile(t,c)}
