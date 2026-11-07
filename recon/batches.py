@@ -439,9 +439,14 @@ class BatchMatcher:
                             continue
                         result = self._allocate({'kind':kind,'rows':[detail]},txn,returned=True)
                         if result:
-                            matches.append((detail_date,result))
-            latest = max((d for d,_ in matches),default='')
-            unique = {tuple((r['item_id'],r['amount']) for r in m): m for d,m in matches if d == latest}
+                            batch = norm(detail.get('batch_id', detail.get('deposit_id', '')))
+                            matches.append((detail_date,result,len(batch) >= 8 and batch in text))
+            # A return quoting the original batch ('REM 02241004067') reverses a collection
+            # of that batch; otherwise the latest earlier collection is the returned one.
+            if any(named for _,_,named in matches):
+                matches = [m for m in matches if m[2]]
+            latest = max((d for d,_,_ in matches),default='')
+            unique = {tuple((r['item_id'],r['amount']) for r in m): m for d,m,_ in matches if d == latest}
             if len(unique) == 1:
                 return next(iter(unique.values()))
         return None
