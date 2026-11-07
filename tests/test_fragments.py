@@ -106,3 +106,35 @@ class FragmentPartialTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class FragmentAdjustedCompletionTests(unittest.TestCase):
+    def small_book(self):
+        items = [invoice('A', '1062400012', '1000'), invoice('B', '1062400027', '500'), invoice('C', '1062400031', '300'),
+                 invoice('E', '1062400044', '777.77'), invoice('G', '1062400058', '1234.56')]
+        for n, item in enumerate(items):
+            item['issue_date'] = f'2025-01-0{n + 1}'
+        return items
+
+    def test_withholding_completes_quoted_list(self):
+        # POLICIES 3 SHORT_WITHHOLDING: (A + B + unquoted C) x 0.90 = 1620.00, one reading only.
+        ctx = context(self.small_book())
+        ctx.customers['C1']['country'] = 'MX'
+        rows = fragment_partial(txn('1620.00', 'Alice Water Works FRA 1062400012 1062400027'), ctx)
+        self.assertEqual({(r['item_id'], r['amount'], r['exception']) for r in rows},
+                         {('A', '1000.00', 'SHORT_WITHHOLDING'), ('B', '500.00', 'SHORT_WITHHOLDING'),
+                          ('C', '300.00', 'SHORT_WITHHOLDING')})
+        # Outside MX/BR/MA the same cash is no withholding: the anchors stay a partial set.
+        ctx.customers['C1']['country'] = 'ES'
+        rows = fragment_partial(txn('1620.00', 'Alice Water Works FRA 1062400012 1062400027'), ctx)
+        self.assertEqual({(r['item_id'], r['exception']) for r in rows}, {('A', ''), ('B', '')})
+
+    def test_discount_completes_quoted_list(self):
+        # POLICIES 3 SHORT_DISCOUNT: A + B in full plus C net of 2 % (300 - 6.00) within the window.
+        items = self.small_book()
+        items[2].update(payment_terms='D2', issue_date='2025-01-10')
+        ctx = context(items)
+        ctx.payment_terms = {'D2': {'early_payment_discount_pct': '2', 'discount_days': '10'}}
+        rows = fragment_partial(txn('1794.00', 'Alice Water Works FRA 1062400012 1062400027'), ctx)
+        self.assertEqual({(r['item_id'], r['amount'], r['exception']) for r in rows},
+                         {('A', '1000.00', ''), ('B', '500.00', ''), ('C', '300.00', 'SHORT_DISCOUNT')})
