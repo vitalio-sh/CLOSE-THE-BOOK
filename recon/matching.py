@@ -1447,3 +1447,36 @@ def _unique_rest(rest, gap, booking):
     if not found or len(found) != 1:
         return None
     return [pool[k] for k in found[0]]
+
+
+SETTLEMENT_RE = re.compile(r'(?<![A-Z])(?:SETTLEMENT|REGULARIZACION)\s+([A-Z0-9/._-]*\d[A-Z0-9/._-]*)')
+CARD_WORDS = ('CARD', 'TARJETA', 'TPV', 'REMESA', 'COMERCIO', 'MERCHANT', 'ACQUIR', 'CARTE', 'KARTE')
+
+
+def dispute_settlement(txn, ctx):
+    """POLICIES 3 SHORT_DISPUTE: the disputed part stays open and may be paid later; that
+    later line has no exception. TRAIN: every 'SETTLEMENT <our number>' / 'REGULARIZACION
+    <our number>' receipt is such a line. When an earlier dispute was not recognised the
+    open balance is still larger than the cash, and ordinary matching would call the
+    settlement PARTIAL; the applied amount stays the cash."""
+    if dec(txn.get('amount')) <= 0:
+        return None
+    raw = text_of(txn)
+    tokens = SETTLEMENT_RE.findall(str(raw).upper())
+    if not tokens or any(w in words(raw) for w in CARD_WORDS):
+        return None
+    rows = reconcile(txn, ctx)
+    if not rows or len(rows) != 1 or rows[0].get('exception') != 'PARTIAL':
+        return None
+    item = ctx.items.get(rows[0]['item_id'])
+    if item is None or item.get('side') != 'AR' or item.get('kind') != 'invoice':
+        return None
+    number = norm(item.get('document_number'))
+    digits = re.sub(r'^[A-Z]+', '', number)
+    quoted = any(norm(t) == number or (len(digits) >= 6 and norm(t).endswith(digits)) for t in tokens)
+    if not quoted:
+        quoted = len(number) >= 7 and number in norm(raw) and any(len(norm(t)) >= 5 for t in tokens)
+    if not quoted:
+        return None
+    fx = item.get('currency') != txn.get('currency')
+    return [dict(rows[0], exception='FX_DIFFERENCE' if fx else '')]

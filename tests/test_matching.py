@@ -397,6 +397,21 @@ class MatchingTests(unittest.TestCase):
         # A number that merely collides with an unrelated customer's invoice does not scope its book.
         c=context(items);c.customers['C2']={'name':'Bob Pools Iberia','country':'ES'}
         self.assertNotIn('C',{r['item_id'] for r in reconcile(txn('229.45','Alice Water Works FRA FV25-00001 FV25-00002'),c) or []})
+    def test_dispute_settlement_pays_remainder_without_exception(self):
+        # POLICIES 3 SHORT_DISPUTE: the later payment of a disputed remainder has no exception,
+        # even when the earlier dispute was not recognised and the open balance is larger.
+        from recon.matching import dispute_settlement
+        c=context([invoice(amount='1000')])
+        r=dispute_settlement(txn('120','DIRECT CREDIT ALICE WATER WORKS SETTLEMENT FV25-00001'),c)
+        self.assertEqual((r[0]['item_id'],r[0]['amount'],r[0]['exception']),('I1','120.00',''))
+        r=dispute_settlement(txn('120','/NAME/ALICE WATER WORKS/REMI/REGULARIZACION FV25-00001/EREF'),c)
+        self.assertEqual(r[0]['exception'],'')
+        # Exact remainder: ordinary matching already says '' (no rewrite needed).
+        self.assertIsNone(dispute_settlement(txn('1000','ALICE WATER WORKS SETTLEMENT FV25-00001'),c))
+        # No settlement wording, card settlements, or an unquoted invoice: no change.
+        self.assertIsNone(dispute_settlement(txn('120','ALICE WATER WORKS PAGO FV25-00001'),c))
+        self.assertIsNone(dispute_settlement(txn('120','CARD SETTLEMENT 20250101 FV25-00001'),c))
+        self.assertIsNone(dispute_settlement(txn('120','ALICE WATER WORKS SETTLEMENT 2025'),c))
 if __name__=='__main__':unittest.main()
 
 
