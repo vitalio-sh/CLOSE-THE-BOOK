@@ -1181,6 +1181,13 @@ def _anchor_fill(txn, anchors, candidates, currency, cash, ctx=None, fx=False, d
         if extra is not None:
             discounted[extra[0]['item_id']] = extra[1:]
             fill = [extra[0]]
+    if not fill and discounted is not None:
+        from .adjusted import withheld_rest
+        held = withheld_rest(txn, ctx, anchors, rest, cash, fx)
+        if held is not None:
+            for item in anchors + held:
+                discounted[item['item_id']] = (item['open_amount'], 'FX_DIFFERENCE' if fx else 'SHORT_WITHHOLDING')
+            return sorted(anchors + held, key=lambda i: i['item_id'])
     return sorted(anchors + fill, key=lambda i: i['item_id']) if fill else None
 
 

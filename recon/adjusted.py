@@ -140,6 +140,42 @@ def discount_rest(txn, ctx, members, rest, gap, fx):
     return item, dec(item['open_amount']), 'FX_DIFFERENCE' if fx else 'SHORT_DISCOUNT'
 
 
+def withheld_rest(txn, ctx, anchors, rest, cash, fx, max_items=30):
+    """Anchored invoices plus a unique set of the payer's other invoices, all net of one withholding rate.
+
+    TRAIN (ar_short_withholding wrong sets): MX/BR/MA payers quote a cut invoice list and pay
+    every listed and unlisted invoice net of the same withholding rate (POLICIES 3). Returns the
+    extra invoices or None; the combination must be unique across rates and subsets.
+    """
+    from .subsets import positive_subsets
+    if ctx is None or not anchors or any(i.get('kind') == 'credit' for i in anchors):
+        return None
+    customer = getattr(ctx, 'customers', {}).get(anchors[0].get('party_id'), {})
+    if customer.get('country') not in WITHHOLDING_COUNTRIES:
+        return None
+    solutions = []
+    for rate in WITHHOLDING_RATES:
+        held = [withholding_value(i, ctx, rate) for i in anchors]
+        if any(v is None for v in held):
+            continue
+        gap = cash - sum(held, D(0))
+        if abs(gap) <= CENT:
+            solutions.append([])
+            continue
+        if gap < 0:
+            continue
+        pool = [(i, v) for i in rest if i.get('kind') != 'credit'
+                and (v := withholding_value(i, ctx, rate)) is not None and D(0) < v <= gap + CENT]
+        if not pool or len(pool) > max_items:
+            continue
+        found = positive_subsets([int(v * 100) for _, v in pool], int(gap * 100), maximum_items=max_items)
+        for ids in found or ():
+            solutions.append([pool[k][0] for k in ids])
+        if len(solutions) > 1:
+            return None
+    return solutions[0] if len(solutions) == 1 else None
+
+
 def explain_set(txn, ctx, invoices, credits=()):
     """Rows for exactly these invoices (and netted credits) when one adjustment pattern fits the cash.
 

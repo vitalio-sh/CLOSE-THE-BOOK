@@ -91,6 +91,21 @@ class DiscountedRestTests(unittest.TestCase):
         self.assertNotIn('SHORT_DISCOUNT', {r['exception'] for r in rows})
 
 
+class WithheldRestTests(unittest.TestCase):
+    def test_anchors_and_rest_all_net_of_one_rate(self):
+        from recon.adjusted import withheld_rest
+        a = invoice('A', 'F1', '1000'); b = invoice('B', 'F2', '500'); c = invoice('C', 'F3', '333.33')
+        cx = ctx([a, b, c], 'BR')
+        # 10 %: 900.00 + 450.00 = 1350.00 (C not paid)
+        self.assertEqual([i['item_id'] for i in withheld_rest(txn('1350'), cx, [a], [b, c], D('1350'), False)], ['B'])
+
+    def test_non_withholding_country_or_ambiguous_abstains(self):
+        from recon.adjusted import withheld_rest
+        a = invoice('A', 'F1', '1000'); b = invoice('B', 'F2', '500'); c = invoice('C', 'F3', '500')
+        self.assertIsNone(withheld_rest(txn('1350'), ctx([a, b], 'ES'), [a], [b], D('1350'), False))
+        self.assertIsNone(withheld_rest(txn('1350'), ctx([a, b, c], 'BR'), [a], [b, c], D('1350'), False))
+
+
 class QuotedSetTests(unittest.TestCase):
     def test_quoted_fx_invoices_sum_to_original_amount(self):
         items = [invoice('A', 'FV25-00001', '60'), invoice('B', 'FV25-00002', '40'), invoice('C', 'FV25-00003', '17')]
