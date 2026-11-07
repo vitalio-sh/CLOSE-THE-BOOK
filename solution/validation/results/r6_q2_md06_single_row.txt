@@ -1,0 +1,7 @@
+MD06 returns: 159
+golden batch not found: 12
+golden collection in single-row batch: 0
+bug trigger (single-row same-total batch 0-3d before, same account): 0
+solver wrong (all MD06): 28
+solver wrong & golden single-row: 0
+solver wrong & bug trigger: 0

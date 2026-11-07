@@ -14,7 +14,7 @@ Strict PDF flags (from `scripts/lead_release.sh`): `--pdf-facts --require-pdf-co
 | r6, sample, strict PDF | `data/raw/docs` (no train/) | 86.23 | 94 s | 0.37 GB |
 | r6, sample, strict PDF | masters + train/ + sample/ (like data/workspace) | **87.52** | 96 s | 4.18 GB |
 | r6, Q2-2025 holdout, **no PDF** | `make_holdout.py` root, `--phase live` | **89.14** | 9.3 min | 5.27 GB |
-| r6, Q2-2025 holdout, strict PDF | same | see section 4 | | |
+| r6, Q2-2025 holdout, strict PDF | same | stopped (superseded by r9) | | |
 
 For reference on the same holdout: Vitalii 270d8cd 77.22; 270d8cd + Luke's ed79e69 graft 78.16.
 Team-reported SAMPLE 89.59 is not reproduced here (87.52 at best); unexplained, candidates: PDF text extraction
@@ -58,6 +58,11 @@ Team-reported SAMPLE 89.59 is not reproduced here (87.52 at best); unexplained, 
 - **FAIL**: MD06 with **single-collection batches** reverses the collection of 3 days ago: the reverse batch-total
   match (3-day window, `ranked` path in `BatchMatcher.reconcile`) runs before the MD06 21-day rule. Not observed in
   the Q2 holdout (no wrong pick younger than 21 days), so low impact; a precedence bug nonetheless.
+  Fixed in the team DD lane (dcb125e).
+- Value of the fix on the Q2 holdout (`md06_single_row.py`, data only): **0 of 159 MD06 returns** hit a single-row
+  batch; in fact **no direct-debit batch has a single row** (train 11,725 + window 780 batches, all multi-row), and no
+  single-row same-total batch exists 0-3 days before any MD06 return. r6 (pre-dcb125e) wrong/abstained on MD06: 28,
+  of which 0 due to this bug. Expected score impact on data shaped like TRAIN/LIVE: none (robustness only).
 
 ## 4. Replaced invoices (`ar_replaced_invoice`)
 
@@ -65,11 +70,12 @@ Team-reported SAMPLE 89.59 is not reproduced here (87.52 at best); unexplained, 
 |---|---|
 | sample, r6 strict PDF | **12 / 12** (270d8cd without PDF: 10 / 12) |
 | Q2 holdout, r6 no PDF | 12 / 130 |
-| Q2 holdout, r6 strict PDF | pending (run started 16:00) |
+| Q2 holdout, r6 strict PDF | not measured: run stopped at 16:20, superseded by review/team-integ-r9 (65d71aa) |
 
 ## Reproduce
 ```
 python solution/validation/dd_returns_report.py --data outputs/q2root --phase live --sub outputs/runs/r6_q2.csv.gz
 python solution/validation/md06_window.py outputs/q2root
+python solution/validation/md06_single_row.py outputs/q2root outputs/runs/r6_q2.csv.gz
 R6_ROOT=outputs/worktrees/r6 python -m unittest solution/validation/test_r6_dd_returns.py -v
 ```
