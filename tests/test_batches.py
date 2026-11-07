@@ -351,6 +351,19 @@ class BatchTests(unittest.TestCase):
         self.ctx.history['API-1'].append(dict(bank_txn_id='BT5',item_id='API-1',amount='6627.11',exception='RETURNED',booking_date='2025-05-25',account_id='ES01-A'))
         self.assertIsNone(BatchMatcher(self.ctx).reconcile(txn))
 
+    def test_single_factor_row_prefers_the_open_document_over_settled_namesakes(self):
+        # 'FV-24-0061' was printed by three MX01 suppliers; two of those documents are settled.
+        self.item('API-1','FV-24-0061','20190.30',party='S1'); self.item('API-2','FV-24-0061','19440.94',party='S2')
+        self.item('API-3','FV-24-0061','51002.52',party='S3')
+        for iid in ('API-2','API-3'): self.ctx.items[iid].update(open_amount=D(0),historical_closed=True)
+        base=dict(run_id='PR010024101009',run_type='transfers',execution_date='2025-06-01',debtor_account_id='ES01-A',end_to_end_id='PR010024101009-0001',beneficiary='Credifacil Comercial EFC',beneficiary_iban='',currency='EUR',transfer_amount='6057.09',document_type='INVOICE',remittance_info='')
+        self.rows('payment_runs',[dict(base,document_number='FV-24-0061',document_amount='6057.09')])
+        result=BatchMatcher(self.ctx).reconcile(self.txn('-6057.09','SPEI ENVIADO CREDIFACIL COMERCIAL EFC CONCEPTO FRA FV-24-0061'))
+        self.assertEqual([(r['item_id'],r['amount'],r['exception']) for r in result],[('API-1','6057.09','PARTIAL')])
+        # Two open namesakes that both cover the row stay ambiguous.
+        self.ctx.items['API-2'].update(open_amount=D('19440.94'),historical_closed=False)
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(self.txn('-6057.09','SPEI ENVIADO CREDIFACIL COMERCIAL EFC CONCEPTO FRA FV-24-0061')))
+
     def test_factor_transfer_partial_row_resolved_within_supplier(self):
         # Factor-named transfer: INV0003340 is printed by two suppliers and paid partially.
         self.item('API-1','INV0003366','4404.19',party='S1'); self.item('API-2','INV0003340','3000.00',party='S1')

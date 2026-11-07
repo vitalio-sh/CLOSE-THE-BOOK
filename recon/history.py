@@ -253,8 +253,8 @@ def _repeated_transfer_references(ctx, phase_dir, first_date, txns, refs):
     the documents it settled. The debit quotes the run ID cut after the dash; within
     that run and paying account, the single transfer of exactly the debited amount is
     the repeated one. When it was made before the phase, its documents are closed and
-    absent from the opening snapshot; restore their identities at zero balance.
-    Numbers open in the snapshot are left alone.
+    absent from the opening snapshot; restore their identities at zero balance (the
+    same number may be printed by other suppliers' open documents).
     """
     wanted = {}
     for txn in txns:
@@ -284,7 +284,8 @@ def _repeated_transfer_references(ctx, phase_dir, first_date, txns, refs):
             seen.add(path.name)
             entity = path.name.split('_')[0]
             for row in read_csv(path):
-                if row.get('run_type') != 'transfers':
+                # Documents of a transfer executed in the phase are in the opening snapshot.
+                if row.get('run_type') != 'transfers' or row.get('execution_date', '') >= first_date:
                     continue
                 try:
                     cash = Decimal(row.get('transfer_amount') or '0')
@@ -299,7 +300,7 @@ def _repeated_transfer_references(ctx, phase_dir, first_date, txns, refs):
         if len(transfers) != 1:
             continue
         for entity, token in next(iter(transfers.values())):
-            if token and not ctx.by_number.get(token) and entity not in refs[token]:
+            if token and entity not in refs[token]:
                 refs[token].add(entity)
                 added += 1
     return added

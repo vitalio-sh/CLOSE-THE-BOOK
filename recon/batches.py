@@ -299,6 +299,13 @@ class BatchMatcher:
             return None
         if len(candidates)>1 and candidates[0][0] == candidates[1][0]:
             tied = [v for v in candidates if v[0] == candidates[0][0]]
+            if kind == 'payment_runs' and not require_exact:
+                # A printed number reused across years: settled (zero-balance) documents
+                # cannot take a partial transfer row; the single tied document whose open
+                # balance covers the row is the one paid (factor transfers, POLICIES 5.3).
+                able = [v for v in tied if remaining[v[1]] >= amount - CENT]
+                if len(able) == 1 and all(remaining[v[1]] <= ZERO for v in tied if v is not able[0]):
+                    return able[0][2]
             # Documented FIFO applies only within the same known payer and exact amount.
             if len({v[2].get('party_id') for v in tied}) != 1 or not known_parties:
                 return None
