@@ -1,0 +1,337 @@
+{
+  "start": "2024-10-01",
+  "end": "2024-10-31",
+  "assumption": "Oracle bank-allocation history strictly before window; not pure end-to-end holdout. Non-bank cancellations not reconstructed.",
+  "target_labels_used_only_after_predictions": true,
+  "future_invoice_cutoff": "2024-10-31",
+  "advice_received_cutoff": "2024-10-31",
+  "input_items": 4645699,
+  "prior_allocations": 4185782,
+  "transactions": 32859,
+  "modules": {
+    "matching": 15664,
+    "batches": 9631,
+    "category": 2354,
+    "unidentified": 4261,
+    "documents": 949
+  },
+  "seconds_total": 112.93,
+  "seconds_inference": 50.69,
+  "max_rss_bytes_macos": 15762505728,
+  "validation": {
+    "ok": true,
+    "rows": 89632,
+    "transactions": 32859,
+    "covered": 32859,
+    "missing": 0,
+    "uncompressed_bytes": 3878561,
+    "errors": []
+  },
+  "score": {
+    "ok": true,
+    "errors": [],
+    "score": 79.23,
+    "metrics": {
+      "allocation_f1": 0.841046,
+      "precision": 0.989556,
+      "recall": 0.731295,
+      "txn_accuracy": 0.870294,
+      "exception_macro_f1": 0.5532,
+      "amount_weighted_accuracy": 0.737577,
+      "rows": 89632,
+      "txns_covered": 32859,
+      "txns_total": 32859
+    },
+    "segments": {
+      "ap_confirming": {
+        "n": 146,
+        "accuracy": 0.315068
+      },
+      "ap_credit_note_netted": {
+        "n": 427,
+        "accuracy": 0.960187
+      },
+      "ap_direct_debit": {
+        "n": 934,
+        "accuracy": 0.989293
+      },
+      "ap_duplicate_payment": {
+        "n": 13,
+        "accuracy": 0.692308
+      },
+      "ap_duplicate_refund": {
+        "n": 8,
+        "accuracy": 1.0
+      },
+      "ap_factored": {
+        "n": 232,
+        "accuracy": 0.913793
+      },
+      "ap_fx": {
+        "n": 200,
+        "accuracy": 0.945
+      },
+      "ap_paid_by_holding": {
+        "n": 1272,
+        "accuracy": 0.998428
+      },
+      "ap_partial": {
+        "n": 415,
+        "accuracy": 0.93012
+      },
+      "ap_payment_multi": {
+        "n": 3596,
+        "accuracy": 0.935762
+      },
+      "ap_payment_single": {
+        "n": 3045,
+        "accuracy": 0.965517
+      },
+      "ap_returned_transfer": {
+        "n": 34,
+        "accuracy": 0.882353
+      },
+      "ap_supplier_refund": {
+        "n": 348,
+        "accuracy": 0.813218
+      },
+      "ar_1to1": {
+        "n": 3056,
+        "accuracy": 0.996073
+      },
+      "ar_1to1_remittance": {
+        "n": 5,
+        "accuracy": 1.0
+      },
+      "ar_1toN_credit_note": {
+        "n": 467,
+        "accuracy": 0.368308
+      },
+      "ar_1toN_remittance": {
+        "n": 208,
+        "accuracy": 0.899038
+      },
+      "ar_1toN_text": {
+        "n": 1031,
+        "accuracy": 0.820563
+      },
+      "ar_advance_deduction": {
+        "n": 50,
+        "accuracy": 0.44
+      },
+      "ar_card_chargeback": {
+        "n": 7,
+        "accuracy": 0.285714
+      },
+      "ar_card_settlement": {
+        "n": 223,
+        "accuracy": 1.0
+      },
+      "ar_cheque_deposit": {
+        "n": 347,
+        "accuracy": 1.0
+      },
+      "ar_cheque_returned": {
+        "n": 15,
+        "accuracy": 1.0
+      },
+      "ar_credit_note_paid_out": {
+        "n": 12,
+        "accuracy": 1.0
+      },
+      "ar_dd_batch": {
+        "n": 270,
+        "accuracy": 0.844444
+      },
+      "ar_dd_represented_transfer": {
+        "n": 141,
+        "accuracy": 0.687943
+      },
+      "ar_dd_returned": {
+        "n": 584,
+        "accuracy": 0.662671
+      },
+      "ar_discount_late": {
+        "n": 122,
+        "accuracy": 0.213115
+      },
+      "ar_dispute_settlement": {
+        "n": 190,
+        "accuracy": 1.0
+      },
+      "ar_duplicate_payment": {
+        "n": 98,
+        "accuracy": 0.969388
+      },
+      "ar_fx": {
+        "n": 121,
+        "accuracy": 0.446281
+      },
+      "ar_instalment": {
+        "n": 740,
+        "accuracy": 0.785135
+      },
+      "ar_n_to_m": {
+        "n": 307,
+        "accuracy": 0.358306
+      },
+      "ar_new_iban": {
+        "n": 33,
+        "accuracy": 0.878788
+      },
+      "ar_overpayment": {
+        "n": 55,
+        "accuracy": 0.509091
+      },
+      "ar_partial": {
+        "n": 589,
+        "accuracy": 0.852292
+      },
+      "ar_ref_noise": {
+        "n": 6660,
+        "accuracy": 0.810961
+      },
+      "ar_replaced_invoice": {
+        "n": 34,
+        "accuracy": 0.088235
+      },
+      "ar_retention": {
+        "n": 146,
+        "accuracy": 0.493151
+      },
+      "ar_retention_release": {
+        "n": 101,
+        "accuracy": 0.970297
+      },
+      "ar_same_amount_fifo": {
+        "n": 1063,
+        "accuracy": 0.917215
+      },
+      "ar_same_amount_month": {
+        "n": 773,
+        "accuracy": 0.648124
+      },
+      "ar_short_bank_charges": {
+        "n": 27,
+        "accuracy": 0.0
+      },
+      "ar_short_discount": {
+        "n": 932,
+        "accuracy": 0.89485
+      },
+      "ar_short_dispute": {
+        "n": 177,
+        "accuracy": 0.751412
+      },
+      "ar_short_withholding": {
+        "n": 203,
+        "accuracy": 0.817734
+      },
+      "ar_third_party_agency": {
+        "n": 54,
+        "accuracy": 0.462963
+      },
+      "ar_third_party_confirming": {
+        "n": 111,
+        "accuracy": 0.837838
+      },
+      "ar_third_party_parent": {
+        "n": 30,
+        "accuracy": 0.833333
+      },
+      "customer_advance": {
+        "n": 35,
+        "accuracy": 1.0
+      },
+      "customer_refund": {
+        "n": 49,
+        "accuracy": 0.959184
+      },
+      "nonitem_bank_fees": {
+        "n": 1186,
+        "accuracy": 0.990725
+      },
+      "nonitem_bank_fees_intl": {
+        "n": 508,
+        "accuracy": 0.998031
+      },
+      "nonitem_bank_reversal": {
+        "n": 57,
+        "accuracy": 0.508772
+      },
+      "nonitem_card_expenses": {
+        "n": 14,
+        "accuracy": 1.0
+      },
+      "nonitem_cash_pool": {
+        "n": 278,
+        "accuracy": 0.5
+      },
+      "nonitem_fx_deal": {
+        "n": 35,
+        "accuracy": 0.628571
+      },
+      "nonitem_insurance": {
+        "n": 15,
+        "accuracy": 0.666667
+      },
+      "nonitem_intercompany": {
+        "n": 59,
+        "accuracy": 0.983051
+      },
+      "nonitem_internal_transfer": {
+        "n": 34,
+        "accuracy": 1.0
+      },
+      "nonitem_leasing": {
+        "n": 59,
+        "accuracy": 1.0
+      },
+      "nonitem_loan_drawdown": {
+        "n": 1,
+        "accuracy": 0.0
+      },
+      "nonitem_loan_repayment": {
+        "n": 18,
+        "accuracy": 1.0
+      },
+      "nonitem_payroll": {
+        "n": 81,
+        "accuracy": 1.0
+      },
+      "nonitem_social_security": {
+        "n": 17,
+        "accuracy": 0.882353
+      },
+      "nonitem_tax_payment": {
+        "n": 21,
+        "accuracy": 0.714286
+      },
+      "unidentified": {
+        "n": 508,
+        "accuracy": 0.998031
+      },
+      "unidentified_lookalike": {
+        "n": 232,
+        "accuracy": 1.0
+      }
+    }
+  },
+  "source_hashes": {
+    "recon/__init__.py": "a523c28ee4d9ac6faeca15c47d9844631a6d178caf884d96e3878fd3ee373875",
+    "recon/batches.py": "1dfa44d0ea4bb8a42512d4ccbba0a2852345822a282cadbbec551bd2821ac2ea",
+    "recon/context.py": "34c545faf58fff605439301459716e065c34c410e09fe19ba89a777820727ead",
+    "recon/documents.py": "48a3a8fd4684c07c0f2f54d84323d64fa9d3097b391c91429822ad1a83d75c5c",
+    "recon/matching.py": "c7a1395b7311897d8e23bba090daba5b67964a121745737455300c24e8127bd7",
+    "recon/pdf_facts.py": "27bdd2c6b8eb36bae30c5ea0b0b584b7af318e7f17082550f938a13108473890",
+    "recon/run.py": "b1855f72d195c477ebd3835dc7c0adf9f4c07ffc5ce58c38e64ddf7665cf4953",
+    "recon/validate.py": "abb7c018fecfebd3dafc98bf7836e3ca1554b23feea69058eb073c310283c2d6",
+    "vendor/starter/bankrec_score.py": "1cc74ec1cda3aac6351bf8353cbc38adc81a7b126f9e8c1d75cc5e08bc45fd81",
+    "scripts/evaluate_window.py": "d3d040063a385f7424f3077da98730b1716380ed4e6c1eac3c81522cf2fff8d0"
+  },
+  "output_sha256": "c8f35d8d7174efcba97f69c1bf10e81c6ecd3454a395a650f589ba6a2ccf4ed9",
+  "positive_balances_before_target_run": 603629,
+  "balance_count_note": "Includes invoices issued inside target window; handlers gate eligibility by issue_date. This is not a count of solely pre-window open invoices.",
+  "master_data_caveat": "Organizer masters are static later snapshots, not reconstructed as-of-window masters",
+  "report_metadata_note": "Balance count label clarified after run; source_snapshot preserves exact executed code."
+}

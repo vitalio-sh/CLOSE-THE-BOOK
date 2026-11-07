@@ -3,6 +3,10 @@
 Talky × Anthropic hackathon, 7 November 2026, La Nave, Madrid.
 Reconcile Grupo Valtermia's synthetic bank transactions against invoices, explain differences, and flag unidentified movements.
 
+## Working solver
+
+See [team quickstart](docs/TEAM_QUICKSTART.md) for setup, sample scoring, LIVE generation, module ownership and Claude review. The solver produces files locally; it does not submit them to the competition.
+
 ## Data setup
 
 Requires Python 3.9+ and curl. No third-party packages are needed to download data.
@@ -65,3 +69,7 @@ This refreshes availability/checksums and downloads newly published packages. It
 The repository is private. Arrange jury access when delivering the project. Keep team tokens and registration credentials outside Git (for example in an ignored `.env` file).
 
 Source: https://hackathon.usetalky.com/datos
+
+## Reconciliation dashboard
+
+Open the real-data transaction explorer, pipeline explanation and validated candidate download locally. See [dashboard startup](docs/DASHBOARD.md) and [design decisions](docs/DASHBOARD_DESIGN.md).

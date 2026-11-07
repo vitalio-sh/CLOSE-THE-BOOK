@@ -1,0 +1,165 @@
+{
+  "candidate": "/Users/neo/CodeProejcts/CLOSE-THE-BOOK/outputs/review_coordination/integration_lane/r1/candidate_v5",
+  "batch_fx_sha256": "bc79f68e66ffbc949ec91eba0f7a48f13d41e7803e3f1c7f4f1f40135b2236a8",
+  "failures": 0,
+  "checks": [
+    {
+      "text": "BULK PAYMENT PR0100250104019 2 TRANSFERS",
+      "expected": "abstain",
+      "actual": null,
+      "guard_accepts": false,
+      "passed": true,
+      "reference_ids": [
+        "PR0100250104019"
+      ]
+    },
+    {
+      "text": "BULK PAYMENT PR010025010401A 2 TRANSFERS",
+      "expected": "abstain",
+      "actual": null,
+      "guard_accepts": false,
+      "passed": true,
+      "reference_ids": []
+    },
+    {
+      "text": "BULK PAYMENT PR010025010401_9 2 TRANSFERS",
+      "expected": "abstain",
+      "actual": null,
+      "guard_accepts": false,
+      "passed": true,
+      "reference_ids": []
+    },
+    {
+      "text": "BULK PAYMENT PR010025010401.9 2 TRANSFERS",
+      "expected": "abstain",
+      "actual": null,
+      "guard_accepts": false,
+      "passed": true,
+      "reference_ids": []
+    },
+    {
+      "text": "BULK PAYMENT PR010025010401:9 2 TRANSFERS",
+      "expected": "abstain",
+      "actual": null,
+      "guard_accepts": false,
+      "passed": true,
+      "reference_ids": []
+    },
+    {
+      "text": "BULK PAYMENT PR010025010401-9 2 TRANSFERS",
+      "expected": "abstain",
+      "actual": null,
+      "guard_accepts": false,
+      "passed": true,
+      "reference_ids": [
+        "PR0100250104019"
+      ]
+    },
+    {
+      "text": "BULK PAYMENT PR010025010401/9 2 TRANSFERS",
+      "expected": "abstain",
+      "actual": null,
+      "guard_accepts": false,
+      "passed": true,
+      "reference_ids": [
+        "PR0100250104019"
+      ]
+    },
+    {
+      "text": "BULK PAYMENT PR010025010401|9 2 TRANSFERS",
+      "expected": "abstain",
+      "actual": null,
+      "guard_accepts": false,
+      "passed": true,
+      "reference_ids": [
+        "PR0100250104019"
+      ]
+    },
+    {
+      "text": "BULK PAYMENT PR010025010401_X 2 TRANSFERS",
+      "expected": "abstain",
+      "actual": null,
+      "guard_accepts": false,
+      "passed": true,
+      "reference_ids": []
+    },
+    {
+      "text": "BULK PAYMENT PR010025010401.X 2 TRANSFERS",
+      "expected": "abstain",
+      "actual": null,
+      "guard_accepts": false,
+      "passed": true,
+      "reference_ids": []
+    },
+    {
+      "text": "BULK PAYMENT PR010025010401:X 2 TRANSFERS",
+      "expected": "abstain",
+      "actual": null,
+      "guard_accepts": false,
+      "passed": true,
+      "reference_ids": []
+    },
+    {
+      "text": "BULK PAYMENT PR010025010401 2 TRANSFERS",
+      "expected": "allocate",
+      "passed": true,
+      "actual": [
+        {
+          "bank_txn_id": "BT1",
+          "item_id": "API-1",
+          "amount": "100.00",
+          "category": "",
+          "exception": ""
+        },
+        {
+          "bank_txn_id": "BT1",
+          "item_id": "API-2",
+          "amount": "100.00",
+          "category": "",
+          "exception": "FX_DIFFERENCE"
+        },
+        {
+          "bank_txn_id": "BT1",
+          "item_id": "APC-3",
+          "amount": "10.00",
+          "category": "",
+          "exception": ""
+        }
+      ],
+      "reference_ids": [
+        "PR010025010401"
+      ]
+    },
+    {
+      "text": "TRANSF. EMITIDAS FICHERO C34 PR0100250 | 10401 | (2 ORD.)",
+      "expected": "allocate",
+      "passed": true,
+      "actual": [
+        {
+          "bank_txn_id": "BT1",
+          "item_id": "API-1",
+          "amount": "100.00",
+          "category": "",
+          "exception": ""
+        },
+        {
+          "bank_txn_id": "BT1",
+          "item_id": "API-2",
+          "amount": "100.00",
+          "category": "",
+          "exception": "FX_DIFFERENCE"
+        },
+        {
+          "bank_txn_id": "BT1",
+          "item_id": "APC-3",
+          "amount": "10.00",
+          "category": "",
+          "exception": ""
+        }
+      ],
+      "reference_ids": [
+        "PR010025010401"
+      ]
+    }
+  ]
+}

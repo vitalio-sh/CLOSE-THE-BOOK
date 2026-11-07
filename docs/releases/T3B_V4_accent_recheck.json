@@ -1,0 +1,57 @@
+{
+  "retention_v8": {
+    "DEDUCCION": null,
+    "DEDUCCI\u00d3N": null,
+    "DEDUCCIO\u0301N": null,
+    "DISPUTE DAMAGED GOODS": null,
+    "RECLAMACI\u00d3N": null,
+    "PAYMENT": [
+      {
+        "bank_txn_id": "T1",
+        "item_id": "I1",
+        "amount": "90.00",
+        "category": "",
+        "exception": "PARTIAL"
+      }
+    ]
+  },
+  "plans_v9": {
+    "DEDUCCION": null,
+    "DEDUCCI\u00d3N": null,
+    "DEDUCCIO\u0301N": null,
+    "DISPUTE DAMAGED GOODS": null,
+    "RECLAMACI\u00d3N": null,
+    "PAYMENT": [
+      {
+        "bank_txn_id": "T1",
+        "item_id": "I1",
+        "amount": "90.00",
+        "category": "",
+        "exception": "PARTIAL"
+      }
+    ]
+  },
+  "integrated_retention_v4": {
+    "DEDUCCION": null,
+    "DEDUCCI\u00d3N": null,
+    "DEDUCCIO\u0301N": null,
+    "DISPUTE DAMAGED GOODS": null,
+    "RECLAMACI\u00d3N": null,
+    "PAYMENT": [
+      {
+        "bank_txn_id": "T1",
+        "item_id": "I1",
+        "amount": "90.00",
+        "category": "",
+        "exception": "PARTIAL"
+      }
+    ]
+  },
+  "retention_v8_hash_mismatches": [],
+  "plans_v9_hash_mismatches": [],
+  "sequence_hashes": {
+    "retention_v8": "af1f7dfe1e3be3b0d306227722498fac3a832c8a0a5a229aac17aa35d3cc6aec",
+    "plans_v9": "dd3d2803032e915fc2cd099b4fb17830a17ef774b8f6839c96c8df44af977adb",
+    "integrated_retention_v4": "af1f7dfe1e3be3b0d306227722498fac3a832c8a0a5a229aac17aa35d3cc6aec"
+  }
+}

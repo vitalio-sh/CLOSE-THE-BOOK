@@ -11,3 +11,9 @@ data/processed/
 outputs/
 *.log
 data/workspace/
+
+dashboard/data.json
+
+.dashboard-publish.json
+
+dashboard/data.json.lock

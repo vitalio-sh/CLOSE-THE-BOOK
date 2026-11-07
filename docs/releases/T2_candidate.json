@@ -1,0 +1,23 @@
+{
+  "task": "T2",
+  "tag": "candidate/2026-11-07-t2-unidentified-exception",
+  "parent": "ea2700c7fbfd05e755d970b508422fe9a1abbce4",
+  "source": "/Users/neo/CodeProejcts/CLOSE-THE-BOOK/outputs/review_coordination/integration_lane/t2_ready",
+  "source_hashes": {
+    "recon/__init__.py": "a523c28ee4d9ac6faeca15c47d9844631a6d178caf884d96e3878fd3ee373875",
+    "recon/batches.py": "ee403293186220249b73cffd54727f0095201caddf579d5b3d68e983e74efec5",
+    "recon/context.py": "a35b3a68c9e2c713faf68d80df166171e44a87f8b18f23381d2d957f23b1dbfc",
+    "recon/dashboard_publish.py": "a8d331c8327b93fe44c383c313fb18344b1d3e8322d83f58eb11e8abdde2ea51",
+    "recon/documents.py": "41c175a67476e5dc8d6922e3d4baec095b968554daa3a7488196ef2eebf9d395",
+    "recon/engine.py": "c1180e6eac0072db9d2dc670d84ebd2b308ddf67dd1f74f414f1d32224d9ac15",
+    "recon/history.py": "92e3e2a6b9a823a0532af0fd29d6973d9808f95cd6cd4a77b27953924adc9fac",
+    "recon/matching.py": "f2bd7f6baa78d8de623c9d77beb4cbcc9ecc3df5bf052bbc9e760da50da30db5",
+    "recon/pdf_facts.py": "5812d292e28db81549ddd136eef66b3a66cd23673af7d0822bd1fc3d137ad3ac",
+    "recon/preflight.py": "e6609e9b05f89a1bfb143bf12ec6dfb445fb4a992635c2745c0964c7ad372beb",
+    "recon/run.py": "611846711881e96dfc86d6f4b4828a7da74e08ebef582185639a9646477c5de5",
+    "recon/subsets.py": "b6b6aa9ad666c8b7cff6a71c30abfe975600c244c6a2b95c19f5655c13421b65",
+    "recon/validate.py": "69619cf19d4c4ec98277271255915acd42e21913aad39916b2a800f3f7afbfd8",
+    "vendor/starter/bankrec_score.py": "1cc74ec1cda3aac6351bf8353cbc38adc81a7b126f9e8c1d75cc5e08bc45fd81"
+  },
+  "validation_status": "candidate; consult task evaluation report before promotion"
+}

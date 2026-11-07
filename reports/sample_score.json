@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "score": 78.84,
+  "metrics": {
+    "allocation_f1": 0.81084,
+    "precision": 0.997502,
+    "recall": 0.683025,
+    "txn_accuracy": 0.832569,
+    "exception_macro_f1": 0.66587,
+    "amount_weighted_accuracy": 0.630462,
+    "rows": 26404,
+    "txns_covered": 8499,
+    "txns_total": 8499
+  },
+  "errors": []
+}
