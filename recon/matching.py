@@ -714,6 +714,16 @@ def _reconcile(txn,ctx):
         total=sum((dec(i['open_amount']) for i in open_refs),D(0))
         if abs(total-abs(dec(txn['amount'])))<=CENT:
             return [row(txn,i['item_id'],i['open_amount']) for i in sorted(open_refs,key=lambda x:x['item_id'])]
+    # The same quoted invoices settled through a documented difference: instructed amount in
+    # the invoice currency (FX_DIFFERENCE), discounts or withholding (POLICIES 3).
+    if len(open_refs)>1 and not returning and dec(txn['amount'])>0:
+        from .adjusted import explain_set
+        quoted_invoices=[i for i in open_refs if i.get('kind')=='invoice' and i.get('side')=='AR']
+        quoted_credits=[i for i in open_refs if i.get('kind')=='credit']
+        if len(quoted_invoices)+len(quoted_credits)==len(open_refs):
+            adjusted_rows=explain_set(txn,ctx,quoted_invoices,quoted_credits)
+            if adjusted_rows is not None:
+                return adjusted_rows
     # Netting subtracts credit notes economically, but every output amount is positive.
     if parties and not returning:
         side='AR' if dec(txn['amount'])>0 else 'AP'
@@ -1064,16 +1074,21 @@ def _gap_fill(txn, open_refs, candidates, ctx=None):
     invoices = [i for i in open_refs if i.get('kind') != 'credit']
     if not invoices or len({i['party_id'] for i in open_refs}) != 1:
         return None
-    if any(i.get('currency') != txn.get('currency') for i in open_refs):
+    currency = open_refs[0].get('currency')
+    if any(i.get('currency') != currency for i in open_refs):
         return None
-    cash = abs(dec(txn['amount']))
+    # FX receipts: the instructed original amount is the cash in the invoice currency (POLICIES 3).
+    from .adjusted import target_for
+    cash, fx = target_for(txn, currency)
+    if cash is None:
+        return None
     gap = cash - sum((dec(i['open_amount']) * (-1 if i.get('kind') == 'credit' else 1) for i in open_refs), D(0))
     if gap <= CENT:
         return None
     quoted = {i['item_id'] for i in open_refs}
     party = open_refs[0]['party_id']
     rest = sorted((i for i in candidates if i['party_id'] == party and i['item_id'] not in quoted
-                   and dec(i.get('open_amount')) > 0 and i.get('currency') == txn.get('currency')
+                   and dec(i.get('open_amount')) > 0 and i.get('currency') == currency
                    and i.get('entity') == txn.get('entity')),
                   key=lambda i: (i.get('issue_date', ''), i['item_id']))
     fill = [i for i in rest if i.get('kind') != 'credit' and abs(dec(i['open_amount']) - gap) <= CENT][:1]
@@ -1083,7 +1098,8 @@ def _gap_fill(txn, open_refs, candidates, ctx=None):
         fill = _unique_rest(rest, gap, txn.get('booking_date', '')) or []
     if not fill:
         return None
-    return [row(txn, i['item_id'], i['open_amount']) for i in sorted(open_refs + fill, key=lambda i: i['item_id'])]
+    return [row(txn, i['item_id'], i['open_amount'], 'FX_DIFFERENCE' if fx and i.get('kind') != 'credit' else '')
+            for i in sorted(open_refs + fill, key=lambda i: i['item_id'])]
 
 
 # Bank statement formats wrap long free text into fixed-width segments joined by ' | '

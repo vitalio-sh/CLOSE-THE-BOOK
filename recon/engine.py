@@ -54,6 +54,10 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         # Last resort: unique payer group with one TRAIN partial share (ar_n_to_m).
         from .matching import party_partial_subset
         handlers.append(('party_partial', lambda txn: party_partial_subset(txn, ctx)))
+        # Documented cash differences (late discount, withholding, FX) of one identified payer
+        # (POLICIES 3) and cut references (5.5) that no other handler explained.
+        from .adjusted import reconcile_adjusted
+        handlers.append(('adjusted', lambda txn: reconcile_adjusted(txn, ctx)))
     return handlers, document_stats
 
 
