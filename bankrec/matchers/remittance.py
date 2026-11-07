@@ -446,7 +446,10 @@ def _struct_allocs(st, info, a, ent, docmap, pomap, resolve, terms, bd):
             continue
         if paid > openamt + tol:
             return None
-        if reason == "DISCOUNT" or reason.startswith("DTO") or reason.startswith("PRONTO"):
+        if _is_withholding(reason):
+            # POLICIES §3 SHORT_WITHHOLDING: tax withheld at source, fully cleared
+            allocs.append((iid, openamt, "SHORT_WITHHOLDING"))
+        elif reason == "DISCOUNT" or reason.startswith("DTO") or reason.startswith("PRONTO"):
             ok = False
             pt = terms.get(r.get("payment_terms") or "")
             tot = r.get("total_amount") or openamt
@@ -537,3 +540,11 @@ def _fx_allocs(info, allocs, row, fxl):
             exc = "FX_DIFFERENCE"
         out.append((iid, a, exc))
     return out
+
+
+_WHT = re.compile(r"^(?:RET|RET\.|RETENC\w*|RETEN\w*|WHT|W/H|WITHHOLD\w*|IRRF|ISR|RAS|RETENUE\w*)(?:\b|$)")
+
+
+def _is_withholding(reason: str) -> bool:
+    r = (reason or "").strip().upper()
+    return bool(r) and "RETRASO" not in r and bool(_WHT.match(r))
