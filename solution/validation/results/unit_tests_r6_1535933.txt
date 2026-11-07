@@ -1,0 +1,33 @@
+test_recurring_same_amount_am04_reverses_latest_collection (solution.validation.test_r6_dd_returns.DDReturnTests.test_recurring_same_amount_am04_reverses_latest_collection) ... ok
+test_recurring_same_amount_md06_multi_row_batches (solution.validation.test_r6_dd_returns.DDReturnTests.test_recurring_same_amount_md06_multi_row_batches) ... ok
+test_recurring_same_amount_md06_skips_last_three_weeks (solution.validation.test_r6_dd_returns.DDReturnTests.test_recurring_same_amount_md06_skips_last_three_weeks) ... FAIL
+test_recurring_same_amount_named_batch_wins (solution.validation.test_r6_dd_returns.DDReturnTests.test_recurring_same_amount_named_batch_wins) ... ok
+test_repeated_returns_same_invoice_never_inflate_balance (solution.validation.test_r6_dd_returns.DDReturnTests.test_repeated_returns_same_invoice_never_inflate_balance) ... ok
+test_return_without_original_collection_abstains (solution.validation.test_r6_dd_returns.DDReturnTests.test_return_without_original_collection_abstains) ... ok
+test_same_day_two_collections_same_amount_abstains (solution.validation.test_r6_dd_returns.DDReturnTests.test_same_day_two_collections_same_amount_abstains) ... ok
+test_second_return_targets_re_presented_collection (solution.validation.test_r6_dd_returns.DDReturnTests.test_second_return_targets_re_presented_collection) ... ok
+test_transfer_after_return_is_a_normal_payment (solution.validation.test_r6_dd_returns.DDReturnTests.test_transfer_after_return_is_a_normal_payment) ... ok
+
+======================================================================
+FAIL: test_recurring_same_amount_md06_skips_last_three_weeks (solution.validation.test_r6_dd_returns.DDReturnTests.test_recurring_same_amount_md06_skips_last_three_weeks)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\lucaa\CLOSE-THE-BOOK\outputs\worktrees\luke-validation\solution\validation\test_r6_dd_returns.py", line 89, in test_recurring_same_amount_md06_skips_last_three_weeks
+    self.assertEqual(self.picked(result), [("ARI-FV-FEB", "RETURNED")])
+AssertionError: Lists differ: [('ARI-FV-MAR', 'RETURNED')] != [('ARI-FV-FEB', 'RETURNED')]
+
+First differing element 0:
+('ARI-FV-MAR', 'RETURNED')
+('ARI-FV-FEB', 'RETURNED')
+
+- [('ARI-FV-MAR', 'RETURNED')]
+?           ^^^
+
++ [('ARI-FV-FEB', 'RETURNED')]
+?           ^^^
+
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.031s
+
+FAILED (failures=1)

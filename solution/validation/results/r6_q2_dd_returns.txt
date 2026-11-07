@@ -1,0 +1,30 @@
+== r6 1535933 (no PDF): returned direct debits (segment ar_dd_returned) by reason code
+code    lines  correct  wrong  abstain precision  recall
+AM04      765      762      2        1     99.7%   99.6%
+MS02      301      297      3        1     99.0%   98.7%
+none      177      176      1        0     99.4%   99.4%
+MD06      159      131     27        1     82.9%   82.4%
+AC04       97       97      0        0    100.0%  100.0%
+AC06       86       86      0        0    100.0%  100.0%
+MS03       67       67      0        0    100.0%  100.0%
+MD01       62       61      0        1    100.0%   98.4%
+AC01       58       57      0        1    100.0%   98.3%
+SL01       23       23      0        0    100.0%  100.0%
+MD07       21       20      1        0     95.2%   95.2%
+AM05       19       19      0        0    100.0%  100.0%
+ALL      1835     1796     34        5     98.1%   97.9%
+wrong picks explained: {'n/a': 19, 'same customer, same amount (recurring)': 15}
+downstream damage on later lines of the same item: {'missed reopen -> DUPLICATE_PAYMENT': 25}
+all false PARTIAL/DUPLICATE on later DD collections: {'ar_dd_batch DUPLICATE_PAYMENT': 19, 'ar_dd_represented_transfer DUPLICATE_PAYMENT': 8, 'ar_dd_batch PARTIAL': 8, 'ar_dd_represented_transfer PARTIAL': 1}
+  [wrong] {"bank_txn_id": "BT-2025-0093206", "date": "2025-04-01", "amount": "-758.40", "code": "MD06", "text": "RUECKLASTSCHRIFT MD06 MREF+VTM-US-0009276 HPNB2504017173643  ", "golden": ["ARI-2025-3502951"], "picked": ["ARI-2025-9006967"], "why": []}
+  [wrong] {"bank_txn_id": "BT-2025-0093566", "date": "2025-04-02", "amount": "-433.16", "code": "MD06", "text": "RUECKLASTSCHRIFT MD06 MREF+VTM-DE-0002336 RHEI2504026344333  ", "golden": ["ARI-2025-0196765"], "picked": ["ARI-2025-4240889"], "why": []}
+  [wrong] {"bank_txn_id": "BT-2025-0094087", "date": "2025-04-02", "amount": "-626.86", "code": "MD06", "text": "RUECKLASTSCHRIFT MD06 MREF+VTM-US-0012311 HPNB2504022091734  ", "golden": ["ARI-2025-2598931"], "picked": ["ARI-2025-3023090"], "why": []}
+  [wrong] {"bank_txn_id": "BT-2025-0097786", "date": "2025-04-07", "amount": "-616.20", "code": "MD06", "text": "RUECKLASTSCHRIFT MD06 MREF+VTM-US-0017884 HPNB2504076181537  ", "golden": ["ARI-2025-3021957"], "picked": ["ARI-2025-2368353"], "why": []}
+  [abstained] {"bank_txn_id": "BT-2025-0109693", "date": "2025-04-15", "amount": "-726.00", "code": "AM04", "text": "DEVOLUCION RECIBO AM04 REM 05250404974 | MANDATO VTM-ES-0005189 | ROSA URRUTIA MARQUEZ  DEV05250404974 ", "golden": ["ARI-2025-4930274"], "submitted": [["BANK_FEES", ""]]}
+  [abstained] {"bank_txn_id": "BT-2025-0133445", "date": "2025-05-06", "amount": "-246.48", "code": "MD01", "text": "RUECKLASTSCHRIFT MD01 MREF+VTM-US-0020381 HPNB2505061278559  ", "golden": ["ARI-2025-5221577"], "submitted": [["BANK_FEES", ""]]}
+  [abstained] {"bank_txn_id": "BT-2025-0158954", "date": "2025-05-27", "amount": "-855.61", "code": "MS02", "text": "RUECKLASTSCHRIFT MS02 MREF+VTM-DE-0002386 RHEI2505275914359  ", "golden": ["ARI-2025-7039818"], "submitted": [["BANK_FEES", ""]]}
+  [abstained] {"bank_txn_id": "BT-2025-0159403", "date": "2025-05-27", "amount": "-153.22", "code": "MD06", "text": "RUECKLASTSCHRIFT MD06 MREF+VTM-US-0009761 HPNB2505277328932  ", "golden": ["ARI-2025-1843917"], "submitted": [["BANK_FEES", ""]]}
+  [damage] {"kind": "missed reopen", "item": "ARI-2025-0196765", "later_line": "BT-2025-0112146", "submitted": "DUPLICATE_PAYMENT", "segment": "ar_dd_batch", "date": "2025-04-18"}
+  [damage] {"kind": "missed reopen", "item": "ARI-2025-2598931", "later_line": "BT-2025-0112585", "submitted": "DUPLICATE_PAYMENT", "segment": "ar_dd_batch", "date": "2025-04-18"}
+  [damage] {"kind": "missed reopen", "item": "ARI-2025-3021957", "later_line": "BT-2025-0112666", "submitted": "DUPLICATE_PAYMENT", "segment": "ar_dd_batch", "date": "2025-04-18"}
+  [damage] {"kind": "missed reopen", "item": "ARI-2025-2713242", "later_line": "BT-2025-0115046", "submitted": "DUPLICATE_PAYMENT", "segment": "ar_dd_batch", "date": "2025-04-22"}
