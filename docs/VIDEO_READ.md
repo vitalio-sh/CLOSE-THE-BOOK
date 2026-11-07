@@ -41,7 +41,7 @@ One scene per slide, in `docs/video_slides.html`; press → to move to the next 
 > Many agents worked in parallel, each on one thing.
 > We used GitHub issues for tasks and results.
 > About every ninety minutes, we checked together.
-> Then we merged the best parts into a new version, up to version fourteen.
+> Then we merged the best parts into a new version, up to version eighteen.
 > Luke tested the returned direct debits, and found a bug. The fix is in the final version.
 > Marina had the "entity-first" idea: look for the payer inside the right company first.
 > Ivan built his own pipeline and reviewed our rules. The problems he found were fixed.
@@ -49,8 +49,8 @@ One scene per slide, in `docs/video_slides.html`; press → to move to the next 
 ## Slide 7 — Key insights (2:45–3:20)
 > One: the score counts pairs of bank line and invoice. So big documents, like batches and advices, count more than thousands of small lines. Documents first.
 > Two: payment advices often arrive after the money. So we link everything first, and match after.
-> Three: it is better to abstain than to guess. Our precision is ninety-nine point eight percent.
-> Four: each exception type is worth about two points, so even rare ones matter.
+> Three: it is better to abstain than to guess. On the official live data, our precision was ninety-nine point eight two percent.
+> Four: each exception class can be worth up to two points, so even rare ones matter.
 
 ## Slide 8 — How it works (3:20–3:50)
 > The solution is a chain of clear rules.
@@ -62,10 +62,10 @@ One scene per slide, in `docs/video_slides.html`; press → to move to the next 
 
 ## Slide 9 — Results (3:50–4:20)
 > On the live leaderboard, we reached ninety-four point nine one. Rank two.
-> To check that we did not overfit, we tested March 2025, a month we never used for tuning. This is not an official score.
+> We also did an additional temporal validation on March 2025, a month we never used for tuning. This is not an official score.
 > From version nine to version eleven, the gain was the same as on the official leaderboard.
 > And version fourteen had no regressions.
-> So the solution generalizes.
+> The final version, eighteen, is on the main branch.
 
 ## Slide 10 — How we used Claude (4:20–4:42)
 > Claude built, tested and coordinated the solution.

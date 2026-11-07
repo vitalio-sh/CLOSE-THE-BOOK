@@ -171,7 +171,7 @@
 <!-- 4 PHASE 2 -->
 <section class="slide">
   <div class="kicker">Phase 2 · Own an area, check often, integrate</div>
-  <h1 class="anim">Each member owned one area; we checked together every <span class="acc">~90 minutes</span> and integrated in rounds <span class="acc">r6 → r14</span></h1>
+  <h1 class="anim">Each member owned one area; we checked together every <span class="acc">~90 minutes</span> and integrated in rounds <span class="acc">r6 → r18</span></h1>
   <div class="rule"></div>
   <div class="body" style="flex-direction:column;gap:40px">
     <div class="steps anim d1" style="flex-direction:row;gap:60px;font-size:30px">
@@ -180,12 +180,12 @@
       <div><span class="n">→</span>GitHub issues for tasks and results</div>
     </div>
     <div class="grid2" style="grid-template-columns:1fr 1fr 1fr">
-      <div class="card anim d2"><h3>Luke</h3><p>Tests and adversarial validation of returned direct debits (MD06). Found a bug — the fix is in r14.</p></div>
+      <div class="card anim d2"><h3>Luke</h3><p>Tests and adversarial validation of returned direct debits (MD06). Found a bug — the fix is in the final version.</p></div>
       <div class="card anim d3"><h3>Marina</h3><p>Entity-first payer filter: search the payer inside the company that owns the account first. <span class="acc">dc4690e</span></p></div>
       <div class="card anim d4"><h3>Ivan</h3><p>Independent pipeline and review of the team rules. The issues he found were fixed.</p></div>
     </div>
   </div>
-  <div class="foot"><span>Source: team repository, review branches r6–r14, GitHub issue #3</span><span class="pg"></span></div>
+  <div class="foot"><span>Source: team repository, review branches r6–r18, GitHub issue #3</span><span class="pg"></span></div>
 </section>
 
 <!-- 5 KEY INSIGHTS -->
@@ -196,10 +196,10 @@
   <div class="grid2">
     <div class="card anim d1"><h3><span class="acc">1</span> Documents first</h3><p>The score counts (line, invoice) pairs, so big documents — advices and batches — outweigh thousands of small lines.</p></div>
     <div class="card anim d2"><h3><span class="acc">2</span> Link globally, then match</h3><p>Payment advices arrive after the cash: link everything across the period before matching.</p></div>
-    <div class="card anim d3"><h3><span class="acc">3</span> Abstain rather than guess</h3><p>Final precision <span class="acc">99.8%</span>.</p></div>
-    <div class="card anim d4"><h3><span class="acc">4</span> Rare exceptions are cheap wins</h3><p>Each exception type is worth about <span class="acc">2 points</span>, however rare it is.</p></div>
+    <div class="card anim d3"><h3><span class="acc">3</span> Abstain rather than guess</h3><p><span class="acc">99.82%</span> precision on the official LIVE (r7).</p></div>
+    <div class="card anim d4"><h3><span class="acc">4</span> Rare exceptions are cheap wins</h3><p>Up to <span class="acc">2 points</span> per exception class, however rare it is.</p></div>
   </div>
-  <div class="foot"><span>Source: official scoring formula; team measurements</span><span class="pg"></span></div>
+  <div class="foot"><span>Source: official scoring formula; official LIVE report (r7)</span><span class="pg"></span></div>
 </section>
 
 <!-- 6 RULE CHAIN -->
@@ -225,14 +225,14 @@
 <!-- 7 RESULTS -->
 <section class="slide">
   <div class="kicker">Results</div>
-  <h1 class="anim">We reached <span class="acc">94.91</span> on the live leaderboard, <span class="acc">rank 2</span> — and the gains hold on unseen data</h1>
+  <h1 class="anim">We reached <span class="acc">94.91</span> on the live leaderboard, <span class="acc">rank 2</span>, confirmed by an additional temporal validation</h1>
   <div class="rule"></div>
   <div class="body" style="gap:70px">
     <div class="anim d1" style="flex:1.7">
       <svg id="steps" width="1000" height="560" viewBox="0 0 1000 560"></svg>
     </div>
     <div class="anim d3" style="flex:1">
-      <div style="font-size:30px;font-weight:700;margin-bottom:10px">March 2025 check</div>
+      <div style="font-size:30px;font-weight:700;margin-bottom:10px">Additional temporal validation · March 2025</div>
       <div style="margin-bottom:24px"><span class="notoff">holdout · NOT official</span></div>
       <svg id="march" width="520" height="300" viewBox="0 0 520 300"></svg>
       <div class="lbl" style="font-size:24px;margin-top:20px">A month never tuned on. The r9 → r11 gain
@@ -274,7 +274,8 @@
   <div class="title-wrap">
     <h1 class="anim" style="font-size:110px">Thank you — <span class="acc">Team 10</span></h1>
     <div class="names anim d1">Vitalii · Luke · Ivan · Marina</div>
-    <div class="tag anim d2" style="font-size:34px;color:#fff">github.com/vitalio-sh/CLOSE-THE-BOOK</div>
+    <div class="tag anim d2" style="font-size:34px;color:#fff">github.com/vitalio-sh/CLOSE-THE-BOOK/tree/main</div>
+    <div class="tag anim d3" style="margin-top:20px">Final version: r18 on main (e37e3ac)</div>
   </div>
   <div class="foot"><span></span><span class="pg"></span></div>
 </section>
