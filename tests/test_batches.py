@@ -389,6 +389,15 @@ class BatchTests(unittest.TestCase):
         # A supplier refund naming the beneficiary is not a returned transfer.
         self.assertIsNone(matcher.reconcile(self.txn('32273.31','TT IN MOTORS CORAL BAY NORTH PTY LTD DEVOLUCION SALDO A FAVOR')))
 
+    def test_transfer_run_dated_after_the_booking_is_not_this_line(self):
+        self.item('API-1','F24/03225','216.97',party='S1')
+        base=dict(run_id='PR010024102542',run_type='transfers',execution_date='2025-06-03',debtor_account_id='ES01-A',end_to_end_id='PR010024102542-0077',beneficiary='MR3 Recambios S.Coop.',beneficiary_iban='',currency='EUR',transfer_amount='216.97',document_type='INVOICE',remittance_info='',document_number='F24/03225',document_amount='216.97')
+        self.rows('payment_runs',[base])
+        # A supplier direct debit two days before the run executes is not that transfer.
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(self.txn('-216.97','RECAMBIOS FUENTE | RECIBO 2024/00073')))
+        txn=self.txn('-216.97','TRANSFERENCIA A MR3 RECAMBIOS S.COOP. | FRA F24/03225'); txn['booking_date']='2025-06-03'
+        self.assertEqual([r['item_id'] for r in BatchMatcher(self.ctx).reconcile(txn)],['API-1'])
+
     def test_cut_run_reference_flags_duplicate_payment(self):
         self.item('API-1','FV-24-0100','2844.12',party='S1'); self.item('API-2','A9','500.00',party='S2')
         self.ctx.items['API-1'].update(open_amount=D(0),historical_closed=True)

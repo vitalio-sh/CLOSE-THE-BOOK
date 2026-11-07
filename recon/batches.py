@@ -785,6 +785,12 @@ class BatchMatcher:
                 continue
             if reverse and group['date'] > txn['booking_date']:
                 continue
+            # A supplier transfer is booked on or after its execution date (TRAIN October and
+            # January: 0 of ~12,900 settled transfers booked earlier). A later-dated run is
+            # another payment, never this line (e.g. a supplier direct debit of equal amount).
+            if (not reverse and group['kind'] == 'payment_runs' and not group['confirming']
+                    and group['rows'][0].get('run_type') == 'transfers' and group['date'] > txn['booking_date']):
+                continue
             delta = _days(txn['booking_date'], group['date'])
             # Exact amount and account within the quoted run identify one transfer
             # (POLICIES 3 DUPLICATE_PAYMENT: a repeated transfer may be weeks old).
