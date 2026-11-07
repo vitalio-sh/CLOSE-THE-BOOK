@@ -41,7 +41,7 @@ Read slowly. One sentence, one breath. About 560 words, so roughly 4.5 minutes a
 > We used GitHub issues to assign tasks and share results.
 > About every hour and a half, we checked together.
 > What works? What is wrong? What do we improve next?
-> Then we merged the best parts into a new version. We did this fourteen times.
+> Then we merged the best parts into a new version, up to version fourteen.
 > Some examples.
 > Luke wrote tests and checked the returned direct debits. He found a bug, and the fix is in the final version.
 > Marina had the "entity-first" idea: look for the payer inside the right company first. So a customer abroad with the same name cannot win.
