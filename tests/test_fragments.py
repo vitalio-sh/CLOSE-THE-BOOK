@@ -21,6 +21,20 @@ class FragmentPartialTests(unittest.TestCase):
         self.assertEqual({(r['item_id'], r['amount'], r['exception']) for r in rows},
                          {('I12', '112.00', ''), ('I27', '127.00', ''), ('I31', '131.00', '')})
 
+    def test_items_within_discount_window_are_short_discount(self):
+        # TRAIN: in multi-invoice receipts an early-payment-term invoice settled within its
+        # window is SHORT_DISCOUNT at full amount; others and late ones keep no exception.
+        items = book()
+        for item in items:
+            item['payment_terms'] = 'T30_2'
+        items[11]['issue_date'] = '2025-01-05'   # I12: inside the 10+3 day window on 2025-01-15
+        c = context(items)
+        c.payment_terms = {'T30_2': {'early_payment_discount_pct': '2', 'discount_days': '10'}}
+        t = txn('5000', 'Alice Water Works INVOICE 10624 400012 400027 10624000 2400031')
+        rows = fragment_partial(t, c)
+        self.assertEqual({(r['item_id'], r['exception']) for r in rows},
+                         {('I12', 'SHORT_DISCOUNT'), ('I27', ''), ('I31', '')})
+
     def test_requires_identified_payer(self):
         t = txn('5000', 'INVOICE 400012 400027 2400031')
         self.assertIsNone(fragment_partial(t, context(book())))

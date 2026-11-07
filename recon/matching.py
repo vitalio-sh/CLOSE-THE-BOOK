@@ -1350,8 +1350,32 @@ def fragment_partial(txn, ctx, min_anchors=1, min_fragments=2):
             if discounted:
                 return [row(txn, i['item_id'], i['open_amount'], 'SHORT_DISCOUNT' if i is discounted[-1] else '')
                         for i in discounted]
-    return [row(txn, i['item_id'], i['open_amount'], 'FX_DIFFERENCE' if fx and i.get('kind') != 'credit' else '')
+    multi = len(chosen) >= 2
+    return [row(txn, i['item_id'], i['open_amount'],
+                'FX_DIFFERENCE' if fx and i.get('kind') != 'credit'
+                else ('SHORT_DISCOUNT' if multi and _in_discount_window(i, txn, ctx) else ''))
             for i in chosen]
+
+
+def _in_discount_window(item, txn, ctx):
+    """An unpaid invoice with an early-payment term, settled within its discount window.
+
+    POLICIES §3 SHORT_DISCOUNT, amount = full open. TRAIN multi-invoice receipts outside the
+    October/January windows: such items are SHORT_DISCOUNT in 58,010 of 58,017 cases (the
+    payer deducts the discount from each invoice). Single-invoice receipts keep the exact
+    discounted-cash rule of _exception (a full payment inside the window is no discount).
+    """
+    if item.get('kind') == 'credit' or item.get('side') != 'AR':
+        return False
+    terms = getattr(ctx, 'payment_terms', {})
+    term = terms.get(item.get('payment_terms'), {}) if isinstance(terms, dict) else {}
+    if not dec(term.get('early_payment_discount_pct')) or dec(item.get('open_amount')) != dec(item.get('total_amount')):
+        return False
+    try:
+        deadline = date.fromisoformat(item['issue_date']) + timedelta(days=int(term['discount_days']) + 3)
+        return date.fromisoformat(txn['booking_date']) <= deadline
+    except (ValueError, KeyError, TypeError):
+        return False
 
 
 _REST_MAX_ITEMS = 30
