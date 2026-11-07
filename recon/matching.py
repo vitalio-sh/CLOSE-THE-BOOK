@@ -1070,6 +1070,8 @@ def _fragment_tokens(txn):
     tokens = []
     for key in ('text', 'ref1', 'ref2', 'remittance_info'):
         raw = _unwrapped(txn.get(key))
+        # SWIFT-style tags and the instructed amount / exchange rate are not references.
+        raw = re.sub(r'/OCMT/[A-Z]{3}[0-9.,]+|/EXCH/[0-9.,]+', ' ', raw, flags=re.I)
         raw = re.sub(r'/(?:ORDP|REMI|EREF|REF|RFB|OBI|ORG|MOTIF|CHGS|BENM)/', ' ', raw, flags=re.I)
         for match in re.finditer(r'[A-Za-z0-9][A-Za-z0-9/._-]*', raw):
             token = norm(match[0])
@@ -1078,7 +1080,26 @@ def _fragment_tokens(txn):
     return list(dict.fromkeys(tokens))
 
 
-def fragment_partial(txn, ctx, min_anchors=2, min_fragments=3):
+def _anchor_fill(txn, anchors, candidates, currency, cash):
+    """_gap_fill with an explicit settlement currency and cash (orig_amount for FX receipts)."""
+    party = anchors[0]['party_id']
+    gap = cash - sum((dec(i['open_amount']) * (-1 if i.get('kind') == 'credit' else 1) for i in anchors), D(0))
+    if gap <= CENT:
+        return None
+    quoted = {i['item_id'] for i in anchors}
+    rest = sorted((i for i in candidates if i['party_id'] == party and i['item_id'] not in quoted
+                   and dec(i.get('open_amount')) > 0 and i.get('currency') == currency
+                   and i.get('entity') == txn.get('entity')),
+                  key=lambda i: (i.get('issue_date', ''), i['item_id']))
+    fill = [i for i in rest if i.get('kind') != 'credit' and abs(dec(i['open_amount']) - gap) <= CENT][:1]
+    if not fill:
+        fill = _ordered_sets(rest, int(gap * 100), txn.get('booking_date', '')) or []
+    if not fill:
+        fill = _unique_rest(rest, gap, txn.get('booking_date', '')) or []
+    return sorted(anchors + fill, key=lambda i: i['item_id']) if fill else None
+
+
+def fragment_partial(txn, ctx, min_anchors=1, min_fragments=2):
     """Partial allocation of a large receipt whose text lists truncated document numbers.
 
     POLICIES 5.5: references are truncated (16/35/38 characters) and printed without prefix;
@@ -1087,6 +1108,8 @@ def fragment_partial(txn, ctx, min_anchors=2, min_fragments=3):
     exactly one open document of the identified payer anchors that document, at its full
     open amount. Ambiguous fragments are ignored; the unexplained rest stays unallocated.
     Never a free subset search: only printed evidence selects documents.
+    FX receipts (POLICIES 3, FX_DIFFERENCE) settle documents in the instructed currency
+    (orig_currency/orig_amount); their invoice rows carry FX_DIFFERENCE.
     """
     if dec(txn.get('amount')) <= 0 or classify(txn, ctx):
         return None
@@ -1099,37 +1122,51 @@ def fragment_partial(txn, ctx, min_anchors=2, min_fragments=3):
     tokens = _fragment_tokens(txn)
     if len(tokens) < min_fragments:
         return None
+    currency, cash, fx = txn.get('currency'), abs(dec(txn['amount'])), False
+    orig_ccy = txn.get('orig_currency') or ''
+    if orig_ccy and orig_ccy != currency and txn.get('orig_amount'):
+        currency, cash, fx = orig_ccy, abs(dec(txn['orig_amount'])), True
     pool = []
     for pid in parties:
         for iid in ctx.by_party.get(pid, ()):
             item = ctx.items[iid]
-            if (item.get('side') == 'AR' and item.get('currency') == txn.get('currency')
+            if (item.get('side') == 'AR' and item.get('currency') == currency
                     and item.get('entity') == txn.get('entity')
                     and item.get('issue_date', '') <= txn.get('booking_date', '')
                     and dec(item.get('open_amount')) > 0):
                 pool.append((norm(item.get('document_number')), item))
     if not pool:
         return None
+    # POLICIES 5.7: a printed cancelled number settles its documented replacement.
+    pdf_facts = getattr(ctx, 'pdf_facts', None)
+    pool_ids = {item['item_id'] for _, item in pool}
     anchors, matched = {}, 0
     for token in tokens:
         hits = [item for number, item in pool if len(number) >= len(token) and token in number]
         if hits:
             matched += 1
         if len(hits) == 1:
-            anchors[hits[0]['item_id']] = hits[0]
+            iid = hits[0]['item_id']
+            if pdf_facts is not None:
+                iid = pdf_facts.resolve(iid)
+                if iid not in pool_ids:
+                    continue
+            anchors[iid] = ctx.items[iid]
     if matched < min_fragments or len(anchors) < min_anchors:
         return None
     if len({i['party_id'] for i in anchors.values()}) != 1:
         return None
     signed = sum((dec(i['open_amount']) * (-1 if i.get('kind') == 'credit' else 1) for i in anchors.values()), D(0))
-    if signed <= 0 or signed >= abs(dec(txn['amount'])) - CENT:
+    if signed <= 0 or signed > cash + CENT:
         return None
-    # The anchored documents plus a FIFO-shaped exact remainder explain the whole cash.
-    scoped = [iid for pid in parties for iid in ctx.by_party.get(pid, ())]
-    full = _gap_fill(txn, [anchors[iid] for iid in sorted(anchors)], candidates_of(scoped, txn, ctx), ctx)
-    if full is not None:
-        return full
-    return [row(txn, iid, anchors[iid]['open_amount']) for iid in sorted(anchors)]
+    chosen = [anchors[iid] for iid in sorted(anchors)]
+    if signed < cash - CENT:
+        # The anchored documents plus a FIFO-shaped exact remainder explain the whole cash.
+        scoped = [iid for pid in parties for iid in ctx.by_party.get(pid, ())]
+        chosen = _anchor_fill(txn, chosen, candidates_of(scoped, txn, ctx), currency, cash) or chosen
+    return [row(txn, i['item_id'], i['open_amount'], 'FX_DIFFERENCE' if fx and i.get('kind') != 'credit' else '')
+            for i in chosen]
+
 
 _REST_MAX_ITEMS = 30
 _REST_WINDOW_DAYS = 180

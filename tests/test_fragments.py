@@ -25,14 +25,33 @@ class FragmentPartialTests(unittest.TestCase):
         t = txn('5000', 'INVOICE 400012 400027 2400031')
         self.assertIsNone(fragment_partial(t, context(book())))
 
-    def test_requires_several_fragments_and_anchors(self):
+    def test_requires_a_printed_list(self):
+        # A single printed fragment is a reference, not a list: other rules own it.
         self.assertIsNone(fragment_partial(txn('5000', 'Alice Water Works INVOICE 400012'), context(book())))
-        # Three fragments but a single unique anchor: abstain.
-        self.assertIsNone(fragment_partial(txn('5000', 'Alice Water Works INV 400012 10624000 106240'), context(book())))
+        # A list with one unique anchor and ambiguous rest: the anchor alone.
+        rows = fragment_partial(txn('5000', 'Alice Water Works INV 400012 10624000 106240'), context(book()))
+        self.assertEqual([r['item_id'] for r in rows], ['I12'])
+
+    def test_cancelled_number_resolves_to_replacement(self):
+        from types import SimpleNamespace
+        items = book()
+        c = context(items)
+        c.pdf_facts = SimpleNamespace(resolve=lambda iid: 'I30' if iid == 'I12' else iid, get=lambda iid: {})
+        rows = fragment_partial(txn('5000', 'Alice Water Works INVOICE 400012 400027'), c)
+        self.assertEqual({r['item_id'] for r in rows}, {'I30', 'I27'})
 
     def test_anchors_must_not_exceed_cash(self):
         t = txn('200', 'Alice Water Works INVOICE 400012 400027 2400031')
         self.assertIsNone(fragment_partial(t, context(book())))
+
+    def test_anchors_equal_to_cash_are_the_full_set(self):
+        t = txn(str(112 + 127 + 131), 'Alice Water Works INVOICE 400012 400027 2400031')
+        rows = fragment_partial(t, context(book()))
+        self.assertEqual({r['item_id'] for r in rows}, {'I12', 'I27', 'I31'})
+
+    def test_instructed_amount_and_rate_are_not_fragments(self):
+        tokens = _fragment_tokens({'text': 'TT IN ACME /OCMT/USD12056,31/EXCH/6,941995 INV 108627'})
+        self.assertEqual(tokens, ['108627'])
 
     def test_anchors_plus_fifo_remainder_give_full_set(self):
         items = book()
@@ -52,6 +71,19 @@ class FragmentPartialTests(unittest.TestCase):
     def test_returns_and_outgoing_lines_ignored(self):
         self.assertIsNone(fragment_partial(txn('-5000', 'Alice Water Works 400012 400027 2400031'), context(book())))
         self.assertIsNone(fragment_partial(txn('5000', 'DEVOLUCION RECIBO Alice Water Works 400012 400027 2400031'), context(book())))
+
+    def test_fx_receipt_uses_instructed_currency(self):
+        items = book()
+        for item in items:
+            item['currency'] = 'USD'
+        t = txn('90000', 'Alice Water Works INVOICE 400012 400027 2400031', orig_amount='5000', orig_currency='USD')
+        t['currency'] = 'MXN'
+        rows = fragment_partial(t, context(items))
+        self.assertEqual({(r['item_id'], r['exception']) for r in rows},
+                         {('I12', 'FX_DIFFERENCE'), ('I27', 'FX_DIFFERENCE'), ('I31', 'FX_DIFFERENCE')})
+        # Without the instructed amount the USD documents are not this receipt's currency.
+        t = txn('90000', 'Alice Water Works INVOICE 400012 400027 2400031'); t['currency'] = 'MXN'
+        self.assertIsNone(fragment_partial(t, context(items)))
 
     def test_norma43_wrapped_concept_is_rejoined(self):
         text = 'TRANSFERENCIA DE FERRETERIA AZUL S.COO | P. | CONCEPTO: FACTURA FV24-05 FV24-05 FV24 | -050 FV24-0507608 FV24-050 FV24-050563 | 6 FV24-05'
