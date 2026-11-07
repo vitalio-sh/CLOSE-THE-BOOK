@@ -180,10 +180,11 @@ def unique_subset(cands, target):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "raw", "docs"))
-    ap.add_argument("--phase", default="live", choices=["sample", "train", "live", "final"])
+    ap.add_argument("--phase", default="live", help="sample, train, live, final, or a test phase folder (e.g. trainq2)")
     ap.add_argument("--out", default="submission.csv.gz")
     a = ap.parse_args()
-    phases = {"sample": ["sample"], "train": ["train"], "live": ["train", "live"], "final": ["train", "live", "final"]}[a.phase]
+    phases = {"sample": ["sample"], "train": ["train"], "live": ["train", "live"],
+              "final": ["train", "live", "final"]}.get(a.phase, [a.phase])
 
     # party -> group (a parent company may pay for its subsidiaries)
     group_of, group_members = {}, defaultdict(list)
@@ -227,7 +228,8 @@ def main():
                 # amount (the others are already settled; loading them all would also need ~10 GB of RAM)
                 if carried and iid not in open_at_start:
                     continue
-                items[iid] = open_at_start[iid] if carried else cents(r["total_amount"])
+                # open amount when the item is listed as open at start, else the document total
+                items[iid] = open_at_start[iid] if open_at_start and iid in open_at_start else cents(r["total_amount"])
                 by_number[norm(r[numcol])].append(iid)
                 if r.get("customer_po"):
                     by_po[norm(r["customer_po"])].append(iid)
@@ -244,10 +246,7 @@ def main():
                 if kind == "ARI":
                     ar_all[(r["customer_id"], r["currency"], items[iid])].append((r["issue_date"], iid))
                     # candidate for the payer + amount rule, if it is open
-                    if ph == a.phase or open_at_start is None:
-                        open_amt = items[iid]
-                    else:
-                        open_amt = open_at_start.get(iid)
+                    open_amt = items[iid]
                     if open_amt:
                         ar_open[(r["entity"], r["customer_id"], r["currency"], open_amt)].append((r["issue_date"], iid))
                 for k in number_keys(r[numcol]):
@@ -484,7 +483,7 @@ def main():
                     if not iid or iid in {o[1] for o in out}:
                         continue
                     paid = abs(cents(r["document_amount"]))
-                    open_amt = balance.get(iid, items[iid] if open_at_start is None else open_at_start.get(iid, items[iid]))
+                    open_amt = balance.get(iid, items[iid])
                     exc = ""
                     if info[iid]["kind"] == "API":
                         if paid < open_amt - max(1, open_amt // 200):
