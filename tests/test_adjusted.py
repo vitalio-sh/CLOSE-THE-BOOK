@@ -46,6 +46,35 @@ class SingleAdjustedTests(unittest.TestCase):
         self.assertIsNone(single_adjusted(txn('98', 'Alice Water Works PAYMENT'), c))
 
 
+class NamesakeTests(unittest.TestCase):
+    def ctx(self, count):
+        items = []
+        c = None
+        for k in range(count):
+            item = invoice('I%02d' % k, 'F%02d' % k, str(100 + k), payment_terms='D2')
+            item['party_id'] = 'P%02d' % k
+            item['issue_date'] = '2025-01-10'
+            items.append(item)
+        c = context(items)
+        c.payment_terms = TERMS
+        c.customers = {'P%02d' % k: {'name': 'Port Ellery Pool Builders Pty Ltd', 'country': 'AU', 'entity': 'ES01'}
+                       for k in range(count)}
+        return c
+
+    def test_unique_discount_among_many_namesakes(self):
+        # 20 same-named customers; only P03's invoice (103.00) net of 2 % gives 100.94.
+        t = txn('100.94', 'DIRECT CREDIT PORT ELLERY POOL BUI', counterparty_name='Port Ellery Pool Builders Pty Ltd')
+        rows = single_adjusted(t, self.ctx(20))
+        self.assertEqual([(r['item_id'], r['amount'], r['exception']) for r in rows], [('I03', '103.00', 'SHORT_DISCOUNT')])
+
+    def test_namesake_paid_in_full_competes(self):
+        c = self.ctx(20)
+        extra = invoice('X', 'FX1', '100.94'); extra['party_id'] = 'P19'; extra['issue_date'] = '2025-01-10'
+        c.items['X'] = extra; c.by_party.setdefault('P19', []).append('X')
+        t = txn('100.94', 'DIRECT CREDIT PORT ELLERY POOL BUI', counterparty_name='Port Ellery Pool Builders Pty Ltd')
+        self.assertIsNone(single_adjusted(t, c))
+
+
 class QuotedSetTests(unittest.TestCase):
     def test_quoted_fx_invoices_sum_to_original_amount(self):
         items = [invoice('A', 'FV25-00001', '60'), invoice('B', 'FV25-00002', '40'), invoice('C', 'FV25-00003', '17')]

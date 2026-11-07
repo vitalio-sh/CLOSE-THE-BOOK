@@ -151,6 +151,31 @@ def explain_set(txn, ctx, invoices, credits=()):
     return sorted(rows, key=lambda r: r['item_id'])
 
 
+def _namesake_parties(txn, ctx):
+    """Every customer of the bank entity whose legal or trade name is exactly the stated payer.
+
+    Master data repeats names ('Port Ellery Pool Builders Pty Ltd' twenty times in AU01), and the
+    ordinary candidate list keeps at most twelve of them. An exact cent signature that is unique
+    across all namesakes still identifies the invoice (POLICIES 5.5: the name is the evidence).
+    """
+    from .matching import _index
+    explicit = norm(txn.get('counterparty_name'))
+    if len(explicit) < 6:
+        return []
+    index = getattr(ctx, '_adjusted_namesakes', None)
+    if index is None:
+        _, _, aliases, _, parties = _index(ctx)
+        index = {}
+        for pid, names in aliases.items():
+            if pid not in getattr(ctx, 'customers', {}):
+                continue
+            entity = parties.get(pid, {}).get('entity')
+            for name in names:
+                index.setdefault((entity, name), set()).add(pid)
+        ctx._adjusted_namesakes = index
+    return sorted(index.get((txn.get('entity'), explicit), ()))
+
+
 def single_adjusted(txn, ctx):
     """One invoice of an identified payer explains the receipt through a documented difference.
 
@@ -160,7 +185,9 @@ def single_adjusted(txn, ctx):
     """
     if dec(txn['amount']) <= 0:
         return None
-    parties = party_candidates(txn, ctx)
+    listed = party_candidates(txn, ctx)
+    namesakes = [pid for pid in _namesake_parties(txn, ctx) if pid not in listed]
+    parties = list(listed) + namesakes
     if not parties:
         return None
     found = []
@@ -178,6 +205,9 @@ def single_adjusted(txn, ctx):
             target, fx = target_for(txn, item.get('currency'))
             if target is None:
                 continue
+            if namesakes and abs(dec(item.get('open_amount')) - target) <= CENT:
+                # A namesake's invoice paid exactly in full is an equally good reading.
+                return None
             options = item_options(item, txn, ctx, fx)[1:]
             for rate in WITHHOLDING_RATES:
                 options += item_options(item, txn, ctx, fx, rate)
