@@ -1,0 +1,30 @@
+{
+  "docs": {
+    "files": 2679,
+    "bytes": 24020776,
+    "contents": [
+      "DATA_DICTIONARY.md",
+      "FORMAT.md",
+      "POLICIES.md",
+      "README.md",
+      "README_EN.md",
+      "masters",
+      "sample",
+      "starter"
+    ]
+  },
+  "live": {
+    "files": 48721,
+    "bytes": 250821012,
+    "contents": [
+      "live"
+    ]
+  },
+  "train": {
+    "files": 376861,
+    "bytes": 1840568147,
+    "contents": [
+      "train"
+    ]
+  }
+}

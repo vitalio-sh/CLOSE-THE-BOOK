@@ -46,6 +46,9 @@ This refreshes availability/checksums and downloads newly published packages. It
 
 ## Start reading
 
+[Простое объяснение задачи на русском](docs/CHALLENGE_BRIEF.md)
+
+
 1. [English challenge overview](docs/official/README_EN.md)
 2. [Reconciliation policies](docs/official/POLICIES.md)
 3. [Data dictionary](docs/official/DATA_DICTIONARY.md)
