@@ -45,6 +45,43 @@ class CreditGroupTests(unittest.TestCase):
         rows = reconcile(txn('250', 'Alice Water Works PAYMENT'), context(items))
         self.assertEqual(set(ids(rows)), {'A', 'B', 'C'})
 
+    def test_zero_net_invoice_inside_run_travels_with_it(self):
+        # A fully credited invoice issued inside the paid span is cleared with the payment.
+        items = [invoice('A', 'F1', '100'), invoice('Z', 'F2', '40'), credit('ZC', 'AB2', '40', 'F2'),
+                 invoice('B', 'F3', '200'), invoice('E', 'F4', '999')]
+        for n, item in enumerate(items):
+            item['issue_date'] = f'2025-01-0{n + 1}'
+        rows = reconcile(txn('300', 'Alice Water Works PAYMENT'), context(items))
+        self.assertEqual(set(ids(rows)), {'A', 'Z', 'ZC', 'B'})
+
+    def test_gapped_run_skips_an_invoice_paid_elsewhere(self):
+        from recon.credit_groups import _runs
+        units = [('A', '100'), ('B', '260'), ('X', '777'), ('E', '300'), ('G', '50')]
+        items = []
+        for n, (key, amount) in enumerate(units):
+            items.append(invoice(key, 'F' + key, amount))
+            items[-1]['issue_date'] = f'2025-01-{10 + n}'
+        items.append(credit('C', 'ABB', '60', 'FB'))
+        items[-1]['issue_date'] = '2025-01-11'
+        rows = reconcile(txn('600', 'Alice Water Works PAYMENT'), context(items))
+        self.assertEqual(set(ids(rows)), {'A', 'B', 'C', 'E'})
+        book = [(items[0], [], 10000), (items[1], [items[5]], 20000), (items[2], [], 77700),
+                (items[3], [], 30000), (items[4], [], 5000)]
+        found = _runs(book, 60000, 2)
+        self.assertEqual([(gaps, [u[0]['item_id'] for u in run]) for gaps, run in found], [(1, ['A', 'B', 'E'])])
+        self.assertEqual(_runs(book, 60000, 0), [])
+
+    def test_early_families_never_add_zero_net_pairs(self):
+        # Explicitly listed invoices (ar_1toN_text) do not carry an unlisted zero-net pair.
+        from recon.credit_groups import reconcile_early
+        items = [invoice('A', 'FV24-0100001', '100'), invoice('Z', 'FV24-0100002', '40'),
+                 credit('ZC', 'AB24-0100002', '40', 'FV24-0100002'), invoice('B', 'FV24-0100003', '200'),
+                 credit('BC', 'AB24-0100003', '50', 'FV24-0100003')]
+        for n, item in enumerate(items):
+            item['issue_date'] = f'2025-01-0{n + 1}'
+        rows = reconcile_early(txn('250', 'Alice Water Works FV24-0100001 FV24-0100003'), context(items))
+        self.assertEqual(set(ids(rows)), {'A', 'B', 'BC'})
+
     def test_cancelled_invoice_never_settled(self):
         # POLICIES 5.7: an invoice cancelled by a credit note is not settled by bank.
         items = [invoice('A', 'F1', '100'), credit('C', 'AB1', '30', 'F1', reason='Anulación de factura')]

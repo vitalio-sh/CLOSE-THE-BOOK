@@ -121,7 +121,7 @@ def _ids(units):
     return tuple(sorted(ids))
 
 
-def candidates(txn, ctx, horizon_days=None, quoted=None):
+def candidates(txn, ctx, horizon_days=None, quoted=None, runs=True, zeros=True):
     """Every family solution as (family, party rank, items). Diagnostics use all of them.
 
     When `quoted` is a dict, it receives the quoted open item ids of each payer rank.
@@ -169,18 +169,11 @@ def candidates(txn, ctx, horizon_days=None, quoted=None):
             if u[1] and u[2] == cash:
                 out.append(('single_net', rank, _ids([u])))
         # run_net: contiguous issue-date runs of units (at least two, one with a credit).
-        # Zero-net veto: a fully credited invoice never joins a run, it splits the book.
-        start, total, sums, with_credit = 0, 0, {0: 0}, [0]
-        for b, unit in enumerate(units):
-            if unit[2] <= 0:
-                start, total, sums, with_credit = b + 1, 0, {0: b + 1}, [0]
-                continue
-            total += unit[2]
-            with_credit.append(with_credit[-1] + (1 if unit[1] else 0))
-            a = sums.get(total - cash)
-            if a is not None and b - a >= 1 and with_credit[b + 1 - start] - with_credit[a - start] > 0:
-                out.append(('run_net', rank, _ids(units[a:b + 1])))
-            sums[total] = b + 1
+        # A fully credited invoice (zero net) inside a run travels with it; a negative unit
+        # splits the book. gap_run: the same with at most GAP_UNITS skipped inner units.
+        if runs and len(units) <= GAP_BOOK:
+            for gaps, run in _runs(units, cash, GAP_UNITS):
+                out.append(('run_net' if not gaps else 'gap_run', rank, _ids(run)))
         # unit_subset: quoted units are anchors; the remaining positive units form a bounded
         # exact subset with a unique solution.
         rest = [u for u in units if u[0]['item_id'] not in anchor_ids and u[2] > 0
@@ -196,6 +189,7 @@ def candidates(txn, ctx, horizon_days=None, quoted=None):
             out.append(('unit_subset_multi', rank, ()))
         elif sols:
             chosen = anchors + [rest[k] for k in sols[0]]
+            chosen = _with_inner_zeros(units, chosen) if zeros else chosen
             # Without a quoted anchor, a large amount-only combination is too weak.
             if any(u[1] for u in chosen) and (anchors or len(chosen) <= FREE_UNITS):
                 out.append(('unit_subset', rank, _ids(chosen)))
@@ -207,9 +201,81 @@ def candidates(txn, ctx, horizon_days=None, quoted=None):
                 out.append(('anchored_rest_multi', rank, ()))
             elif found:
                 chosen = anchors + [rest[k] for k in found[0]]
+                chosen = _with_inner_zeros(units, chosen) if zeros else chosen
                 if any(u[1] for u in chosen):
                     out.append(('anchored_rest', rank, _ids(chosen)))
     return out
+
+
+GAP_UNITS = 2   # inner units a run may skip (paid elsewhere)
+GAP_BOOK = 50   # largest unit book searched for runs
+
+
+def _with_inner_zeros(units, chosen):
+    """Add fully credited invoices (zero net) issued strictly inside the chosen date span."""
+    dates = [u[0].get('issue_date', '') for u in chosen]
+    if not dates:
+        return chosen
+    lo, hi = min(dates), max(dates)
+    ids = {u[0]['item_id'] for u in chosen}
+    extra = [u for u in units if u[1] and u[2] == 0 and u[0]['item_id'] not in ids
+             and lo < u[0].get('issue_date', '') < hi]
+    return chosen + extra
+
+
+def _runs(units, cash, max_gaps):
+    """Issue-date runs of positive units with at most `max_gaps` skipped inner units.
+
+    Zero-net units inside the span travel with the run; a negative unit splits the book.
+    Each run has at least two positive units and one unit with a credit note.
+    Yields (number of skipped units, units).
+    """
+    found = {}
+    segment = []
+    segments = []
+    for unit in units:
+        if unit[2] < 0:
+            segments.append(segment)
+            segment = []
+        else:
+            segment.append(unit)
+    segments.append(segment)
+    for seq in segments:
+        pos = [k for k, u in enumerate(seq) if u[2] > 0]
+        values = [seq[k][2] for k in pos]
+        top = max(values) if values else 0
+        for a in range(len(pos)):
+            total = 0
+            for b in range(a, len(pos)):
+                total += values[b]
+                diff = total - cash
+                if diff < 0 or b == a:
+                    continue
+                if diff > top * max_gaps:
+                    break
+                skips = [()] if diff == 0 else []
+                if diff and max_gaps >= 1:
+                    skips += [(k,) for k in range(a + 1, b) if values[k] == diff]
+                if diff and max_gaps >= 2:
+                    seen = {}
+                    for k in range(a + 1, b):
+                        other = seen.get(diff - values[k])
+                        if other is not None:
+                            skips.append((other, k))
+                        seen.setdefault(values[k], k)
+                for skip in skips:
+                    if len(skip) > max_gaps:
+                        continue
+                    run = [seq[k] for k in range(pos[a], pos[b] + 1)
+                           if seq[k][2] == 0 or k not in {pos[j] for j in skip}]
+                    run = [u for u in run if u[2] > 0 or u[1]]
+                    if not any(u[1] for u in run):
+                        continue
+                    key = _ids(run)
+                    found.setdefault(key, (len(skip), run))
+            if len(found) > 3:
+                break
+    return list(found.values())
 
 
 def _small_subsets(values, target, size):
@@ -239,16 +305,24 @@ def _small_subsets(values, target, size):
     return found
 
 
-FAMILIES = ('quoted_credit', 'quoted_invoice', 'single_net', 'run_net', 'unit_subset', 'anchored_rest')
+FAMILIES = ('quoted_credit', 'quoted_invoice', 'single_net', 'run_net', 'unit_subset', 'anchored_rest', 'gap_run')
 
 
 def reconcile(txn, ctx):
-    """First family (in FAMILIES order) with exactly one solution across payer candidates."""
+    """First family (in FAMILIES order) with exactly one solution across payer candidates.
+
+    Contiguous and gapped runs share one uniqueness pool: a gapless run is taken at its
+    place in the order only when no gapped alternative exists, a gapped run only last.
+    """
     found = candidates(txn, ctx, HORIZON_DAYS)
+    runs = {c[2] for c in found if c[0] in ('run_net', 'gap_run')}
     for family in FAMILIES:
         if any(c[0] == family + '_multi' for c in found):
             return None
         solutions = {c[2] for c in found if c[0] == family}
+        if family in ('run_net', 'gap_run') and solutions:
+            if len(runs) > 1:
+                return None
         if len(solutions) > 1:
             return None
         if len(solutions) == 1:
@@ -275,7 +349,7 @@ def reconcile_early(txn, ctx):
     the payer must be in the solution, unless it is a one-character typo of one.
     """
     quoted = {}
-    found = candidates(txn, ctx, HORIZON_DAYS, quoted)
+    found = candidates(txn, ctx, HORIZON_DAYS, quoted, runs=False, zeros=False)
     for family in EARLY_FAMILIES:
         if any(c[0] == family + '_multi' for c in found):
             return None
@@ -295,3 +369,4 @@ def reconcile_early(txn, ctx):
                     return None
             return [M.row(txn, iid, ctx.items[iid]['open_amount']) for iid in ids]
     return None
+
