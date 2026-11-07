@@ -497,6 +497,30 @@ class DocumentMatcher:
             return False
         expected = (total * (1 - pct / 100)).quantize(CENT, rounding=ROUND_HALF_UP)
         return abs(line.paid - expected) <= CENT
+    def _discount_within_terms(self, txn, item, cash):
+        """POLICIES §3: terms discount, booking date <= issue + days + 3, cash = total - pct x total."""
+        terms = getattr(self.ctx, 'payment_terms', {}).get(item.get('payment_terms'), {})
+        try:
+            days = (date.fromisoformat(txn['booking_date']) - date.fromisoformat(item['issue_date'])).days
+            pct = Decimal(str(terms.get('early_payment_discount_pct') or 0))
+            total = money(item['total_amount'])
+            expected = total - (total * pct / 100).quantize(CENT, rounding=ROUND_HALF_UP)
+            return pct > 0 and 0 <= days <= int(terms.get('discount_days') or 0) + 3 and abs(expected - cash) <= CENT
+        except (ValueError, KeyError, InvalidOperation):
+            return False
+
+    def _withholding_rate_matches(self, item, balance, cash):
+        """POLICIES §3: tax withheld at source by MX/BR/MA customers at 1.25 %, 1.5 % or 10 %."""
+        if item.get('side', 'AR') != 'AR' or not str(item.get('item_id', '')).startswith('ARI-'):
+            return False
+        customer = getattr(self.ctx, 'customers', {}).get(item.get('party_id'), {})
+        if customer.get('country') not in ('MX', 'BR', 'MA'):
+            return False
+        total = money(item.get('total_amount', '0'))
+        if total <= 0 or balance != total or cash <= 0:
+            return False
+        return any(abs(cash - (total * (1 - rate)).quantize(CENT, rounding=ROUND_HALF_UP)) <= CENT
+                   for rate in (Decimal('0.0125'), Decimal('0.015'), Decimal('0.10')))
 
     def _rows(self, txn, advice, strong_ref):
         if advice.entity and txn.get('entity') != advice.entity:
@@ -537,8 +561,14 @@ class DocumentMatcher:
             return None
         if not strong_ref:
             text = norm(' '.join(str(txn.get(k, '')) for k in ('text', 'counterparty_name', 'remittance_info')))
-            payer = norm(advice.payer)
-            if len(payer) < 7 or not any(payer[:n] in text for n in (min(14, len(payer)), min(20, len(payer)), len(payer))):
+            # POLICIES §5.5: the bank text often carries a trade name; the advice
+            # payer resolves to master customers whose legal/trade names count.
+            names = {norm(advice.payer)}
+            for pid in getattr(self, 'payer_ids', {}).get((advice.entity, norm(advice.payer)), ()):
+                party = getattr(self.ctx, 'customers', {}).get(pid, {})
+                names.update(norm(party.get(k, '')) for k in ('name', 'trade_name'))
+            if not any(len(payer) >= 7 and any(payer[:n] in text for n in (min(14, len(payer)), min(20, len(payer)), len(payer)))
+                       for payer in names):
                 return None
         out = []
         for line, item in resolved:
@@ -552,14 +582,7 @@ class DocumentMatcher:
             reason = norm(line.reason)
             if not credit and abs(line.paid) < balance - CENT:
                 if any(x in reason for x in ('DISCOUNT','PRONTOPAGO','SKONTO')):
-                    terms = getattr(self.ctx, 'payment_terms', {}).get(item.get('payment_terms'), {})
-                    try:
-                        days = (date.fromisoformat(txn['booking_date']) - date.fromisoformat(item['issue_date'])).days
-                        pct = Decimal(str(terms.get('early_payment_discount_pct', 0)))
-                        expected = money(item['total_amount']) * (1 - pct / 100)
-                        accepted = pct > 0 and 0 <= days <= int(terms.get('discount_days', 0)) + 3 and abs(expected.quantize(CENT) - amount) <= CENT
-                    except (ValueError, KeyError):
-                        accepted = False
+                    accepted = self._discount_within_terms(txn, item, amount)
                     exc = 'SHORT_DISCOUNT' if accepted else 'PARTIAL'
                     if accepted:
                         amount = balance
@@ -569,6 +592,13 @@ class DocumentMatcher:
                     exc, amount = 'SHORT_WITHHOLDING', balance
                 elif self._unlabelled_discount(txn, line, item, balance):
                     exc, amount = 'SHORT_DISCOUNT', balance
+                elif not reason and balance == money(item.get('total_amount', '0')) and self._discount_within_terms(txn, item, amount):
+                    # POLICIES §3 SHORT_DISCOUNT is defined by terms, booking date
+                    # and cash, not by an advice reason column.
+                    exc, amount = 'SHORT_DISCOUNT', balance
+                elif not reason and self._withholding_rate_matches(item, balance, amount):
+                    # POLICIES §3 SHORT_WITHHOLDING: MX/BR/MA customers, fixed rates.
+                    exc, amount = 'SHORT_WITHHOLDING', balance
                 else:
                     exc = 'SHORT_DISPUTE' if reason else 'PARTIAL'
             if fx and not credit and exc not in ('PARTIAL', 'SHORT_DISPUTE'):
@@ -580,12 +610,36 @@ class DocumentMatcher:
         if money(txn['amount']) <= 0:
             return None
         chunks = [str(txn.get(k, '')) for k in ('text', 'ref1', 'ref2', 'remittance_info', 'end_to_end_id')]
-        keys = {norm(x) for chunk in chunks for x in re.split(r'[\s|:;,]+', chunk) if len(norm(x)) >= 7}
+        keys, joined = set(), set()
+        for chunk in chunks:
+            parts = [p for p in (norm(x) for x in re.split(r'[\s|:;,]+', chunk)) if p]
+            for i, part in enumerate(parts):
+                if len(part) >= 7:
+                    keys.add(part)
+                # Fixed-width statement fields (e.g. Norma 43 concepts) split the
+                # customer's payment reference across segments (POLICIES §5.4/§5.5).
+                for size in (2, 3):
+                    if i + size <= len(parts):
+                        value = ''.join(parts[i:i + size])
+                        if len(value) >= 10:
+                            joined.add(value)
+        joined -= keys
         candidates, seen = [], set()
         for key in keys:
             for advice in self.by_ref.get(key, []):
                 if id(advice) not in seen:
                     candidates.append((advice, True)); seen.add(id(advice))
+        if not candidates:
+            # A rejoined reference must name the advice's full reference and
+            # validate; otherwise it never blocks the cash+payer fallback.
+            rejoined = []
+            for key in joined:
+                for advice in self.by_ref.get(key, []):
+                    if id(advice) not in seen and norm(advice.reference) == key:
+                        rejoined.append((advice, True)); seen.add(id(advice))
+            matches = [rows for advice, strong in rejoined if (rows := self._rows(txn, advice, strong))]
+            if len(matches) == 1:
+                return matches[0]
         # A recognized reference is stronger evidence than a coincidental cash
         # amount. If its group fails validation, do not substitute another advice.
         if not candidates:

@@ -94,6 +94,45 @@ class DocumentTests(unittest.TestCase):
         txn['text']='Acme Company'
         self.assertEqual(matcher.reconcile(txn)[0]['item_id'],'ARI-1')
 
+    def test_split_reference_and_trade_name_payer(self):
+        ctx=self.make_context(Path('.'))
+        ctx.customers={'C1':{'entity':'ES01','name':'Bem-Estar Otero SA','trade_name':'Pedra Alta Jardins'}}
+        matcher=self.matcher_without_files(ctx)
+        matcher.payer_ids={('ES01','BEMESTAROTEROSA'):{'C1'}}
+        advice=Advice('REM/2025/1591','ES01','Bem-Estar Otero SA','2025-01-13','EUR',
+                      [Line('FV25-001',D(100),D(100))],'a.csv')
+        matcher.by_ref['REM20251591']=[advice];matcher.by_amount[D(100)]=[advice]
+        txn={'bank_txn_id':'BT1','entity':'ES01','booking_date':'2025-01-10','amount':'100','currency':'EUR',
+             'text':'TRANSFERENCIA DE PEDRA ALTA JARDINS | CONCEPTO: VENDOR PMT 011025 REM/2025/1 | 591 | ORDENANTE X'}
+        self.assertEqual(matcher.reconcile(txn)[0]['item_id'],'ARI-1')
+        # Without the split reference, the trade name still confirms the payer.
+        txn['text']='TRANSFERENCIA DE PEDRA ALTA JARDINS | CONCEPTO: VENDOR PMT'
+        self.assertEqual(matcher.reconcile(txn)[0]['item_id'],'ARI-1')
+        txn['text']='TRANSFERENCIA DE OTRA EMPRESA DISTINTA | CONCEPTO: VENDOR PMT'
+        self.assertIsNone(matcher.reconcile(txn))
+
+    def test_reasonless_deduction_classified_by_policy(self):
+        ctx=self.make_context(Path('.'))
+        ctx.payment_terms={'D2N30':{'early_payment_discount_pct':'2.00','discount_days':'10'}}
+        ctx.customers={'CBR':{'country':'BR'},'CES':{'country':'ES'}}
+        ctx.items['ARI-1'].update(payment_terms='D2N30',issue_date='2025-05-25',party_id='CES',side='AR')
+        matcher=self.matcher_without_files(ctx)
+        advice=Advice('PAY1234567','ES01','Acme Company','2025-06-03','EUR',[Line('FV25-001',D(100),D(98))],'a.csv')
+        txn={'bank_txn_id':'BT1','entity':'ES01','booking_date':'2025-06-01','amount':'98','currency':'EUR'}
+        rows=matcher._rows(txn,advice,True)
+        self.assertEqual((rows[0]['amount'],rows[0]['exception']),('100.00','SHORT_DISCOUNT'))
+        txn['booking_date']='2025-06-15'  # beyond 10 days + 3 grace: discount not accepted
+        rows=matcher._rows(txn,advice,True)
+        self.assertEqual((rows[0]['amount'],rows[0]['exception']),('98.00','PARTIAL'))
+        # Withholding: only for MX/BR/MA customers at a policy rate.
+        ctx.items['ARI-1'].update(payment_terms='T30',party_id='CBR')
+        advice.lines=[Line('FV25-001',D(100),D('98.50'))];txn['amount']='98.50'
+        rows=matcher._rows(txn,advice,True)
+        self.assertEqual((rows[0]['amount'],rows[0]['exception']),('100.00','SHORT_WITHHOLDING'))
+        ctx.items['ARI-1']['party_id']='CES'
+        rows=matcher._rows(txn,advice,True)
+        self.assertEqual((rows[0]['amount'],rows[0]['exception']),('98.50','PARTIAL'))
+
     def test_missing_pdf_tool_is_observable(self):
         with TemporaryDirectory() as d:
             root=Path(d);p=root/'remittance_advices';p.mkdir()
