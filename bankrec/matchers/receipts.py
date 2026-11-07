@@ -850,3 +850,37 @@ def match(ph, st):
         if refs_all:
             st.assign(t, [(refs_all[0], amt, "DUPLICATE_PAYMENT")])
             continue
+    _bank_charges_pass(ph, st, cx, rows)
+
+
+XB_MAX_FEE = 75.0   # item currency; observed fees 11.85 .. 66.60 (USD/CAD/EUR/AUD)
+
+
+def _bank_charges_pass(ph, st, cx, rows):
+    """POLICIES: cross-border transfer (XBCT / 'EN DIV') short by a small bank fee -> invoice fully cleared,
+    SHORT_BANK_CHARGES. Only rewrites single-invoice lines claimed by receipts with no exception or PARTIAL."""
+    try:
+        for r in rows:
+            t = r["bank_txn_id"]
+            if st.by.get(t) != "receipts":
+                continue
+            rr = st.rows.get(t) or []
+            if len(rr) != 1:
+                continue
+            iid, a, _cat, e = rr[0]
+            if e not in ("", "PARTIAL") or not iid or cx.info.get(iid, {}).get("item_type") != "ARI":
+                continue
+            txt = (r.get("text") or "").upper()
+            if "XBCT" not in (r.get("bank_code") or "") and "EN DIV" not in txt:
+                continue
+            info = cx.info[iid]
+            if info["currency"] != r["currency"]:
+                continue
+            total = info["total_amount"] or 0.0
+            diff = round(total - r["amount"], 2)
+            if not (0.01 < diff <= min(XB_MAX_FEE, 0.02 * total)):
+                continue
+            st.rows[t] = [(iid, round(total, 2), "", "SHORT_BANK_CHARGES")]
+            st.open[iid] = 0.0
+    except Exception:
+        pass
