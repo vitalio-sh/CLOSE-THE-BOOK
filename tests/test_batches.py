@@ -95,6 +95,21 @@ class BatchTests(unittest.TestCase):
         self.item('API-1','INV1','100',party='S1')
         self.rows('payment_runs',[dict(run_id='RUN12345678',run_type='transfers',execution_date='2025-05-10',debtor_account_id='ES01-A',end_to_end_id='RUN12345678-1',beneficiary='Franco Logistica S.A.',currency='EUR',transfer_amount='100',document_number='INV1',document_type='INVOICE',document_amount='100')])
         self.assertIsNone(BatchMatcher(self.ctx).reconcile(self.txn('100','TRANSFERENCIA FRANCO LOGISTICA S.A.')))
+    def test_md06_refund_skips_collections_of_last_three_weeks(self):
+        # MD06 = debtor refund request, weeks after the debit: the latest collection is the next one.
+        self.item('ARI-1','INV1','50');self.item('ARI-2','INV2','50')
+        self.ctx.items['ARI-1']['open_amount']=D('0');self.ctx.items['ARI-2']['open_amount']=D('0')
+        base=dict(account_id='ES01-A',currency='EUR',debtor_name='Buyer',mandate_id='VTM-DE-0001477',amount='50')
+        self.rows('direct_debit_batches',[dict(base,batch_id='B20250401',collection_date='2025-04-01',end_to_end_id='E1',remittance_info='INV1'),
+                                          dict(base,batch_id='B20250520',collection_date='2025-05-20',end_to_end_id='E2',remittance_info='INV2')])
+        result=BatchMatcher(self.ctx).reconcile(self.txn('-50','RUECKLASTSCHRIFT MD06 MREF+VTM-DE-0001477'))
+        self.assertEqual([(r['item_id'],r['exception']) for r in result],[('ARI-1','RETURNED')])
+        result=BatchMatcher(self.ctx).reconcile(self.txn('-50','RUECKLASTSCHRIFT AM04 MREF+VTM-DE-0001477'))
+        self.assertEqual([(r['item_id'],r['exception']) for r in result],[('ARI-2','RETURNED')])
+    def test_supplier_refund_is_not_a_named_transfer_return(self):
+        self.item('API-1','INV1','100',party='S1')
+        self.rows('payment_runs',[dict(run_id='RUN12345678',run_type='transfers',execution_date='2025-05-10',debtor_account_id='ES01-A',end_to_end_id='RUN12345678-1',beneficiary='Valves Parker Co., Ltd.',currency='EUR',transfer_amount='100',document_number='INV1',document_type='INVOICE',document_amount='100')])
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(self.txn('100','TT IN VALVES PARKER CO., LTD. DEVOLUCION SALDO A FAVOR')))
     def test_return_cannot_precede_source_payment(self):
         self.item('API-1','INV1','100')
         self.rows('payment_runs',[dict(run_id='RUN12345678',run_type='transfers',execution_date='2025-06-02',debtor_account_id='ES01-A',end_to_end_id='RUN12345678-1',beneficiary='Supplier',currency='EUR',transfer_amount='100',document_number='INV1',document_type='INVOICE',document_amount='100')])

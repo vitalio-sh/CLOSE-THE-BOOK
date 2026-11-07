@@ -17,6 +17,8 @@ CENT = D('.01')
 # Return narratives (normalised, no spaces): Spanish/English/French plus German SEPA
 # R-transactions ('RUECKLASTSCHRIFT AM04 MREF+...').
 RETURN_WORDS = ('DEVOL', 'RETURN', 'IMPAY', 'REJECT', 'RUECKLASTSCHRIFT', 'RUCKLASTSCHRIFT')
+REJECTED_TRANSFER = re.compile(r'(?:RETURN(?:ED)?|DEVOLUCION TRANSFERENCIA|RUECKUEBERWEISUNG|RETOUR|REJECT(?:ED)?)'
+                               r'\W+(?:[A-Z]{2}\d{2})\b')
 
 def norm(value):
     return re.sub('[^A-Z0-9]', '', unicodedata.normalize('NFKD', str(value or '')).encode('ascii', 'ignore').decode().upper())
@@ -531,6 +533,10 @@ class BatchMatcher:
         mixed = self._mixed_currency_run(txn, text)
         if mixed:
             return mixed
+        # A rejected transfer carries an ISO reason code ('RETURN MD07', 'DEVOLUCION TRANSFERENCIA AC04');
+        # 'DEVOLUCION SALDO A FAVOR' is a supplier refund, not a return.
+        rejected_transfer = amount > 0 and bool(REJECTED_TRANSFER.search(
+            ' '.join(str(txn.get(k) or '') for k in ('text', 'remittance_info')).upper()))
         ranked = []
         for idx in candidates:
             group = self.groups[idx]
@@ -547,7 +553,7 @@ class BatchMatcher:
             # A rejected transfer often quotes only the beneficiary (POLICIES 3, RETURNED).
             beneficiary = norm(group['rows'][0].get('beneficiary', '')) if group['kind'] == 'payment_runs' else ''
             named = (reverse and not ref and not group['confirming'] and len(beneficiary) >= 6
-                     and beneficiary in text)
+                     and beneficiary in text and rejected_transfer)
             bank_amount = abs(amount)
             if group['currency'] != txn['currency']:
                 if txn.get('orig_currency') != group['currency'] or not txn.get('orig_amount'):
@@ -598,6 +604,17 @@ class BatchMatcher:
             # of that batch; otherwise the latest earlier collection is the returned one.
             if any(named for _,_,named in matches):
                 matches = [m for m in matches if m[2]]
+            # SEPA reason MD06 is a debtor refund request, raised weeks after the debit (POLICIES 3
+            # RETURNED, any reason code); TRAIN windows show 21-69 days. A collection of the last three
+            # weeks is then the next debit of the same mandate, not the refunded one.
+            if re.search(r'(?<![A-Z0-9])MD06(?![A-Z0-9])', ' '.join(str(txn.get(k) or '') for k in ('text', 'remittance_info')).upper()):
+                try:
+                    cutoff = date.fromordinal(date.fromisoformat(txn['booking_date']).toordinal() - 21).isoformat()
+                except (KeyError, ValueError):
+                    cutoff = ''
+                older = [m for m in matches if cutoff and m[0] <= cutoff]
+                if older:
+                    matches = older
             latest = max((d for d,_,_ in matches),default='')
             unique = {tuple((r['item_id'],r['amount']) for r in m): m for d,m,_ in matches if d == latest}
             if len(unique) == 1:
