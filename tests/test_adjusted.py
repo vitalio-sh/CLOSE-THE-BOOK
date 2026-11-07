@@ -117,3 +117,23 @@ class AdjustedSetTests(unittest.TestCase):
         from recon.adjusted import adjusted_sets
         items = [invoice('A', 'F1', '100', payment_terms='D2'), invoice('B', 'F2', '50'), invoice('C', 'F3', '98')]
         self.assertIsNone(adjusted_sets(txn('148', 'Alice Water Works PAYMENT'), ctx(items)))
+
+
+class FractionPartialTests(unittest.TestCase):
+    def test_round_fraction_of_one_invoice_is_partial(self):
+        from recon.adjusted import fraction_partial
+        items = [invoice('A', 'F1', '20920.57'), invoice('B', 'F2', '500')]
+        rows = fraction_partial(txn('14644.39', 'Alice Water Works'), ctx(items))   # 70 %, truncated
+        self.assertEqual([(r['item_id'], r['amount'], r['exception']) for r in rows], [('A', '14644.39', 'PARTIAL')])
+
+    def test_two_candidates_or_touched_invoice_abstain(self):
+        from recon.adjusted import fraction_partial
+        self.assertIsNone(fraction_partial(txn('50', 'Alice Water Works'), ctx([invoice('A', 'F1', '100'), invoice('B', 'F2', '200')])))
+        c = ctx([invoice('A', 'F1', '100')]); c.items['A']['open_amount'] = D('80')
+        self.assertIsNone(fraction_partial(txn('40', 'Alice Water Works'), c))
+
+    def test_bridging_credit_note_wins(self):
+        from recon.adjusted import fraction_partial
+        cr = invoice('CR', 'AB1', '50'); cr['kind'] = 'credit'
+        rows = fraction_partial(txn('50', 'Alice Water Works'), ctx([invoice('A', 'F1', '100'), cr]))
+        self.assertEqual({r['item_id']: r['amount'] for r in rows}, {'A': '100.00', 'CR': '50.00'})

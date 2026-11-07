@@ -7,7 +7,7 @@ instructed amount in the invoice currency (FX_DIFFERENCE replaces the full-clear
 codes). Only exact cent signatures are accepted, and only when they are unique.
 """
 from datetime import date, timedelta
-from decimal import Decimal as D, ROUND_HALF_UP
+from decimal import Decimal as D, ROUND_DOWN, ROUND_HALF_UP
 from itertools import product
 import re
 
@@ -304,5 +304,56 @@ def adjusted_sets(txn, ctx):
     return None
 
 
+# TRAIN: unplanned partial payments ('A CUENTA') are 25/30/40/50/60/70 % of the invoice total
+# and first payments under a guarantee retention are 90/95 %, truncated to the cent.
+PARTIAL_FRACTIONS = tuple(D(x) for x in ('0.25', '0.30', '0.40', '0.50', '0.60', '0.70', '0.90', '0.95'))
+
+
+def fraction_partial(txn, ctx):
+    """An unreferenced receipt that is a round fraction of exactly one untouched invoice of the payer.
+
+    POLICIES 3 PARTIAL (unplanned partial payment, first payment under a retention): the item
+    keeps an open balance and the row amount is the cash. A credit note of the payer that exactly
+    bridges the invoice and the cash is netted instead (POLICIES 2).
+    """
+    if dec(txn['amount']) <= 0:
+        return None
+    parties = party_candidates(txn, ctx)
+    hits, credits, seen = [], [], set()
+    for pid in parties:
+        for iid in ctx.by_party.get(pid, ()):
+            item = ctx.items[iid]
+            if iid in seen or item.get('side') != 'AR' or item.get('entity') != txn.get('entity'):
+                continue
+            seen.add(iid)
+            if dec(item.get('open_amount')) <= 0:
+                continue
+            if item.get('kind') == 'credit':
+                if _eligible(item, txn, True):
+                    credits.append(item)
+                continue
+            total = dec(item.get('total_amount'))
+            if not _eligible(item, txn) or total != dec(item.get('open_amount')):
+                continue
+            cash, fx = target_for(txn, item.get('currency'))
+            if cash is None:
+                continue
+            if any((total * f).quantize(CENT, rounding=ROUND_DOWN) == cash for f in PARTIAL_FRACTIONS):
+                hits.append((item, cash, fx))
+    if len(hits) != 1:
+        return None
+    item, cash, fx = hits[0]
+    opened = dec(item['open_amount'])
+    bridges = [c for c in credits if c.get('party_id') == item.get('party_id') and c.get('currency') == item.get('currency')
+               and abs(opened - dec(c['open_amount']) - cash) <= CENT]
+    if len(bridges) == 1:
+        return sorted([row(txn, item['item_id'], opened, 'FX_DIFFERENCE' if fx else ''),
+                       row(txn, bridges[0]['item_id'], bridges[0]['open_amount'])], key=lambda r: r['item_id'])
+    if bridges:
+        return None
+    return [row(txn, item['item_id'], cash, 'PARTIAL')]
+
+
 def reconcile_adjusted(txn, ctx):
-    return single_adjusted(txn, ctx) or truncated_reference(txn, ctx) or adjusted_sets(txn, ctx)
+    return (single_adjusted(txn, ctx) or truncated_reference(txn, ctx) or fraction_partial(txn, ctx)
+            or adjusted_sets(txn, ctx))
