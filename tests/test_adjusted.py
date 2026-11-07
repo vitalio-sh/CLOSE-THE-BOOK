@@ -75,6 +75,22 @@ class NamesakeTests(unittest.TestCase):
         self.assertIsNone(single_adjusted(t, c))
 
 
+class DiscountedRestTests(unittest.TestCase):
+    def test_quoted_invoice_plus_unquoted_discounted_newest(self):
+        a = invoice('A', 'FV25-00001', '100'); b = invoice('B', 'FV25-00002', '50', payment_terms='D2')
+        b['issue_date'] = '2025-01-10'
+        rows = reconcile(txn('149', 'Alice Water Works FV25-00001'), ctx([a, b]))
+        self.assertEqual({r['item_id']: (r['amount'], r['exception']) for r in rows},
+                         {'A': ('100.00', ''), 'B': ('50.00', 'SHORT_DISCOUNT')})
+
+    def test_two_discounted_candidates_abstain_from_the_fill(self):
+        a = invoice('A', 'FV25-00001', '100'); b = invoice('B', 'FV25-00002', '50', payment_terms='D2')
+        c = invoice('C', 'FV25-00003', '50', payment_terms='D2')
+        b['issue_date'] = c['issue_date'] = '2025-01-10'
+        rows = reconcile(txn('149', 'Alice Water Works FV25-00001'), ctx([a, b, c])) or []
+        self.assertNotIn('SHORT_DISCOUNT', {r['exception'] for r in rows})
+
+
 class QuotedSetTests(unittest.TestCase):
     def test_quoted_fx_invoices_sum_to_original_amount(self):
         items = [invoice('A', 'FV25-00001', '60'), invoice('B', 'FV25-00002', '40'), invoice('C', 'FV25-00003', '17')]

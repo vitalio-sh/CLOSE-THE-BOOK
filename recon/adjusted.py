@@ -116,6 +116,30 @@ def item_options(item, txn, ctx, fx, rate=None, grace=0):
     return options
 
 
+def discount_rest(txn, ctx, members, rest, gap, fx):
+    """The single other open invoice of the payer that, net of its terms discount, is the gap.
+
+    TRAIN (ar_short_discount): a transfer quotes some invoices, pays them in full and also pays
+    the payer's newest invoice net of its early-payment discount without quoting it. Returns
+    (item, row amount, exception) or None when no invoice or several fit (POLICIES 3).
+    """
+    if ctx is None:
+        return None
+    hits = []
+    for item in rest:
+        if item.get('kind') == 'credit':
+            continue
+        terms = discount_terms(item, ctx)
+        if terms is not None and abs(terms[0] - gap) <= CENT:
+            hits.append((item, terms))
+    if len(hits) != 1:
+        return None
+    item, (value, deadline) = hits[0]
+    if _late(txn, deadline, newest_grace(item, list(members) + [item])):
+        return item, value, 'PARTIAL'
+    return item, dec(item['open_amount']), 'FX_DIFFERENCE' if fx else 'SHORT_DISCOUNT'
+
+
 def explain_set(txn, ctx, invoices, credits=()):
     """Rows for exactly these invoices (and netted credits) when one adjustment pattern fits the cash.
 

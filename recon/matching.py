@@ -1106,10 +1106,17 @@ def _gap_fill(txn, open_refs, candidates, ctx=None):
         fill = _ordered_sets(rest, int(gap * 100), txn.get('booking_date', '')) or []
     if not fill and not _credit_family_solves(ctx, txn, party):
         fill = _unique_rest(rest, gap, txn.get('booking_date', '')) or []
+    extra = None
     if not fill:
-        return None
-    return [row(txn, i['item_id'], i['open_amount'], 'FX_DIFFERENCE' if fx and i.get('kind') != 'credit' else '')
-            for i in sorted(open_refs + fill, key=lambda i: i['item_id'])]
+        from .adjusted import discount_rest
+        extra = discount_rest(txn, ctx, open_refs, rest, gap, fx)
+        if extra is None:
+            return None
+    rows = [row(txn, i['item_id'], i['open_amount'], 'FX_DIFFERENCE' if fx and i.get('kind') != 'credit' else '')
+            for i in open_refs + fill]
+    if extra is not None:
+        rows.append(row(txn, extra[0]['item_id'], extra[1], extra[2]))
+    return sorted(rows, key=lambda r: r['item_id'])
 
 
 # Bank statement formats wrap long free text into fixed-width segments joined by ' | '
@@ -1152,7 +1159,7 @@ def _printed_list(txn):
                key=len)
 
 
-def _anchor_fill(txn, anchors, candidates, currency, cash):
+def _anchor_fill(txn, anchors, candidates, currency, cash, ctx=None, fx=False, discounted=None):
     """_gap_fill with an explicit settlement currency and cash (orig_amount for FX receipts)."""
     party = anchors[0]['party_id']
     gap = cash - sum((dec(i['open_amount']) * (-1 if i.get('kind') == 'credit' else 1) for i in anchors), D(0))
@@ -1168,6 +1175,12 @@ def _anchor_fill(txn, anchors, candidates, currency, cash):
         fill = _ordered_sets(rest, int(gap * 100), txn.get('booking_date', '')) or []
     if not fill:
         fill = _unique_rest(rest, gap, txn.get('booking_date', '')) or []
+    if not fill and discounted is not None:
+        from .adjusted import discount_rest
+        extra = discount_rest(txn, ctx, anchors, rest, gap, fx)
+        if extra is not None:
+            discounted[extra[0]['item_id']] = extra[1:]
+            fill = [extra[0]]
     return sorted(anchors + fill, key=lambda i: i['item_id']) if fill else None
 
 
@@ -1333,25 +1346,27 @@ def fragment_partial(txn, ctx, min_anchors=1, min_fragments=2):
     if signed <= 0:
         return None
     chosen = [anchors[iid] for iid in sorted(anchors)]
+    discounted = {}
     scoped = [iid for pid in parties for iid in ctx.by_party.get(pid, ())]
     if signed > cash + CENT:
         held = None if fx else _withholding_fill(txn, ctx, chosen, candidates_of(scoped, txn, ctx), cash)
         return [row(txn, i['item_id'], i['open_amount'], 'SHORT_WITHHOLDING') for i in held] if held else None
     if signed < cash - CENT:
         # The anchored documents plus a FIFO-shaped exact remainder explain the whole cash.
-        filled = _anchor_fill(txn, chosen, candidates_of(scoped, txn, ctx), currency, cash)
+        filled = _anchor_fill(txn, chosen, candidates_of(scoped, txn, ctx), currency, cash, ctx, fx, discounted)
         if filled:
             chosen = filled
         elif not fx:
             held = _withholding_fill(txn, ctx, chosen, candidates_of(scoped, txn, ctx), cash)
             if held:
                 return [row(txn, i['item_id'], i['open_amount'], 'SHORT_WITHHOLDING') for i in held]
-            discounted = _discount_fill(txn, ctx, chosen, candidates_of(scoped, txn, ctx), cash - signed)
-            if discounted:
-                return [row(txn, i['item_id'], i['open_amount'], 'SHORT_DISCOUNT' if i is discounted[-1] else '')
-                        for i in discounted]
+            net = _discount_fill(txn, ctx, chosen, candidates_of(scoped, txn, ctx), cash - signed)
+            if net:
+                return [row(txn, i['item_id'], i['open_amount'], 'SHORT_DISCOUNT' if i is net[-1] else '')
+                        for i in net]
     multi = len(chosen) >= 2
-    return [row(txn, i['item_id'], i['open_amount'],
+    return [row(txn, i['item_id'], *discounted[i['item_id']]) if i['item_id'] in discounted else
+            row(txn, i['item_id'], i['open_amount'],
                 'FX_DIFFERENCE' if fx and i.get('kind') != 'credit'
                 else ('SHORT_DISCOUNT' if multi and _in_discount_window(i, txn, ctx) else ''))
             for i in chosen]
