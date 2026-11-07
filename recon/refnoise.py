@@ -23,6 +23,7 @@ MAX_SECOND_TIER = 3
 PREFER_QUOTED = True
 CHARGES_GUARD = False
 FOUR_GUARD = True
+ASSIGN = True
 AMOUNT_ONLY_K = 99         # max set size without any reference anchor
 
 
@@ -133,6 +134,88 @@ def reference_tokens(txn):
                 if 5 <= len(n) <= 20 and any(c.isdigit() for c in n):
                     tokens.add(n)
     return tokens
+
+
+def reference_sequences(txn):
+    """Ordered token lists, one per free-text field and line-join variant.
+
+    A remittance list names each paid invoice once, but by a fragment (head, tail or a
+    garbled copy of the number), so a token may fit several invoices. A field that repeats
+    its whole list is counted once.
+    """
+    seqs = set()
+    for key in ('text', 'ref2', 'remittance_info'):
+        value = _MONEY.sub(' ', str(txn.get(key) or ''))
+        for variant in {value, value.replace(' | ', '')}:
+            seq = [n for n in map(norm, _TOKEN.findall(variant)) if 5 <= len(n) <= 20 and any(c.isdigit() for c in n)]
+            half = len(seq) // 2
+            if seq and len(seq) % 2 == 0 and seq[:half] == seq[half:]:
+                seq = seq[:half]
+            if seq:
+                seqs.add(tuple(seq))
+    return sorted(seqs)
+
+
+ASSIGN_MAX_TOKENS = 12
+ASSIGN_MAX_NODES = 50000
+
+
+def assigned_set(group, target, seq):
+    """Index set when exactly one set of invoices, one per quoted fragment, sums to the cash.
+
+    Every token with at least one candidate (substring of the number, else one edit from
+    its aligned tail) must be matched to a distinct invoice; the set must be the only exact
+    one and sets near the cash must be rare (same coincidence bound as the open search).
+    Returns a tuple of indices, 'ambiguous', or None.
+    """
+    numbers = [norm(i.get('document_number')) for i in group]
+    values = [cents(i['open_amount']) for i in group]
+    cands = []
+    for t in seq:
+        sub = [k for k, n in enumerate(numbers) if len(n) >= 5 and t in n]
+        if not sub and len(t) >= 6:
+            sub = [k for k, n in enumerate(numbers) if len(n) >= 5 and _level(n, t) == 1]
+        sub = [k for k in sub if values[k] <= target]
+        if sub:
+            cands.append(sub)
+    if not 2 <= len(cands) <= ASSIGN_MAX_TOKENS:
+        return None
+    cands.sort(key=lambda c: (len(c), c))
+    # Repeated fragments with the same candidates take their invoices in increasing order.
+    same = [d > 0 and cands[d] == cands[d - 1] for d in range(len(cands))]
+    window = WINDOW
+    exact, near, nodes = set(), set(), [0]
+    used = []
+
+    def walk(depth, total):
+        nodes[0] += 1
+        if nodes[0] > ASSIGN_MAX_NODES:
+            raise OverflowError
+        if total > target + window:
+            return
+        if depth == len(cands):
+            key = frozenset(used)
+            if total >= target - window:
+                near.add(key)
+                if total == target:
+                    exact.add(key)
+            return
+        floor = used[-1] if same[depth] else -1
+        for k in cands[depth]:
+            if k > floor and k not in used:
+                used.append(k)
+                walk(depth + 1, total + values[k])
+                used.pop()
+
+    try:
+        walk(0, 0)
+    except OverflowError:
+        return None
+    if not exact:
+        return None
+    if len(exact) > 1 or len(near) / (2 * window + 1) > FULL_DENSITY:
+        return 'ambiguous'
+    return tuple(sorted(next(iter(exact))))
 
 
 def _level(n, t):
@@ -300,8 +383,26 @@ def _remainder(rest, gap):
     return found[0]
 
 
-def _solve_party(group, target, tokens, amount_only=True):
+def _solve_party(group, target, tokens, amount_only=True, seqs=()):
     """(items, rule) for the unique evidence-consistent exact set, 'ambiguous', or None."""
+    result = _solve_open(group, target, tokens, amount_only)
+    if isinstance(result, tuple) or not ASSIGN or not seqs:
+        return result
+    # The open search found nothing or several sets: a fragment list that names each paid
+    # invoice once can still single out one set (POLICIES 5.5 truncated/garbled numbers).
+    answers = set()
+    for seq in seqs:
+        found = assigned_set(group, target, seq)
+        if found == 'ambiguous':
+            return result
+        if found:
+            answers.add(found)
+    if len(answers) == 1:
+        return [group[k] for k in answers.pop()], 'fragment_list'
+    return result
+
+
+def _solve_open(group, target, tokens, amount_only=True):
     exact, fuzzy = anchors_of(group, tokens)
     mentioned = anchors_of.mentioned
     attempts = [(exact + fuzzy, 'anchored_fuzzy')] if fuzzy else []
@@ -344,6 +445,7 @@ def reconcile(txn, ctx):
         return None
     target = cents(abs(dec(txn['amount'])))
     tokens = reference_tokens(txn)
+    seqs = reference_sequences(txn)
     # POLICIES 3 SHORT_BANK_CHARGES: a cross-border transfer can arrive short of the
     # invoices, so an exact amount-only set is not evidence there.
     bank_text = words(' | '.join(str(txn.get(k) or '') for k in ('text', 'ref1', 'ref2', 'remittance_info')))
@@ -358,7 +460,7 @@ def reconcile(txn, ctx):
         for pid in sorted(pools):
             if PREFER_QUOTED and best >= 2 and quoted[pid] < best:
                 continue
-            result = _solve_party(pools[pid], target, tokens, amount_only=not charged)
+            result = _solve_party(pools[pid], target, tokens, amount_only=not charged, seqs=seqs)
             if result == 'ambiguous':
                 return None
             if result:

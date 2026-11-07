@@ -81,6 +81,27 @@ class RefNoiseTests(unittest.TestCase):
         found, density = refnoise.small_sets_and_density(values, values[5], stop=stop)
         self.assertEqual(found, [(5,)])
 
+    def test_fragment_list_names_one_invoice_per_token(self):
+        # POLICIES 5.5: each paid invoice is quoted by a fragment (head 'RE2401', middle
+        # '240105', tail '105621'); the list is repeated in the same field.
+        import random
+        rnd = random.Random(5)
+        items = [invoice(f'X{k}', f'RE2401{k:05d}', f'{rnd.randint(10000, 170000) / 100:.2f}') for k in range(1000, 1080)]
+        paid = [invoice('A', 'RE240105633', '1543.94'), invoice('B', 'RE240105621', '699.58'),
+                invoice('C', 'RE240105475', '128.81'), invoice('D', 'RE240105515', '461.41'),
+                invoice('E', 'RE240105155', '272.60'), invoice('F', 'RE240105262', '933.17')]
+        text = 'SEPA-UEBERWEISUNG SVWZ+RE-NR RE2401 105621 105515 240105 105155  RE-NR RE2401 105621 105515 240105 105155'
+        rows = refnoise.reconcile(txn('3106.34', 'ROCAVERDE PISCINAS S.L. ' + text), context(items + paid, CUSTOMERS))
+        self.assertEqual({r['item_id'] for r in rows}, {'A', 'B', 'C', 'D', 'E'})
+        refnoise.ASSIGN = False
+        try:  # the open search alone cannot single the set out in this book
+            self.assertIsNone(refnoise.reconcile(txn('3106.34', 'ROCAVERDE PISCINAS S.L. ' + text),
+                                                 context(items + paid, CUSTOMERS)))
+        finally:
+            refnoise.ASSIGN = True
+        self.assertEqual(refnoise.reference_sequences({'text': text}),
+                         [('RE2401', '105621', '105515', '240105', '105155')])
+
     def test_osa_distance_one(self):
         self.assertTrue(refnoise._osa1('1003740', '0103740'))
         self.assertTrue(refnoise._osa1('0133714', '0103714'))
