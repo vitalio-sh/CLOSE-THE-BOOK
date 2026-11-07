@@ -469,6 +469,35 @@ class DocumentMatcher:
             CENT, rounding=ROUND_HALF_UP)) <= CENT
             for rate in (Decimal('0.0125'), Decimal('0.015'), Decimal('0.10')))
 
+    def _unlabelled_discount(self, txn, line, item, balance):
+        """Recognize an omitted advice reason only from exact contractual terms.
+
+        An explicit reason takes precedence. A previously part-paid invoice,
+        tax-rate coincidence or small cash gap cannot establish a discount.
+        The caller still resolves the entire advice and proves its cash total.
+        """
+        if (norm(line.reason) or item.get('side') != 'AR'
+                or item.get('kind') != 'invoice'
+                or not item.get('item_id', '').startswith('ARI-')):
+            return False
+        total = money(item.get('total_amount', '0'))
+        if total <= 0 or balance != total or line.gross != total or not 0 < line.paid < total:
+            return False
+        terms = getattr(self.ctx, 'payment_terms', {}).get(item.get('payment_terms'), {})
+        if not terms.get('discount_days'):
+            return False
+        try:
+            pct = Decimal(str(terms.get('early_payment_discount_pct') or '0'))
+            elapsed = (date.fromisoformat(txn['booking_date']) - date.fromisoformat(item['issue_date'])).days
+            discount_days = int(terms['discount_days'])
+            deadline = discount_days + 3
+        except (ValueError, KeyError, TypeError, InvalidOperation):
+            return False
+        if not pct.is_finite() or discount_days < 0 or not 0 < pct < 100 or not 0 <= elapsed <= deadline:
+            return False
+        expected = (total * (1 - pct / 100)).quantize(CENT, rounding=ROUND_HALF_UP)
+        return abs(line.paid - expected) <= CENT
+
     def _rows(self, txn, advice, strong_ref):
         if advice.entity and txn.get('entity') != advice.entity:
             return None
@@ -538,6 +567,8 @@ class DocumentMatcher:
                     exc, amount = 'SHORT_WITHHOLDING', balance
                 elif any(x in reason for x in ('WITHHOLD','RETENCIONFISCAL','RETENTIONTAX')):
                     exc, amount = 'SHORT_WITHHOLDING', balance
+                elif self._unlabelled_discount(txn, line, item, balance):
+                    exc, amount = 'SHORT_DISCOUNT', balance
                 else:
                     exc = 'SHORT_DISPUTE' if reason else 'PARTIAL'
             if fx and not credit and exc not in ('PARTIAL', 'SHORT_DISPUTE'):
