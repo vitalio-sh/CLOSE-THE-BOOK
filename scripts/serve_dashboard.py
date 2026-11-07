@@ -15,6 +15,7 @@ ASSETS = {
     '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
     '/style.css': ('style.css', 'text/css; charset=utf-8'),
     '/data.json': ('data.json', 'application/json; charset=utf-8'),
+    '/api/progress': ('progress.json', 'application/json; charset=utf-8'),
 }
 
 

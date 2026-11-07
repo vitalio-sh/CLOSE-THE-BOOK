@@ -1,3 +1,4 @@
+import {createProgressService, storeRun, recordSnapshotRun} from './progress.mjs';
 // Packaging appends: export default createWorker(ASSETS, SEED);
 // R2 conditional writes: https://developers.cloudflare.com/r2/api/workers/workers-api-reference/
 const SNAPSHOT_KEY = 'dashboard/latest.json';
@@ -102,12 +103,26 @@ function publishedSnapshot(snapshot, publishedAt) {
   return {...snapshot, hosting: {...snapshot.hosting, public_snapshot: true, auto_refresh: true, published_at: publishedAt}};
 }
 
-export function createWorker(assets, seed) {
+export function createWorker(assets, seed, fetcher = fetch) {
+  const progress = createProgressService(fetcher);
   const seedVersion = versionOf(seed);
   const fallback = publishedSnapshot(seed, seedVersion.published_at);
   return {
     async fetch(request, env) {
       const path = new URL(request.url).pathname;
+      if (request.method === 'POST' && path === '/api/runs') {
+        if (!(await authorized(request, env.DASHBOARD_RUNS_TOKEN)) && !(await authorized(request, env.DASHBOARD_PUBLISH_TOKEN))) return response({error: 'Unauthorized'}, 401);
+        if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/json')) return response({error: 'JSON required'}, 415);
+        let run;
+        try { run = await boundedJSON(request); }
+        catch (status) { return response({error: 'Invalid or oversized JSON'}, status === 413 ? 413 : 400); }
+        try { const result = await storeRun(env.BUCKET, run); return response(result.body, result.status); }
+        catch { return response({error: 'Run storage unavailable'}, 503); }
+      }
+      if (['GET', 'HEAD'].includes(request.method) && path === '/api/progress') {
+        try { const value = await progress.read(env); return response(request.method === 'HEAD' ? '' : value); }
+        catch { return response({error: 'Progress storage unavailable'}, 503); }
+      }
       if (request.method === 'POST' && path === '/api/snapshot') {
         if (!(await authorized(request, env.DASHBOARD_PUBLISH_TOKEN))) return response({error: 'Unauthorized'}, 401);
         if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/json')) return response({error: 'JSON required'}, 415);
@@ -123,7 +138,10 @@ export function createWorker(assets, seed) {
             if (current && !validVersion(previous)) return response({error: 'Snapshot storage unavailable'}, 503);
             if (validVersion(previous)) {
               const decision = order(next, previous);
-              if (decision === 'duplicate' && current) return response({...previous, status: 'unchanged'});
+              if (decision === 'duplicate' && current) {
+                try { await recordSnapshotRun(env.BUCKET, snapshot); } catch {}
+                return response({...previous, status: 'unchanged'});
+              }
               // A matching seed still needs its first durable R2 write.
               if (!['newer', 'duplicate'].includes(decision)) return response({error: 'Snapshot superseded or conflicts with current run'}, 409);
             }
@@ -132,7 +150,11 @@ export function createWorker(assets, seed) {
             const onlyIf = new Headers(current ? {'If-Match': current.httpEtag} : {'If-None-Match': '*'});
             const written = await env.BUCKET.put(SNAPSHOT_KEY, JSON.stringify(publishedSnapshot(snapshot, publishedAt)), {
               onlyIf, httpMetadata: {contentType: 'application/json; charset=utf-8'}, customMetadata: version});
-            if (written !== null) return response({...version, status: 'published'}, 201);
+            if (written !== null) {
+              let historySaved = false;
+              try { historySaved = (await recordSnapshotRun(env.BUCKET, snapshot)).status < 300; } catch {}
+              return response({...version, status: 'published', history_saved: historySaved}, 201);
+            }
           }
           return response({error: 'Concurrent update; retry publication'}, 409);
         } catch { return response({error: 'Snapshot storage unavailable'}, 503); }

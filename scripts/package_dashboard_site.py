@@ -36,7 +36,10 @@ def main():
     html = assets['/index.html'].replace('Local run snapshot', 'Automatically updated')
     html = html.replace('<title>', '<meta name="robots" content="noindex,nofollow"><title>', 1)
     assets['/index.html'] = html
-    worker = worker_source.read_text() + '\nconst ASSETS = ' + json.dumps(assets,ensure_ascii=False) + ';\n'
+    progress_source = (ROOT / 'dashboard/progress.mjs').read_text()
+    # The deploy output is a single self-contained ES module.
+    worker_code = worker_source.read_text().replace("import {createProgressService, storeRun, recordSnapshotRun} from './progress.mjs';\n", '')
+    worker = progress_source + '\n' + worker_code + '\nconst ASSETS = ' + json.dumps(assets,ensure_ascii=False) + ';\n'
     worker += 'const SEED = ' + json.dumps(data,ensure_ascii=False,separators=(',', ':')) + ';\n'
     worker += 'export default createWorker(ASSETS, SEED);\n'
     source_dir = output / 'worker'

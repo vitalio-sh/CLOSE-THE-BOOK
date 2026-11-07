@@ -17,3 +17,5 @@ dashboard/data.json
 .dashboard-publish.json
 
 dashboard/data.json.lock
+
+dashboard/progress.json

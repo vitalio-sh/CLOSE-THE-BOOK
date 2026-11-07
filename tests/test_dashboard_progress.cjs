@@ -1,0 +1,27 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const elements=new Map();
+const document={visibilityState:'visible',getElementById(id){if(!elements.has(id))elements.set(id,{dataset:{},textContent:'',innerHTML:'',value:'',focus(){this.focused=true},select(){this.selected=true}});return elements.get(id)},addEventListener(){}};
+const sandbox={document,console,Intl,URL,Blob,AbortController,navigator:{},setTimeout:()=>1,clearTimeout:()=>{},fetch(){throw Error('unexpected network')}};
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync('dashboard/app.js','utf8').replace(/start\(\);\s*$/,''),sandbox);
+const run=source=>vm.runInContext(source,sandbox);
+const sample={official:{team_name:'Team 10',best_live:83,rank:2,leader_score:90.69,gap:7.69,checked_at:'2026-11-07T10:00:00Z',submissions:[{sub_id:'old',created_at:'2026-11-07T09:00:00Z',score:83,status:'scored',filename:'best.csv.gz'},{sub_id:'new',created_at:'2026-11-07T09:30:00Z',score:82,status:'scored',filename:'latest.csv.gz'},{sub_id:'pending',created_at:'2026-11-07T09:40:00Z',score:null,status:'scoring',filename:'pending.csv.gz'}]},runs:[{run_id:'r1',label:'<img src=x onerror=alert(1)>',author:'A',branch:'solution/a',commit:'abc1234',phase:'live',created_at:'2026-11-07T09:00:00Z',local_score:null,benchmark:null,validation:{ok:true,official_structure_ok:true},sha256:'hash',transactions:5,seconds:3}]};
+sandbox.sample=sample;
+(async()=>{
+ assert.equal(run('scoreValue(null)'),'—');assert.equal(run('scoreValue(0)'),'0.00');
+ assert.equal(run('percentValue(0.9874)'),'98.74%');
+ assert.match(run('officialSummaryHTML(sample)'),/83\.00/);assert.match(run('officialSummaryHTML(sample)'),/Latest scored submission<\/span><strong class="small-number">82\.00/);
+ const html=run('officialHistoryHTML(sample)');assert.match(html,/-1\.00 pts/);assert.match(html,/Current best/);assert.ok(html.indexOf('pending.csv.gz')<html.indexOf('latest.csv.gz'));
+ const local=run('teamHistoryHTML(sample)');assert.ok(!local.includes('<img'));assert.match(local,/&lt;img/);assert.match(local,/Not evaluated locally/);assert.ok(!local.includes('83.00'));assert.match(local,/Reported passed/);
+ assert.match(run('officialSummaryHTML({official:null,runs:[]})'),/No verified/);
+ assert.match(run('teamHistoryHTML({...sample,runs_truncated:true})'),/complete archive/);
+ run("progressData=null;progressBusy=false;selected='T15';page=2;data={snapshot:'unchanged'};fetchCount=0;fetchJSON=async()=>{fetchCount++;return sample};");
+ await run('checkProgress()');assert.equal(run('progressData.official.best_live'),83);assert.equal(run('selected'),'T15');assert.equal(run('page'),2);assert.equal(run('data.snapshot'),'unchanged');
+ run("fetchJSON=async()=>{throw Error('offline')}");await run('checkProgress()');assert.equal(run('progressData.official.best_live'),83);assert.equal(elements.get('progress-status').dataset.state,'stale');assert.match(elements.get('official-summary').innerHTML,/last verified/);
+ run("fetchJSON=async()=>({official:{},runs:[]})");await run('checkProgress()');assert.equal(run('progressData.official.best_live'),83);
+ run("document.visibilityState='hidden';fetchJSON=async()=>{fetchCount++;return sample};beforeCount=fetchCount;");await run('checkProgress()');assert.equal(run('fetchCount'),run('beforeCount'));
+ run("document.visibilityState='visible';fetchJSON=()=>{fetchCount++;return new Promise(resolve=>releaseFetch=resolve)};beforeCount=fetchCount;");const first=run('checkProgress()');await run('checkProgress()');assert.equal(run('fetchCount'),run('beforeCount+1'));run('releaseFetch(sample)');await first;assert.equal(run('progressBusy'),false);
+ run("document.visibilityState='hidden';setupProgress()");await elements.get('copy-team-prompt').onclick();assert.equal(elements.get('team-prompt').selected,true);assert.match(elements.get('copy-prompt-status').textContent,/Ctrl\+C/);
+ run("navigator.clipboard={writeText:async text=>{copiedPrompt=text}}");await elements.get('copy-team-prompt').onclick();assert.match(run('copiedPrompt'),/dashboard\/runs/);assert.match(run('copiedPrompt'),/Do not merge into main or submit anything/);
+ console.log('Passed: official/local separation, best versus latest, ordered history/deltas, null score, escaped run labels, stale retention, independent refresh, hidden/overlap gating, copy fallback.');
+})().catch(error=>{console.error(error);process.exitCode=1});
