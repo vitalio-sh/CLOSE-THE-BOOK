@@ -74,6 +74,19 @@ class MatchingTests(unittest.TestCase):
         items=[invoice('A','FV25-00001','60'),invoice('B','FV25-00002','40'),invoice('C','FV25-00003','25')]
         rows=reconcile(txn('100','Alice Water Works FV25-00001'),context(items))
         self.assertEqual({r['item_id'] for r in rows},{'A','B'})
+    def test_credit_in_set_needs_its_related_invoice(self):
+        from recon.matching import _credits_supported
+        a=invoice('A','FV25-00001','100');b=invoice('B','FV25-00002','40')
+        c=invoice('C','AB25-00001','40',related_document='FV25-00001');c['kind']='credit'
+        self.assertTrue(_credits_supported([a,c]))
+        c['related_document']='OTHER';self.assertFalse(_credits_supported([a,b,c]))
+        c['related_document']='FV25-00002';self.assertFalse(_credits_supported([a,b,c]))  # full cancellation
+    def test_truncated_prefix_never_forces_single_reference(self):
+        # 'INV24-0115' matches one invoice by prefix, but the cash is the FIFO pair: no abstention.
+        items=[invoice('A','INV24-011501','60'),invoice('B','FV25-00002','40')]
+        items[1]['issue_date']='2025-01-02'
+        rows=reconcile(txn('100','Alice Water Works INVOICE INV24-0115'),context(items))
+        self.assertEqual({r['item_id'] for r in rows},{'A','B'})
     def test_signature_overpayment_single(self):
         items=[invoice('A','F1','480'),invoice('B','F2','700')]
         rows=reconcile(txn('500','Alice Water Works PAYMENT'),context(items))

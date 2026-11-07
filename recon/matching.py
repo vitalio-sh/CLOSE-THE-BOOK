@@ -303,11 +303,12 @@ def reconcile(txn,ctx):
     # Bank texts cut references at 16/35/38 characters: 'INVOICE INV24-0151' for INV24-0151xx.
     truncated_tokens={t for t in (norm(x) for x in re.findall(r'[A-Za-z0-9][A-Za-z0-9/._-]{3,}',raw))
                       if len(t)>=7 and any(c.isdigit() for c in t)}
+    prefix_hits=set()
     for iid in scoped:
         item=ctx.items[iid]
         n=norm(item.get('document_number'))
         if len(n)>=5 and n in compact:refs.add(iid)
-        elif any(len(n)>len(t)>=max(7,len(n)*0.6) and n.startswith(t) for t in truncated_tokens):refs.add(iid)
+        elif any(len(n)>len(t)>=max(7,len(n)*0.6) and n.startswith(t) for t in truncated_tokens):prefix_hits.add(iid)
         elif any(len(v)>=5 and n.endswith(v) for v in numeric_tokens):refs.add(iid)
         elif item.get('customer_po') and len(norm(item['customer_po']))>=6 and norm(item['customer_po']) in compact:refs.add(iid)
     pdf_facts=getattr(ctx,'pdf_facts',None)
@@ -368,6 +369,16 @@ def reconcile(txn,ctx):
         if len(pairs)==1:
             return [row(txn,i['item_id'],i['open_amount']) for i in pairs[0]]
     gap_rows = _gap_fill(txn, open_refs, candidates_of(scoped, txn, ctx))
+    if gap_rows is None and not open_refs and prefix_hits:
+        # Truncated references are weak: they only seed quoted items whose total, alone
+        # or with a FIFO-shaped fill, equals the cash; they never act as a single reference.
+        seeds=[ctx.items[i] for i in sorted(prefix_hits) if _eligible(ctx.items[i],txn)
+               and dec(ctx.items[i].get('open_amount'))>0 and ctx.items[i].get('kind')!='credit']
+        if seeds and len({i['party_id'] for i in seeds})==1:
+            if all(i.get('currency')==txn.get('currency') for i in seeds) and \
+                    abs(sum((dec(i['open_amount']) for i in seeds),D(0))-abs(dec(txn['amount'])))<=CENT:
+                return [row(txn,i['item_id'],i['open_amount']) for i in sorted(seeds,key=lambda x:x['item_id'])]
+            gap_rows = _gap_fill(txn, seeds, candidates_of(scoped, txn, ctx))
     if gap_rows is not None:
         return gap_rows
     if len(valid_refs)==1:
@@ -498,6 +509,22 @@ def _days_between(a, b):
 
 
 def _ordered_sets(group, target, booking):
+    found = _ordered_sets_raw(group, target, booking)
+    return found if found and _credits_supported(found) else None
+
+
+def _credits_supported(items):
+    """A credit note joins a set only with the invoice it references, and never cancels it fully
+    (POLICIES 5.7: a cancelled invoice and its credit note are not settled by bank)."""
+    invoices = {norm(i.get('document_number')): i for i in items if i.get('kind') != 'credit'}
+    for credit in (i for i in items if i.get('kind') == 'credit'):
+        related = invoices.get(norm(credit.get('related_document')))
+        if related is None or dec(credit.get('open_amount')) >= dec(related.get('open_amount')):
+            return False
+    return True
+
+
+def _ordered_sets_raw(group, target, booking):
     """FIFO-shaped exact sets over one payer's open items (signed cents, credits negative).
 
     Order: oldest-first prefix, due-date prefix, then the contiguous run (by issue or due
