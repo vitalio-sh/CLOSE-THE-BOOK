@@ -38,7 +38,8 @@ receipts, payments, nonitem, docref. **La primera línea que se reclama gana.**
 - `payments.py` (nuevo, terminado): cargos directos de proveedor y abonos de proveedor.
   `ap_paid_by_holding` (unas 4.800 líneas) está **escrito pero no registrado**, porque su búsqueda de subconjuntos es
   demasiado lenta. Falta un índice por proveedor. `ap_partial` (unas 2.500 líneas) no está implementado.
-- `receipts.py` (**en curso, agente B**): cobros de cliente. Era el mayor fallo, porque solo buscaba referencias entre
+- `receipts.py` (**trabajo de B a medias**: se paró a las 12:45 sin informe final. La sintaxis es válida y en sample
+  da 64,94, pero no está medido en dev completo): cobros de cliente. Era el mayor fallo, porque solo buscaba referencias entre
   las facturas del pagador identificado: si pagaba un tercero o no reconocía el nombre, la línea quedaba sin reclamar.
 - `docref.py` (nuevo, último en la cadena): si los números de documento del texto suman exactamente el importe
   (misma sociedad y divisa, partidas abiertas y emitidas antes del apunte), asigna sin excepción. Con la cadena
