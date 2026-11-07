@@ -26,6 +26,9 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         handlers.append(('financial_sequences', FinancialSequences(ctx).reconcile))
         from . import refnoise
         handlers.append(('refnoise', lambda txn: refnoise.reconcile(txn, ctx)))
+        # Last resort: uniquely anchored printed fragments of a payer's documents (partial).
+        from .matching import fragment_partial
+        handlers.append(('fragments', lambda txn: fragment_partial(txn, ctx)))
     return handlers, document_stats
 
 

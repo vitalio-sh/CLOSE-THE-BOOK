@@ -646,3 +646,83 @@ def _gap_fill(txn, open_refs, candidates):
     if not fill:
         return None
     return [row(txn, i['item_id'], i['open_amount']) for i in sorted(open_refs + fill, key=lambda i: i['item_id'])]
+
+
+# Bank statement formats wrap long free text into fixed-width segments joined by ' | '
+# (Norma 43 concept lines are 38 characters). A full-width segment continues in the next one.
+_WRAP_WIDTHS = (38,)
+
+
+def _unwrapped(text):
+    parts = str(text or '').split(' | ')
+    out = parts[0] if parts else ''
+    for prev, part in zip(parts, parts[1:]):
+        out += part if len(prev) in _WRAP_WIDTHS else ' ' + part
+    return out
+
+
+def _fragment_tokens(txn):
+    """Printed reference fragments: alphanumeric tokens with at least 4 digits, >= 5 chars."""
+    tokens = []
+    for key in ('text', 'ref1', 'ref2', 'remittance_info'):
+        raw = _unwrapped(txn.get(key))
+        raw = re.sub(r'/(?:ORDP|REMI|EREF|REF|RFB|OBI|ORG|MOTIF|CHGS|BENM)/', ' ', raw, flags=re.I)
+        for match in re.finditer(r'[A-Za-z0-9][A-Za-z0-9/._-]*', raw):
+            token = norm(match[0])
+            if len(token) >= 5 and sum(c.isdigit() for c in token) >= 4:
+                tokens.append(token)
+    return list(dict.fromkeys(tokens))
+
+
+def fragment_partial(txn, ctx, min_anchors=2, min_fragments=3):
+    """Partial allocation of a large receipt whose text lists truncated document numbers.
+
+    POLICIES 5.5: references are truncated (16/35/38 characters) and printed without prefix;
+    5.4: the deductions of such receipts are usually only visible in a remittance advice.
+    When no advice and no exact set explains the cash, every printed fragment contained in
+    exactly one open document of the identified payer anchors that document, at its full
+    open amount. Ambiguous fragments are ignored; the unexplained rest stays unallocated.
+    Never a free subset search: only printed evidence selects documents.
+    """
+    if dec(txn.get('amount')) <= 0 or classify(txn, ctx):
+        return None
+    raw = words(text_of(txn))
+    if re.search(r'DEVOLUCION|RUECKLASTSCHRIFT|RETURNED|IMPAYE|CHARGEBACK|CONTRACARGO|RETURN', raw):
+        return None
+    parties = party_candidates(txn, ctx)
+    if not parties:
+        return None
+    tokens = _fragment_tokens(txn)
+    if len(tokens) < min_fragments:
+        return None
+    pool = []
+    for pid in parties:
+        for iid in ctx.by_party.get(pid, ()):
+            item = ctx.items[iid]
+            if (item.get('side') == 'AR' and item.get('currency') == txn.get('currency')
+                    and item.get('entity') == txn.get('entity')
+                    and item.get('issue_date', '') <= txn.get('booking_date', '')
+                    and dec(item.get('open_amount')) > 0):
+                pool.append((norm(item.get('document_number')), item))
+    if not pool:
+        return None
+    anchors, matched = {}, 0
+    for token in tokens:
+        hits = [item for number, item in pool if len(number) >= len(token) and token in number]
+        if hits:
+            matched += 1
+        if len(hits) == 1:
+            anchors[hits[0]['item_id']] = hits[0]
+    if matched < min_fragments or len(anchors) < min_anchors:
+        return None
+    if len({i['party_id'] for i in anchors.values()}) != 1:
+        return None
+    signed = sum((dec(i['open_amount']) * (-1 if i.get('kind') == 'credit' else 1) for i in anchors.values()), D(0))
+    if signed <= 0 or signed >= abs(dec(txn['amount'])) - CENT:
+        return None
+    # The anchored documents plus a FIFO-shaped exact remainder explain the whole cash.
+    scoped = [iid for pid in parties for iid in ctx.by_party.get(pid, ())]
+    full = _gap_fill(txn, [anchors[iid] for iid in sorted(anchors)], candidates_of(scoped, txn, ctx))
+    if full is not None:
+        return full
+    return [row(txn, iid, anchors[iid]['open_amount']) for iid in sorted(anchors)]
