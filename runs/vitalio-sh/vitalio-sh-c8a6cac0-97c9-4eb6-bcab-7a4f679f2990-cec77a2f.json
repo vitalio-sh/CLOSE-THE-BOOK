@@ -1,0 +1,22 @@
+{
+  "author": "vitalio-sh",
+  "benchmark": "SAMPLE",
+  "branch": "solution/vitalii",
+  "commit": null,
+  "created_at": "2026-11-07T09:42:28.532854+00:00",
+  "label": "Combined deterministic improvements",
+  "local_score": 81.19,
+  "phase": "sample",
+  "precision": 0.998527,
+  "recall": 0.722286,
+  "rows": 27562,
+  "run_id": "vitalio-sh-c8a6cac0-97c9-4eb6-bcab-7a4f679f2990-cec77a2f",
+  "schema_version": 1,
+  "seconds": 35.68,
+  "sha256": "4e23919bda0c2f9bdd0ae372d9076b82f58657d7a338bc56aeed51e4848a1160",
+  "transactions": 8499,
+  "validation": {
+    "official_structure_ok": true,
+    "ok": true
+  }
+}
