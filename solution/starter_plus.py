@@ -5,6 +5,14 @@
 
 Standard library only. Rules, in order, for every bank line:
 
+0a. Direct-debit batch (POLICIES 5.3): a receipt whose text carries the batch_id of a file in direct_debit_batches/
+    and whose amount equals the batch total clears every receipt of that batch. Each batch row is resolved to an
+    invoice of the debtor (mandate_id -> customer in customers.csv) by the document number in its remittance_info
+    (also without prefix / leading zeros); failing that, the debtor's oldest open invoice with the row amount.
+0b. Returned direct debit (POLICIES 3 RETURNED): a debit whose text carries the SEPA mandate of one of our customers.
+    The item is that customer's invoice with the returned amount: preferably one collected under that mandate in a
+    batch of the phase before the return (the latest), otherwise the oldest such invoice. Row: amount = returned
+    amount, exception RETURNED; the invoice is re-opened (it can be re-presented or paid by transfer later).
 1. One-to-one (unchanged from the starter): a token of the bank text is one of our document numbers and the document
    total equals the bank amount.
 2. One-to-many (new): the bank text cites several document numbers (also written without prefix / leading zeros,
@@ -29,6 +37,7 @@ Standard library only. Rules, in order, for every bank line:
 """
 import argparse
 import csv
+import glob
 import gzip
 import os
 import re
@@ -39,6 +48,7 @@ MAX_SUBSET_SEARCH = 18   # above this many candidates of one party we only test 
 MIN_KEY_LEN = 3          # shorter numeric keys are too ambiguous
 MIN_NAME_CHARS = 12      # a truncated name must match at least this many characters
 IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b")
+TOKEN_SPLIT = re.compile(r"[\s|,;+:/]+")  # 'MREF+VTM-DE-0001685' -> 'MREF', 'VTM-DE-0001685'
 
 
 def rcsv(path):
@@ -162,7 +172,7 @@ def main():
 
     # party -> group (a parent company may pay for its subsidiaries)
     group_of, group_members = {}, defaultdict(list)
-    cust_by_iban, names = {}, NameIndex()
+    cust_by_iban, cust_by_mandate, names = {}, {}, NameIndex()
     cust_path = os.path.join(a.data, "masters", "customers.csv")
     if os.path.exists(cust_path):
         with open(cust_path, encoding="utf-8", newline="") as fh:
@@ -173,6 +183,8 @@ def main():
                     group_members[r["group_id"]].append(cid)
                 if r["iban"]:
                     cust_by_iban[norm(r["iban"])] = cid
+                if r.get("sepa_mandate_id"):
+                    cust_by_mandate[norm(r["sepa_mandate_id"])] = cid
                 names.add(r["entity"], r["name"], cid)
                 if r["trade_name"]:
                     names.add(r["entity"], r["trade_name"], cid)
@@ -186,6 +198,7 @@ def main():
     items, by_number = {}, defaultdict(list)          # starter structures (one-to-one)
     info, by_key = {}, defaultdict(set)               # one-to-many structures
     ar_open = defaultdict(list)                       # (entity, customer, currency, open cents) -> [(issue date, item)]
+    ar_all = defaultdict(list)                        # (customer, currency, total cents) -> [(issue date, item)]
     for ph in phases:
         for name, numcol in (("ar_invoices", "document_number"), ("ap_invoices", "supplier_invoice_number"), ("credit_notes", "document_number")):
             p = os.path.join(a.data, ph, f"{name}.csv.gz")
@@ -202,8 +215,11 @@ def main():
                     "sign": 1 if kind in ("ARI", "API") else -1,
                     "currency": r["currency"],
                     "party": group_of.get(party, party),
+                    "cust": party,
+                    "kind": kind,
                 }
                 if kind == "ARI":
+                    ar_all[(r["customer_id"], r["currency"], items[iid])].append((r["issue_date"], iid))
                     # candidate for the payer + amount rule, if it is open
                     if ph == a.phase or open_at_start is None:
                         open_amt = items[iid]
@@ -214,14 +230,82 @@ def main():
                 for k in number_keys(r[numcol]):
                     by_key[k].add(iid)
 
+    for k in ar_all:
+        ar_all[k].sort()
+
+    # direct-debit batch files of the phase: batch_id -> rows
+    dd_batches = defaultdict(list)
+    for p in sorted(glob.glob(os.path.join(a.data, a.phase, "direct_debit_batches", "*.csv"))):
+        with open(p, encoding="utf-8", newline="") as fh:
+            for r in csv.DictReader(fh):
+                dd_batches[norm(r["batch_id"])].append(r)
+
     used = set()
+    returned = set()
+    dd_collected = defaultdict(list)                  # mandate -> [(collection date, item)] collected by our batches
+
+    def resolve_dd_row(r, currency):
+        """Invoice paid by one row of a direct-debit batch file."""
+        cid = cust_by_mandate.get(norm(r["mandate_id"]))
+        row_amt = cents(r["amount"])
+        cands = {iid for k in text_keys(r["remittance_info"].upper()) for iid in by_key.get(k, ())
+                 if info[iid]["kind"] == "ARI" and info[iid]["currency"] == currency
+                 and (cid is None or info[iid]["cust"] == cid)}
+        if len(cands) > 1:
+            cands = {iid for iid in cands if items[iid] == row_amt}
+        if len(cands) == 1:
+            return cands.pop()
+        if cid:                                       # no usable number: debtor's oldest open invoice with this amount
+            for issue, iid in ar_all.get((cid, currency, row_amt), ()):
+                if iid not in used and issue <= r["collection_date"]:
+                    return iid
+        return None
+
     txns = list(rcsv(os.path.join(a.data, a.phase, "bank_transactions.csv.gz")))
     result = {}                                       # bank_txn_id -> list of output rows
     pending = []                                      # receipts left for the payer + amount rule
-    n_match = n_multi = n_multi_items = n_payer = 0
+    n_match = n_multi = n_multi_items = n_payer = n_batch = n_batch_items = n_returned = 0
     for t in txns:
         amt = cents(t["amount"])
         text = " ".join([t["text"], t["ref1"], t["ref2"], t["remittance_info"]]).upper()
+        tokens = [norm(x) for x in TOKEN_SPLIT.split(text) if x]
+        tokens += [d for x in tokens for d in re.findall(r"\d{8,}", x)]   # 'DEV02250523133' -> '02250523133'
+
+        # 0a) direct-debit batch credit
+        if amt > 0:
+            batch = next((dd_batches[x] for x in tokens if x in dd_batches
+                          and cents(dd_batches[x][0]["batch_total"]) == amt), None)
+            if batch:
+                out = []
+                for r in batch:
+                    iid = resolve_dd_row(r, t["currency"])
+                    if iid and iid not in {o[1] for o in out}:
+                        used.add(iid)
+                        returned.discard(iid)
+                        dd_collected[norm(r["mandate_id"])].append((r["collection_date"], iid))
+                        out.append([t["bank_txn_id"], iid, f"{cents(r['amount']) / 100:.2f}", "", ""])
+                if out:
+                    result[t["bank_txn_id"]] = out
+                    n_batch += 1
+                    n_batch_items += len(out)
+                    continue
+
+        # 0b) returned direct debit: a debit carrying one of our customers' SEPA mandates
+        if amt < 0:
+            mandate = next((x for x in tokens if x in cust_by_mandate), None)
+            if mandate:
+                cid, day = cust_by_mandate[mandate], t["booking_date"]
+                collected = [iid for d, iid in sorted(dd_collected.get(mandate, ()), reverse=True)
+                             if d <= day and items[iid] == -amt and iid not in returned]
+                older = [iid for issue, iid in ar_all.get((cid, t["currency"], -amt), ())
+                         if issue <= day and iid not in returned]
+                iid = (collected or older or [None])[0]
+                if iid:
+                    used.discard(iid)                 # the invoice is open again
+                    returned.add(iid)
+                    n_returned += 1
+                    result[t["bank_txn_id"]] = [[t["bank_txn_id"], iid, f"{-amt / 100:.2f}", "", "RETURNED"]]
+                    continue
 
         # 1) one-to-one, exactly as the starter
         hit = None
@@ -315,7 +399,7 @@ def main():
         w = csv.writer(fh, lineterminator="\n")
         w.writerow(["bank_txn_id", "item_id", "amount", "category", "exception"])
         w.writerows(rows)
-    print(f"{len(rows)} rows ({n_match} one-to-one, {n_multi} one-to-many lines with {n_multi_items} items, "
+    print(f"{len(rows)} rows ({n_batch} DD batches with {n_batch_items} items, {n_returned} returned, {n_match} one-to-one,{n_multi} one-to-many lines with {n_multi_items} items, "
           f"{n_payer} payer+amount) -> {a.out}")
 
 
