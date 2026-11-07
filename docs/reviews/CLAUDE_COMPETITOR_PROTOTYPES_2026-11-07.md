@@ -96,3 +96,26 @@ There are 8 in October, 2 in January and 4 on SAMPLE (listed above). Most are `a
 - `documents.py` is untouched. Advice rows already agree with golden (22,018 of 22,036 in October), so amount-based deduction classification was not worth a conflict with R8.
 - Confirming (R7) was not touched. CuentaMinds' evidence suggests dropping R7's uniqueness proof (see the research doc §3, item 7).
 - To integrate, cherry-pick the commits in order onto the current accepted candidate. Each commit is one idea with its own tests.
+
+## Handoff to the main chat (sole LIVE uploader), prepared 13:30 Madrid
+
+Everything `scripts/submit_live.py` needs is ready, and its own `--dry-run` returns `"status": "verified"`.
+
+- **Candidate tag:** `experiment/2026-11-07-claude-competitor-ideas` → `db75b01aa85057d90f9e53f3539fb396d80c68ba`.
+- **Baseline:** `candidate/2026-11-07-r1-v5-on-t3a-r2` (`b49a623`). This is the latest scored LIVE artifact (official 84.06), and its source hashes match the commit.
+- **LIVE artifact:** `outputs/review_coordination/live_claude_competitor_ideas/submission.csv.gz`, SHA-256 `9658a299c3e590177e150832371b903f16c89c4662c89e741a14e8b399ab8e79`.
+  - Generated with `scripts/run_experiment.py --phase live`, strict PDF; `experiment.json` is `verified` with `inputs_changed: false`.
+  - The bytes are identical to an independent earlier run, so the output is deterministic.
+  - The link points to `claude_competitor_lane/live_db75b01`.
+- **Handoff file:** `outputs/review_coordination/live_claude_competitor_ideas/handoff.json`.
+- **Comparison report:** `docs/reviews/CLAUDE_COMPETITOR_IDEAS_VALIDATION_2026-11-07.json`.
+  - It was produced by `compare_three_superset.py`, a verbatim copy of `compare_three.py` with one documented deviation.
+  - The identical-PDF assertion is replaced by a strict-superset check: every baseline PDF input and fact is present and byte-identical. The candidate restores batch-referenced closed invoices, which adds about 1,000 required PDFs per window. SAMPLE PDF evidence is identical.
+  - Tagged source hashes are verified in all three windows.
+- **Evidence:** `outputs/platform/evidence/claude_competitor_ideas.json`.
+
+Upload command (main chat only, without `--dry-run`; FINAL is not authorized):
+
+```sh
+python3 scripts/submit_live.py --submission outputs/review_coordination/live_claude_competitor_ideas/submission.csv.gz --candidate experiment/2026-11-07-claude-competitor-ideas --evidence outputs/platform/evidence/claude_competitor_ideas.json
+```
