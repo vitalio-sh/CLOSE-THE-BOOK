@@ -567,7 +567,8 @@ def due_window(txn, ctx):
     POLICIES 5.5 (no usable reference, name only): customers pay their open invoices in
     due-date order, leaving out one or two (disputed or already in another payment). The
     set must be the only such window in the payer's open book, the only payer with one, and
-    near-cash windows must be rare (coincidence bound); quoted invoices disable the rule.
+    near-cash windows must be rare (coincidence bound); every invoice the text quotes
+    (resolved through a noisy reference) must lie inside the window.
     """
     if dec(txn.get('amount')) <= 0 or classify(txn, ctx):
         return None
@@ -579,13 +580,16 @@ def due_window(txn, ctx):
         answers = []
         for pid, group in sorted(_pool(txn, ctx, parties).items()):
             exact, fuzzy = anchors_of(group, tokens)
-            if exact or fuzzy:
-                return None  # quoted invoices: not a name-only receipt
+            quoted = {i['item_id'] for i in exact + fuzzy}
             sets, order, density = window_sets(group, target)
             if len(sets) > 1 or (sets and density > FULL_DENSITY):
                 return None
             if sets:
-                answers.append([order[k] for k in sorted(sets[0])])
+                chosen = [order[k] for k in sorted(sets[0])]
+                # Quoted invoices (noisy references, 5.5) must all lie inside the window.
+                if not quoted <= {i['item_id'] for i in chosen}:
+                    return None
+                answers.append(chosen)
         if len(answers) > 1:
             return None
         if answers:
