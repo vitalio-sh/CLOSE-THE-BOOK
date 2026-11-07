@@ -106,8 +106,27 @@ class HistoryTests(unittest.TestCase):
         # POLICIES 5.4/5.5: our number without prefix ('RECIBO 0121479' for INV24-0121479).
         with tempfile.TemporaryDirectory() as d:
             c=self.context(d)
-            self.write(c,[self.record('ARI-2025-1','INV25-0121479','2025-05-01','PT01'),self.record('ARI-2025-2','INV25-0121480','2025-05-01','PT01')])
+            self.write(c,[dict(self.record('ARI-2025-1','INV25-0121479','2025-05-01','PT01'),total_amount='998.35'),self.record('ARI-2025-2','INV25-0121480','2025-05-01','PT01')])
             self.batch(c,'direct_debit_batches','PT01_B01_202506.csv',[dict(batch_id='B1',collection_date='2025-06-20',account_id='A',currency='EUR',mandate_id='M1',debtor_name='X',amount='998.35',remittance_info='RECIBO 0121479')])
             enrich_referenced_closed(c,[dict(text='DEVOLUCION RECIBO AM04',amount='-998.35',booking_date='2025-07-01',entity='PT01')])
             self.assertIn('ARI-2025-1',c.items);self.assertNotIn('ARI-2025-2',c.items)
+    def test_recibo_digit_tail_restores_collected_invoice(self):
+        # A batch row printing 'RECIBO 0121479' collected 'INV24-0121479' (POLICIES 5.4); a later return
+        # re-opens it, so restore it when entity, digit tail and amount agree.
+        with tempfile.TemporaryDirectory() as d:
+            c=self.context(d)
+            rows=[dict(self.record('ARI-2024-1','INV24-0121479','2024-08-21','PT01'),total_amount='998.35'),
+                  dict(self.record('ARI-2024-2','INV23-0121479','2023-08-21','PT01'),total_amount='120.00'),
+                  dict(self.record('ARI-2024-3','INV24-0121479','2024-08-21','AU01'),total_amount='998.35'),
+                  dict(self.record('ARI-2024-4','1102416120','2024-08-22','US01'),total_amount='246.03')]
+            self.write(c,rows)
+            base=dict(batch_id='B1',scheme='SEPA CORE',collection_date='2024-09-20',account_id='A',currency='EUR',batch_total='1',
+                      end_to_end_id='B1-1',mandate_id='VTM-PT-0001462',debtor_name='X',debtor_iban='',re_presentation='N')
+            self.batch(c,'direct_debit_batches','PT01_PENA_202409.csv',[dict(base,amount='998.35',remittance_info='RECIBO 0121479')])
+            self.batch(c,'direct_debit_batches','US01_HPNB_202409.csv',[dict(base,amount='246.03',remittance_info='RECIBO 416120')])
+            enrich_referenced_closed(c,[dict(text='x',booking_date='2024-10-01',entity='PT01')])
+            self.assertIn('ARI-2024-1',c.items);self.assertIn('ARI-2024-4',c.items)
+            self.assertNotIn('ARI-2024-2',c.items)  # other amount
+            self.assertNotIn('ARI-2024-3',c.items)  # other entity
+            self.assertEqual(c.items['ARI-2024-1']['open_amount'],Decimal(0))
 if __name__=='__main__':unittest.main()
