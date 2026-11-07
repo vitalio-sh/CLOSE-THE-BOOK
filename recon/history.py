@@ -121,12 +121,14 @@ def _batch_references(ctx, phase_dir, first_date, refs):
     added = 0
     roots = [phase_dir] + [Path(p) for p in getattr(ctx, 'history_dirs', ())]
     seen = set()
-    for n, root in enumerate(roots):
+    for root in roots:
         for path in sorted((Path(root) / 'direct_debit_batches').glob('*.csv')):
             if path.name.startswith('._') or path.name in seen:
                 continue
             month = re.search(r'_(\d{6})(?:_\d+)?\.csv$', path.name)
-            if n and (not month or month.group(1) < floor):
+            # The floor applies to every folder: evaluation windows ship all earlier
+            # batch files inside the phase folder, LIVE/FINAL only in-phase files.
+            if not month or month.group(1) < floor:
                 continue
             seen.add(path.name)
             entity = path.name.split('_')[0]

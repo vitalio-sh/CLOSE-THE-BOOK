@@ -1,7 +1,7 @@
 #!/bin/bash
 # Evaluate the current worktree source on the October and January windows (and optionally SAMPLE)
 # with the same prepared inputs, PDF settings and cache as the evaluation lane.
-# Usage: scripts/claude_lane_eval.sh <label> [sample]
+# Usage: scripts/claude_lane_eval.sh <label> [sample|nosample] [git-ref]   (default: working tree)
 set -euo pipefail
 LABEL="$1"
 WT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -12,7 +12,12 @@ PY=/Applications/Xcode.app/Contents/Developer/usr/bin/python3
 mkdir -p "$OUT"
 SNAP="$OUT/source"
 rm -rf "$SNAP" && mkdir -p "$SNAP"
-cp -R "$WT/recon" "$WT/scripts" "$WT/vendor" "$SNAP/"
+if [ -n "${3:-}" ]; then
+  git -C "$WT" archive "$3" recon scripts vendor | tar -x -C "$SNAP"
+  git -C "$WT" rev-parse "$3" > "$OUT/source_ref.txt"
+else
+  cp -R "$WT/recon" "$WT/scripts" "$WT/vendor" "$SNAP/"
+fi
 PDF=(--pdf-facts --require-pdf-complete --pdf-prewarm --pdf-max-documents 200000 --pdf-max-party-documents 200000
      --pdf-budget-seconds 1800 --pdf-cache-dir "$LANE/shared_pdf_cache")
 run_window() {
