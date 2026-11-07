@@ -21,6 +21,8 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
     if 'matching' in enabled:
         from .matching import reconcile, classify
         handlers.append(('category', lambda txn: classify(txn, ctx)))
+        from .return_groups import reconcile_return_group
+        handlers.append(('return_groups', lambda txn: reconcile_return_group(txn, ctx)))
         handlers.append(('matching', lambda txn: reconcile(txn, ctx)))
         from .financial_sequences import FinancialSequences
         handlers.append(('financial_sequences', FinancialSequences(ctx).reconcile))
