@@ -3,7 +3,8 @@
 Only runs after every other module abstained. A proposal always clears full open
 amounts of one payer's open invoices whose total equals the cash exactly, and the
 set must be the only one consistent with the evidence. No amount-only global lookup:
-the candidate pool is the open book of payers named in the bank text.
+the candidate pool is the open book of payers named in the bank text, and an exact
+sum is accepted only when the open book makes a coincidental hit unlikely.
 """
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
@@ -11,9 +12,15 @@ from decimal import Decimal
 import re
 
 from .matching import norm, row, dec, text_of, _eligible, _index, classify
-from .subsets import subset_solutions
 
 D = Decimal
+WINDOW = 2000            # cents; neighbourhood used to estimate coincidental exact sums
+FULL_POOL = 24           # exhaustive meet-in-the-middle search up to this many candidates
+FULL_DENSITY = 0.03      # max expected coincidental hits for an exhaustive search
+SMALL_K = 3              # larger pools: only sets of at most this many unreferenced items
+SMALL_DENSITY = 0.02
+MAX_SECOND_TIER = 3
+AMOUNT_ONLY_K = 99         # max set size without any reference anchor
 
 
 def _short_alias_index(ctx):
@@ -30,12 +37,12 @@ def _short_alias_index(ctx):
     return short
 
 
-def payer_candidates(txn, ctx):
-    """Every customer of the bank line's entity whose name evidence ties for best.
+def payer_tiers(txn, ctx):
+    """Customers of the bank line's entity named in the text, best evidence tier first.
 
-    POLICIES 5.5: party names in bank texts are truncated or trade names. Many
-    customers share one printed name, so a tie keeps all of them (no rank cut);
-    the open-book evidence below must then single out one payer.
+    POLICIES 5.5: party names in bank texts are truncated or trade names, and many
+    customers share one printed name, so a tier keeps every tied customer (no rank
+    cut). Short names (6-9 characters) are matched as whole aliases.
     """
     prefixes, ibans, aliases, children, parties = _index(ctx)
     short = _short_alias_index(ctx)
@@ -74,14 +81,23 @@ def payer_candidates(txn, ctx):
     if not ranked:
         return []
     best = max(score for score, _ in ranked)
-    selected = sorted(pid for score, pid in ranked if score >= best - 8)
-    for pid in list(selected):
-        selected.extend(sorted(children.get(pid, ())))
-    return list(dict.fromkeys(selected))
+    tiers = [sorted(pid for score, pid in ranked if score >= best - 8)]
+    # A weaker tier (a longer printed name, e.g. 'S.L.U.' against 'S.L.') is tried only
+    # when it is a handful of customers with a 16+ character name prefix in the text.
+    second = sorted(pid for score, pid in ranked if 46 <= score < best - 8)
+    if len(second) <= MAX_SECOND_TIER:
+        tiers.append(second)
+    result = []
+    for tier in tiers:
+        if tier:
+            for pid in list(tier):
+                tier.extend(sorted(children.get(pid, ())))
+            result.append(list(dict.fromkeys(tier)))
+    return result
 
 
 def _osa1(a, b):
-    """True when optimal-string-alignment distance is exactly 1."""
+    """True when the optimal-string-alignment distance is exactly 1."""
     if a == b or abs(len(a) - len(b)) > 1:
         return False
     if len(a) == len(b):
@@ -91,46 +107,61 @@ def _osa1(a, b):
         return len(diff) == 2 and diff[1] == diff[0] + 1 and a[diff[0]] == b[diff[1]] and a[diff[1]] == b[diff[0]]
     if len(a) > len(b):
         a, b = b, a
-    for i in range(len(b)):
-        if b[:i] + b[i + 1:] == a:
-            return True
-    return False
+    return any(b[:i] + b[i + 1:] == a for i in range(len(b)))
 
 
 _MONEY = re.compile(r'\d+[.,]\d{2}(?!\d)')
+_TOKEN = re.compile(r'[A-Za-z0-9][A-Za-z0-9/_-]*')
 
 
 def reference_tokens(txn):
-    """Alphanumeric tokens with digits from the free-text fields; money amounts excluded."""
-    fields = ' | '.join(str(txn.get(k) or '') for k in ('text', 'ref2', 'remittance_info'))
-    fields = _MONEY.sub(' ', fields)
+    """Distinct alphanumeric tokens with digits from the free-text fields.
+
+    Money amounts are removed first (they must never clear an invoice). Norma 43
+    concept lines are cut at a fixed width and joined with ' | ', which splits a
+    reference in two; the joined variant restores it.
+    """
     tokens = set()
-    for token in re.findall(r'[A-Za-z0-9][A-Za-z0-9/_-]*', fields):
-        n = norm(token)
-        if 4 <= len(n) <= 20 and any(c.isdigit() for c in n):
-            tokens.add(n)
+    for key in ('text', 'ref2', 'remittance_info'):
+        value = _MONEY.sub(' ', str(txn.get(key) or ''))
+        for variant in {value, value.replace(' | ', '')}:
+            for token in _TOKEN.findall(variant):
+                n = norm(token)
+                if 5 <= len(n) <= 20 and any(c.isdigit() for c in n):
+                    tokens.add(n)
     return tokens
 
 
-def evidence(item, tokens, compact):
-    """'strong' (exact, suffix), 'fuzzy' (one edit), 'prefix' (truncated) or ''."""
-    n = norm(item.get('document_number'))
-    if len(n) < 5:
-        return ''
-    if n in compact:
-        return 'strong'
+def _level(n, t):
+    """2 = token is the number or a substring of it, 1 = one edit from its aligned tail, 0 = none."""
+    if t in n:
+        return 2
+    if len(t) >= 6:
+        for length in (len(t) - 1, len(t), len(t) + 1):
+            if 5 <= length <= len(n) and _osa1(n[-length:], t):
+                return 1
+    return 0
+
+
+def anchors_of(group, tokens):
+    """Items singled out by a reference token within one payer's open invoices.
+
+    A token is evidence only when it designates exactly one open invoice: by
+    substring first (number without prefix, truncated, cut at 16/35/38), else by
+    a single typo or transposition of its aligned tail (POLICIES 5.5).
+    """
+    numbers = [(i, norm(i.get('document_number'))) for i in group]
+    exact, fuzzy = {}, {}
     for t in tokens:
-        if len(t) >= 5 and n.endswith(t):
-            return 'strong'
-    for t in tokens:
-        if len(t) >= 6:
-            for length in (len(t) - 1, len(t), len(t) + 1):
-                if 5 <= length <= len(n) and _osa1(n[-length:], t):
-                    return 'fuzzy'
-    for t in tokens:
-        if 5 <= len(t) < len(n) and n.startswith(t):
-            return 'prefix'
-    return ''
+        hits = [(i, _level(n, t)) for i, n in numbers if len(n) >= 5]
+        sub = [i for i, level in hits if level == 2]
+        if len(sub) == 1:
+            exact[sub[0]['item_id']] = sub[0]
+        elif not sub:
+            one = [i for i, level in hits if level == 1]
+            if len(one) == 1:
+                fuzzy[one[0]['item_id']] = one[0]
+    return list(exact.values()), [i for k, i in fuzzy.items() if k not in exact]
 
 
 def _pool(txn, ctx, parties):
@@ -158,12 +189,12 @@ def _half_sums(values):
     return sums
 
 
-def exact_and_density(values, target, window=2000):
-    """Up to two exact index sets plus the count of subsets whose sum lies within +-window.
+def exact_and_density(values, target, window=WINDOW):
+    """Up to two exact index sets plus the expected number of coincidental hits.
 
-    The neighbourhood count estimates how many sets would hit the target by
-    coincidence: with N sums spread over 2*window+1 cents, an exact hit carries
-    evidence only when N/(2*window+1) is small.
+    With N subset sums inside target +- window, an exact hit is evidence only when
+    N / (2*window + 1) -- the chance that some set sums to the target by accident --
+    is small. Meet in the middle, so only for small candidate lists.
     """
     mid = len(values) // 2
     left = _half_sums(values[:mid])
@@ -184,54 +215,125 @@ def exact_and_density(values, target, window=2000):
     return found[:2], near / (2 * window + 1)
 
 
-def _solve_party(group, target, tokens, compact, max_pool=24, max_density=0.03):
-    """Return (items, rule) for the unique evidence-consistent exact set, or None/'ambiguous'."""
-    ev = {i['item_id']: evidence(i, tokens, compact) for i in group}
-    strong = [i for i in group if ev[i['item_id']] == 'strong']
-    weak = [i for i in group if ev[i['item_id']] in ('fuzzy', 'prefix')]
-    for anchors, rule in ((strong + weak, 'anchored_all'), (strong, 'anchored_strong')):
-        if not anchors and rule == 'anchored_strong':
-            anchors = []
+def small_sets_and_density(values, target, kmax=SMALL_K, window=WINDOW, stop=None):
+    """Exact sets of at most kmax items (up to two) and the same density estimate restricted to them.
+
+    Once the neighbourhood count passes `stop` the density is reported as infinite
+    and only the existence of an exact set is still determined.
+    """
+    n = len(values)
+    order = sorted(range(n), key=values.__getitem__)
+    sv = [values[i] for i in order]
+    found, near = [], 0
+    lo, hi = bisect_left(sv, target - window), bisect_right(sv, target + window)
+    near += hi - lo
+    found += [(order[j],) for j in range(bisect_left(sv, target), bisect_right(sv, target))][:2]
+    if kmax >= 2:
+        for a in range(n):
+            lo = bisect_left(sv, target - window - sv[a], a + 1)
+            hi = bisect_right(sv, target + window - sv[a], a + 1)
+            near += hi - lo
+            if len(found) < 2:
+                e = bisect_left(sv, target - sv[a], lo, hi)
+                found += [(order[a], order[j]) for j in range(e, bisect_right(sv, target - sv[a], lo, hi))][:2]
+    dense = stop is not None and near > stop
+    top = sv[-1] if sv else 0
+    if kmax >= 3 and not dense:
+        for a in range(n):
+            # Skip partners too small to reach the window even with the largest third item.
+            for b in range(max(a + 1, bisect_left(sv, target - window - sv[a] - top)), n):
+                s = sv[a] + sv[b]
+                if s > target + window:
+                    break
+                lo = bisect_left(sv, target - window - s, b + 1)
+                hi = bisect_right(sv, target + window - s, b + 1)
+                near += hi - lo
+                if len(found) < 2 and hi > lo:
+                    e = bisect_left(sv, target - s, lo, hi)
+                    found += [(order[a], order[b], order[j]) for j in range(e, bisect_right(sv, target - s, lo, hi))][:2]
+            if stop is not None and near > stop:
+                dense = True
+                break
+    if dense:
+        if not found and kmax >= 3:
+            last = {}
+            for j, v in enumerate(sv):
+                last[v] = j
+            for a in range(n):
+                for b in range(max(a + 1, bisect_left(sv, target - sv[a] - top)), n):
+                    j = last.get(target - sv[a] - sv[b])
+                    if j is not None and j > b:
+                        found.append((order[a], order[b], order[j]))
+                        break
+                if found:
+                    break
+        return found[:2], float('inf')
+    return found[:2], near / (2 * window + 1)
+
+
+def _remainder(rest, gap):
+    """('ok', indices) for a unique low-density exact set, 'ambiguous', or None."""
+    values = [cents(i['open_amount']) for i in rest]
+    if len(rest) <= FULL_POOL:
+        found, density = exact_and_density(values, gap)
+        limit = FULL_DENSITY
+    else:
+        found, density = small_sets_and_density(values, gap, stop=SMALL_DENSITY * (2 * WINDOW + 1))
+        limit = SMALL_DENSITY
+    if not found:
+        return None
+    if len(found) > 1 or density > limit:
+        return 'ambiguous'
+    _solve_party.meta = (len(found[0]), len(rest), round(density, 4))
+    return found[0]
+
+
+def _solve_party(group, target, tokens):
+    """(items, rule) for the unique evidence-consistent exact set, 'ambiguous', or None."""
+    exact, fuzzy = anchors_of(group, tokens)
+    attempts = [(exact + fuzzy, 'anchored_fuzzy')] if fuzzy else []
+    attempts.append((exact, 'anchored' if exact else 'amount_only'))
+    for anchors, rule in attempts:
         gap = target - sum(cents(i['open_amount']) for i in anchors)
         if gap < 0:
             continue
-        if gap == 0 and anchors:
-            return anchors, rule
-        rest = [i for i in group if i not in anchors and 0 < cents(i['open_amount']) <= gap]
-        if len(rest) > max_pool:
+        if gap == 0:
+            if anchors:
+                return anchors, rule
             continue
-        found, lam = exact_and_density([cents(i['open_amount']) for i in rest], gap)
-        if len(found) == 1 and lam > max_density:
+        chosen = {i['item_id'] for i in anchors}
+        rest = [i for i in group if i['item_id'] not in chosen and 0 < cents(i['open_amount']) <= gap]
+        found = _remainder(rest, gap)
+        if found == 'ambiguous':
             return 'ambiguous'
-        if len(found) == 1:
-            _solve_party.meta = (len(anchors), len(found[0]), len(rest), round(lam, 3))
-            return anchors + [rest[k] for k in found[0]], (rule if anchors else 'subset_free')
-        if len(found) > 1:
-            return 'ambiguous'
+        if found is not None:
+            if not anchors and len(found) > AMOUNT_ONLY_K:
+                return 'ambiguous'
+            return anchors + [rest[k] for k in found], rule
     return None
 
 
-def reconcile(txn, ctx, max_pool=24):
+def reconcile(txn, ctx):
     if dec(txn.get('amount')) <= 0 or classify(txn, ctx):
         return None
-    parties = payer_candidates(txn, ctx)
-    if not parties:
-        return None
-    pools = _pool(txn, ctx, parties)
-    if not pools:
+    tiers = payer_tiers(txn, ctx)
+    if not tiers:
         return None
     target = cents(abs(dec(txn['amount'])))
     tokens = reference_tokens(txn)
-    compact = norm(' | '.join(str(txn.get(k) or '') for k in ('text', 'ref2', 'remittance_info')))
-    answers = []
-    for pid in sorted(pools):
-        result = _solve_party(pools[pid], target, tokens, compact, max_pool)
-        if result == 'ambiguous':
+    for parties in tiers:
+        pools = _pool(txn, ctx, parties)
+        answers = []
+        for pid in sorted(pools):
+            result = _solve_party(pools[pid], target, tokens)
+            if result == 'ambiguous':
+                return None
+            if result:
+                answers.append(result)
+        if len(answers) > 1:
             return None
-        if result:
-            answers.append(result)
-    if len(answers) != 1:
-        return None
-    items, rule = answers[0]
-    reconcile.last_rule = rule
-    return [row(txn, i['item_id'], i['open_amount']) for i in sorted(items, key=lambda i: i['item_id'])]
+        if answers:
+            items, rule = answers[0]
+            reconcile.last_rule = rule
+            return [row(txn, i['item_id'], i['open_amount']) for i in sorted(items, key=lambda i: i['item_id'])]
+    return None
