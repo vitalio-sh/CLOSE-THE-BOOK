@@ -204,8 +204,15 @@ class MatchingTests(unittest.TestCase):
         rows=reconcile(txn('170','Alice Water Works PAYMENT'),context(items))
         self.assertEqual({r['item_id'] for r in rows},{'0','1','2','3'})
     def test_large_unreferenced_subset_abstains(self):
+        # A free (non-FIFO-shaped) 7-of-9 amount-only subset is not evidence.
+        items=[invoice(str(i),'FV25-'+str(10000+i),str(2**i)) for i in range(9)]
+        self.assertIsNone(reconcile(txn('477','Alice Water Works PAYMENT'),context(items)))
+    def test_whole_open_book_is_fifo_shaped(self):
+        # POLICIES 5.6 FIFO: the oldest-first prefix of the payer's open items (here all of
+        # them) is the known-payer ladder's set, whatever its size.
         items=[invoice(str(i),'FV25-'+str(10000+i),str(2**i)) for i in range(8)]
-        self.assertIsNone(reconcile(txn('255','Alice Water Works PAYMENT'),context(items)))
+        rows=reconcile(txn('255','Alice Water Works PAYMENT'),context(items))
+        self.assertEqual({r['item_id'] for r in rows},{str(i) for i in range(8)})
     def test_multiple_references_net_related_unmentioned_credit(self):
         a=invoice(amount='100');b=invoice('I2','FV25-00002','70')
         cr=invoice('CREDIT','CN25-90001','20');cr.update(kind='credit',related_document=a['document_number'])

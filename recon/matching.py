@@ -893,7 +893,8 @@ def _reconcile(txn,ctx):
     if len(explained)==1:
         item,amount,exception=explained[0]
         return [row(txn,item['item_id'],amount,exception)]
-    ladder = _known_payer_ladder(txn, ctx, parties, candidates)
+    quoted_invoices = [i for i in open_refs if i.get('kind') != 'credit']
+    ladder = _known_payer_ladder(txn, ctx, parties, candidates, quoted_invoices)
     if ladder is not None:
         return ladder
     # Closed exact matches can be duplicate payments, but only with history evidence.
@@ -973,7 +974,7 @@ def _ordered_sets_raw(group, target, booking):
     return [group[x] for x in best[1]] if best else None
 
 
-def _known_payer_ladder(txn, ctx, parties, candidates):
+def _known_payer_ladder(txn, ctx, parties, candidates, quoted_invoices=()):
     """Resolve a receipt/payment of an identified payer that no unique rule explained.
 
     Payers are tried in evidence order; the first FIFO-shaped exact set wins. Then a
@@ -1002,6 +1003,10 @@ def _known_payer_ladder(txn, ctx, parties, candidates):
             return [row(txn, i['item_id'], i['open_amount'],
                         'FX_DIFFERENCE' if fx_group and i.get('kind') != 'credit' else '')
                     for i in sorted(found, key=lambda i: i['item_id'])]
+    # POLICIES 3: OVERPAYMENT is more cash than the open amount of a single invoice. A
+    # receipt that quotes two or more open invoices is not a single-invoice overpayment.
+    if len(quoted_invoices) >= 2:
+        return None
     for key in sorted(groups):
         if key[2]:
             continue
