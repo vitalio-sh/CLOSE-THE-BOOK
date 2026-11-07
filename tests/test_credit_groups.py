@@ -110,8 +110,15 @@ class CreditGroupTests(unittest.TestCase):
                  invoice('B', 'F2', '90'), credit('E', 'AB2', '20', 'F2')]
         self.assertIsNone(reconcile(txn('70', 'Alice Water Works PAYMENT'), context(items)))
 
-    def test_unknown_payer_abstains(self):
-        items = [invoice('A', 'F1', '100'), credit('C', 'AB1', '30', 'F1')]
+    def test_unknown_payer_unique_single_net(self):
+        # A person's name as sender: exactly one invoice net of its credit equals the cash.
+        items = [invoice('A', 'F1', '100'), credit('C', 'AB1', '30', 'F1'), invoice('B', 'F2', '70')]
+        self.assertEqual(set(ids(reconcile(txn('70', 'Mystery sender'), context(items)))), {'A', 'C'})
+        self.assertIsNone(reconcile(txn('71', 'Mystery sender'), context(items)))
+
+    def test_unknown_payer_ambiguous_single_nets_abstain(self):
+        items = [invoice('A', 'F1', '100'), credit('C', 'AB1', '30', 'F1'),
+                 invoice('B', 'F2', '90'), credit('E', 'AB2', '20', 'F2')]
         self.assertIsNone(reconcile(txn('70', 'Mystery sender'), context(items)))
 
     def test_small_subsets_unique_or_nothing(self):

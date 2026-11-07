@@ -355,7 +355,59 @@ def reconcile(txn, ctx):
         if len(solutions) == 1:
             ids = next(iter(solutions))
             return [M.row(txn, iid, ctx.items[iid]['open_amount']) for iid in ids]
+    if not found and not M.party_candidates(txn, ctx):
+        return unnamed_single_net(txn, ctx)
     return None
+
+
+def _credit_index(ctx):
+    """Credit note ids per (entity, currency), built once (documents are static)."""
+    index = getattr(ctx, '_credit_group_index', None)
+    if index is None:
+        index = defaultdict(list)
+        for iid, item in ctx.items.items():
+            if item.get('kind') == 'credit' and item.get('side') == 'AR':
+                index[item.get('entity'), item.get('currency')].append(iid)
+        ctx._credit_group_index = index
+    return index
+
+
+def unnamed_single_net(txn, ctx):
+    """A receipt naming no known payer that equals exactly one invoice net of its credits.
+
+    The sender is a person or an unknown name, so no payer book is searched; across the
+    entity's open credit notes (POLICIES 2), exactly one invoice with all its open
+    non-cancelling credits of the same customer must net to the cash, issued within a year.
+    """
+    if D(txn['amount']) <= 0:
+        return None
+    cash = _cents(abs(D(txn['amount'])))
+    booked = txn.get('booking_date', '9999')
+    horizon = (date.fromisoformat(booked) - timedelta(days=HORIZON_DAYS)).isoformat()
+    groups = defaultdict(list)
+    for cid in _credit_index(ctx).get((txn.get('entity'), txn.get('currency')), ()):
+        credit = ctx.items[cid]
+        if credit['open_amount'] <= 0 or credit.get('issue_date', '') > booked or _cancels(credit):
+            continue
+        key = _normed(ctx, credit, 'related_document')
+        if key:
+            groups[credit.get('party_id'), key].append(credit)
+    found = []
+    for (pid, key), rel in groups.items():
+        for iid in ctx.by_number.get(key, ()):
+            inv = ctx.items.get(iid)
+            if (inv is None or inv.get('kind') != 'invoice' or inv.get('side') != 'AR'
+                    or inv.get('party_id') != pid or inv.get('entity') != txn.get('entity')
+                    or inv.get('currency') != txn.get('currency') or inv['open_amount'] <= 0
+                    or not horizon <= inv.get('issue_date', '') <= booked):
+                continue
+            if _cents(inv['open_amount']) - sum(_cents(c['open_amount']) for c in rel) == cash:
+                found.append([inv] + rel)
+        if len(found) > 1:
+            return None
+    if len(found) != 1:
+        return None
+    return [M.row(txn, item['item_id'], item['open_amount']) for item in found[0]]
 
 
 EARLY_FAMILIES = ('quoted_credit', 'quoted_invoice', 'single_net', 'unit_subset', 'anchored_rest')
