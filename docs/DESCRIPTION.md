@@ -1,7 +1,7 @@
 # Team 10 — Close the Books
 
 **Team:** Vitalii (lead and integrator), Luke Mininno, Ivan (eltriki-X), Marina Moncayola.
-**Repository:** https://github.com/vitalio-sh/CLOSE-THE-BOOK/tree/main. Final solution: r18 on branch `main` (commit e37e3ac).
+**Repository:** https://github.com/vitalio-sh/CLOSE-THE-BOOK/tree/main. Final solution: r19 on branch `main` (commit 64247d7).
 
 ## Problem
 Grupo Valtermia has 17 companies and 12 currencies. Each half-year has about 210k bank lines and about 1M open invoices. For each bank line, the solver must say which invoices it pays and how much, or what the line is if it pays none. It must also flag 10 exception types.
@@ -15,7 +15,7 @@ The task is hard for three reasons:
 1. **Alone first.** Each member studied the challenge and built the best prototype they could.
 2. **Fair comparison.** We built a test period from April to June 2025, with the correct answers. Every prototype ran on the same data and was scored by the official scorer, per segment. One prototype was best overall, and others were stronger in specific areas, such as direct debits or non-invoice lines.
 3. **One area each.** Every member took ownership of one area of improvement. Vitalii coordinated with a Claude orchestrator that ran parallel agents, each focused on one thing, and tasks and results went through GitHub issues.
-4. **Regular checks and integration.** Roughly every 90 minutes we reviewed what worked, what was wrong and what to improve next. The best parts were then integrated into a new version, in rounds r6 → r18. It was continuous iteration and learning.
+4. **Regular checks and integration.** Roughly every 90 minutes we reviewed what worked, what was wrong and what to improve next. The best parts were then integrated into a new version, in rounds r6 → r19. It was continuous iteration and learning.
 
 **Credits in the final version:**
 - Luke: adversarial validation of returned direct debits, MD06 tests and the bug they exposed (fixed in 6c29aaa).
@@ -39,11 +39,10 @@ A **deterministic chain of rules**, from the strongest evidence to the weakest:
 - **Rare exceptions are cheap wins.** Up to 2 points per exception class (from the scoring formula).
 
 ## Results
-- **Official LIVE:** 81.13 → 84.06 → 87.81 → 92.96 → 93.41 → 94.76 → 94.82 → 94.87 → **94.91 (r14, rank 2)**. The final version is r18 on `main`.
+- **Official LIVE:** 81.13 → 84.06 → 87.81 → 92.96 → 93.41 → 94.76 → 94.82 → 94.87 → 94.91 → **95.27** with the final version (r19 on `main`): top three on the official live leaderboard.
 - **Additional temporal validation on March 2025**, a month never tuned on (holdout, *not official*):
   - r9 93.51 → r11 94.20 → r14 94.31;
-  - the r9 → r11 gain (+0.69) matched the official LIVE gain exactly;
-  - r14 had no segment regressions.
+  - the r9 → r11 gain (+0.69) matched the official LIVE gain exactly.
 - The FINAL score is hidden until the reveal.
 
 ## Stack and how we used Claude
@@ -56,5 +55,5 @@ A **deterministic chain of rules**, from the strongest evidence to the weakest:
 
 ## Next steps
 - **MD06 direct-debit returns.** Linking refund requests to the right monthly collection.
-- **English bank wording for ZA01.** Found in our FINAL readiness test: in a simulation, "BANK CHARGES" falls back to CUSTOMER_REFUND instead of BANK_FEES; SARS, PAYE and VAT payments are not recognised either. Still open in r18.
+- **English bank wording for ZA01.** Found in our FINAL readiness test: in a simulation, "BANK CHARGES" falls back to CUSTOMER_REFUND instead of BANK_FEES; SARS, PAYE and VAT payments are not recognised either. Still open in the final version.
 - **More PDF-only facts.**

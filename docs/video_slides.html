@@ -168,24 +168,25 @@
   <div class="foot"><span>Source: team holdout Apr–Jun 2025, official scorer (not an official LIVE score)</span><span class="pg"></span></div>
 </section>
 
-<!-- 4 PHASE 2 -->
+<!-- 4 PHASE 2 + CLAUDE -->
 <section class="slide">
-  <div class="kicker">Phase 2 · Own an area, check often, integrate</div>
-  <h1 class="anim">Each member owned one area; we checked together every <span class="acc">~90 minutes</span> and integrated in rounds <span class="acc">r6 → r18</span></h1>
+  <div class="kicker">Phase 2 · Own an area, check often, integrate — with Claude</div>
+  <h1 class="anim">Each member owned one area; Claude agents worked in parallel and <span class="acc">nothing was kept unless measured</span></h1>
   <div class="rule"></div>
-  <div class="body" style="flex-direction:column;gap:40px">
-    <div class="steps anim d1" style="flex-direction:row;gap:60px;font-size:30px">
-      <div><span class="n">→</span>Claude orchestrator (Vitalii)</div>
-      <div><span class="n">→</span>Parallel agents, one focus each</div>
-      <div><span class="n">→</span>GitHub issues for tasks and results</div>
+  <div class="body" style="flex-direction:column;gap:36px">
+    <div class="grid2 anim d1" style="grid-template-columns:repeat(4,1fr);gap:28px">
+      <div class="card"><h3 style="font-size:28px">Orchestrator</h3><p style="font-size:23px">Vitalii's Claude orchestrator ran parallel agents, one focus each; a liaison agent reviewed every branch</p></div>
+      <div class="card"><h3 style="font-size:28px">Regular checks</h3><p style="font-size:23px">Together every <span class="acc">~90 min</span>; tasks and results in GitHub issues</p></div>
+      <div class="card"><h3 style="font-size:28px">Regression gates</h3><p style="font-size:23px">Every change scored with the official scorer</p></div>
+      <div class="card"><h3 style="font-size:28px">Solve time</h3><p style="font-size:23px"><span class="acc">No LLM</span>: deterministic Python + pdftotext, fast and reproducible</p></div>
     </div>
-    <div class="grid2" style="grid-template-columns:1fr 1fr 1fr">
-      <div class="card anim d2"><h3>Luke</h3><p>Tests and adversarial validation of returned direct debits (MD06). Found a bug — the fix is in the final version.</p></div>
-      <div class="card anim d3"><h3>Marina</h3><p>Entity-first payer filter: search the payer inside the company that owns the account first. <span class="acc">dc4690e</span></p></div>
-      <div class="card anim d4"><h3>Ivan</h3><p>Independent pipeline and review of the team rules. The issues he found were fixed.</p></div>
+    <div class="grid2" style="grid-template-columns:1fr 1fr 1fr;gap:28px">
+      <div class="card anim d3"><h3>Luke</h3><p>Tests and adversarial validation of returned direct debits (MD06). Found a bug — the fix is in the final version.</p></div>
+      <div class="card anim d4"><h3>Marina</h3><p>Entity-first payer filter: search the payer inside the company that owns the account first. <span class="acc">dc4690e</span></p></div>
+      <div class="card anim d5"><h3>Ivan</h3><p>Independent pipeline and review of the team rules. The issues he found were fixed.</p></div>
     </div>
   </div>
-  <div class="foot"><span>Source: team repository, review branches r6–r18, GitHub issue #3</span><span class="pg"></span></div>
+  <div class="foot"><span>Source: team repository, integration rounds r6–r19, GitHub issue #3</span><span class="pg"></span></div>
 </section>
 
 <!-- 5 KEY INSIGHTS -->
@@ -225,7 +226,7 @@
 <!-- 7 RESULTS -->
 <section class="slide">
   <div class="kicker">Results</div>
-  <h1 class="anim">We reached <span class="acc">94.91</span> on the live leaderboard, <span class="acc">rank 2</span>, confirmed by an additional temporal validation</h1>
+  <h1 class="anim">The final version reached <span class="acc">95.27</span> on the official live leaderboard — <span class="acc">top three</span></h1>
   <div class="rule"></div>
   <div class="body" style="gap:70px">
     <div class="anim d1" style="flex:1.7">
@@ -236,24 +237,10 @@
       <div style="margin-bottom:24px"><span class="notoff">holdout · NOT official</span></div>
       <svg id="march" width="520" height="300" viewBox="0 0 520 300"></svg>
       <div class="lbl" style="font-size:24px;margin-top:20px">A month never tuned on. The r9 → r11 gain
-        (<span class="acc">+0.69</span>) matched the official LIVE gain exactly; r14 had no segment regressions.</div>
+        (<span class="acc">+0.69</span>) matched the official LIVE gain exactly.</div>
     </div>
   </div>
   <div class="foot"><span>Source: official LIVE leaderboard (Talky); team holdout March 2025 with golden opening balances (not official). FINAL score hidden until 20:30.</span><span class="pg"></span></div>
-</section>
-
-<!-- 8 CLAUDE -->
-<section class="slide">
-  <div class="kicker">How we used Claude</div>
-  <h1 class="anim">Claude built, tested and coordinated the solution — <span class="acc">no LLM runs at solve time</span></h1>
-  <div class="rule"></div>
-  <div class="grid2">
-    <div class="card anim d1"><h3>Solve time</h3><p>Deterministic Python + pdftotext: fast and reproducible. Same input, same output.</p></div>
-    <div class="card anim d2"><h3>Parallel lanes</h3><p>Agents worked in parallel, each on one area; a liaison agent reviewed every branch.</p></div>
-    <div class="card anim d3"><h3>Regression gates</h3><p>Every change scored with the official scorer. <span class="acc">Nothing kept unless measured.</span></p></div>
-    <div class="card anim d4"><h3>Fast cross-pollination</h3><p>Ideas from any member were ported and credited <span class="acc">within the hour</span> — e.g. the entity-first payer filter (dc4690e).</p></div>
-  </div>
-  <div class="foot"><span>Source: team process, GitHub issue #3</span><span class="pg"></span></div>
 </section>
 
 <!-- 9 NEXT STEPS -->
@@ -275,7 +262,7 @@
     <h1 class="anim" style="font-size:110px">Thank you — <span class="acc">Team 10</span></h1>
     <div class="names anim d1">Vitalii · Luke · Ivan · Marina</div>
     <div class="tag anim d2" style="font-size:34px;color:#fff">github.com/vitalio-sh/CLOSE-THE-BOOK/tree/main</div>
-    <div class="tag anim d3" style="margin-top:20px">Final version: r18 on main (e37e3ac)</div>
+    <div class="tag anim d3" style="margin-top:20px">Final version: r19 on main (64247d7)</div>
   </div>
   <div class="foot"><span></span><span class="pg"></span></div>
 </section>
@@ -295,9 +282,9 @@
   }
   // Step chart of official LIVE scores
   const live = [['first', 81.13], ['', 84.06], ['', 87.81], ['r7', 92.96], ['r8', 93.41],
-                ['r11', 94.76], ['r12', 94.82], ['r13', 94.87], ['r14', 94.91]];
+                ['r11', 94.76], ['r12', 94.82], ['r13', 94.87], ['r14', 94.91], ['r19', 95.27]];
   const s = document.getElementById('steps');
-  const W = 1000, H = 560, L = 70, R = 30, T = 40, B = 60, lo = 80, hi = 96;
+  const W = 1000, H = 560, L = 70, R = 30, T = 40, B = 60, lo = 80, hi = 97;
   const x = i => L + i * (W - L - R) / (live.length - 1);
   const y = v => T + (hi - v) / (hi - lo) * (H - T - B);
   [80, 85, 90, 95].forEach(v => {
@@ -316,8 +303,8 @@
                   'font-size': last ? 34 : 24, 'font-weight': 700, 'text-anchor': last ? 'end' : 'middle'}, s,
          v.toFixed(2));
   });
-  el('text', {x: x(live.length - 1), y: y(94.91) + 50, fill: ACC, 'font-size': 26, 'font-weight': 800,
-              'text-anchor': 'end', 'letter-spacing': 2}, s, 'RANK 2');
+  el('text', {x: x(live.length - 1), y: y(95.27) + 50, fill: ACC, 'font-size': 26, 'font-weight': 800,
+              'text-anchor': 'end', 'letter-spacing': 2}, s, 'TOP 3');
   el('text', {x: L, y: 22, fill: MUTE, 'font-size': 18}, s, 'Official LIVE score by submission');
   const len = path.getTotalLength ? path.getTotalLength() : 3000;
   path.style.strokeDasharray = len; path.style.strokeDashoffset = len;
