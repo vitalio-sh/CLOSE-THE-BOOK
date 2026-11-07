@@ -268,4 +268,38 @@ class BatchMatcher:
             unique = {tuple((r['item_id'],r['amount']) for r in m): m for d,m in matches if d == latest}
             if len(unique) == 1:
                 return next(iter(unique.values()))
+        # Grafted from solution/lukemininno: a returned direct debit whose original collection batch is not in the
+        # files of this phase (e.g. collected the month before). The SEPA mandate identifies the customer; the item is
+        # that customer's invoice with exactly the returned amount: preferably the latest one collected in this phase,
+        # otherwise the oldest one. RETURNED re-opens it (ctx.apply), so a later re-presentation is not a duplicate.
+        if amount < 0:
+            return self._return_by_mandate(txn, -amount)
         return None
+
+    MANDATE_SPLIT = re.compile(r'[\s|,;+:/]+')
+
+    def _return_by_mandate(self, txn, amount):
+        if not hasattr(self, '_mandate_customer'):
+            self._mandate_customer = {norm(c.get('sepa_mandate_id')): cid for cid, c in self.ctx.customers.items()
+                                      if norm(c.get('sepa_mandate_id'))}
+            self._returned_by_mandate = set()
+        raw = ' '.join(str(txn.get(k, '') or '') for k in ('text', 'ref1', 'ref2', 'remittance_info'))
+        cid = next((self._mandate_customer[t] for t in map(norm, self.MANDATE_SPLIT.split(raw))
+                    if t in self._mandate_customer), None)
+        if cid is None:
+            return None
+        day = txn['booking_date']
+        cands = [item for item in (self.ctx.items[i] for i in self.ctx.by_party.get(cid, ()))
+                 if item['item_id'].startswith('ARI') and item['currency'] == txn['currency']
+                 and abs(item['total_amount'] - amount) <= CENT and item.get('issue_date', '') <= day
+                 and item['item_id'] not in self._returned_by_mandate]
+        if not cands:
+            return None
+        def last_collection(item):
+            return max((h['booking_date'] for h in self.ctx.history.get(item['item_id'], ())
+                        if h.get('exception') != 'RETURNED' and h['booking_date'] <= day), default='')
+        collected = sorted((c for c in cands if last_collection(c)), key=last_collection, reverse=True)
+        item = collected[0] if collected else min(cands, key=lambda c: (c.get('issue_date', ''), c['item_id']))
+        self._returned_by_mandate.add(item['item_id'])
+        return [{'bank_txn_id': txn['bank_txn_id'], 'item_id': item['item_id'], 'amount': f'{amount:.2f}',
+                 'category': '', 'exception': 'RETURNED'}]

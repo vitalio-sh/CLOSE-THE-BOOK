@@ -122,7 +122,8 @@ class Context:
             if not iid: continue
             item=self.items[iid]; amount=D(row['amount']); exception=row['exception']
             if exception=='RETURNED':
-                item['open_amount'] += amount
+                # a return re-opens at most the document total (open balance never exceeds the total)
+                item['open_amount'] = min(item.get('total_amount', item['open_amount'] + amount), item['open_amount'] + amount)
             elif exception!='DUPLICATE_PAYMENT':
                 item['open_amount']=max(D(0),item['open_amount']-amount)
             self.history[iid].append({**row,'booking_date':txn['booking_date'],'account_id':txn['account_id']})
