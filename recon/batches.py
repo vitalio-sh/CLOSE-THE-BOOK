@@ -863,6 +863,13 @@ class BatchMatcher:
                 matches = self._returned_collection(txn, matches)
             latest = max((m[0] for m in matches),default='')
             unique = {tuple((r['item_id'],r['amount']) for r in m[1]): m[1] for m in matches if m[0] == latest}
+            if len(unique) > 1:
+                # Same-day tie between a fresh debit and a re-presented one (POLICIES 5.10): the
+                # re-presented collection is the one that bounces again (TRAIN golden: 41 of 58 ties).
+                again = {tuple((r['item_id'],r['amount']) for r in m[1]): m[1] for m in matches
+                         if m[0] == latest and len(m) > 3 and m[3].get('re_presentation') == 'Y'}
+                if len(again) == 1:
+                    unique = again
             if len(unique) == 1:
                 return next(iter(unique.values()))
         return self._supplier_direct_debit(txn)

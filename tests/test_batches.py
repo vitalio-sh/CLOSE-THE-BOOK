@@ -150,6 +150,12 @@ class BatchTests(unittest.TestCase):
         result=BatchMatcher(self.ctx).reconcile(self.txn('-50','RUECKLASTSCHRIFT MD06 MREF+VTM-DE-0001477'))
         self.assertEqual([(r['item_id'],r['exception']) for r in result],[('ARI-2','RETURNED')])
 
+    def test_same_day_tie_prefers_re_presented_collection(self):
+        # POLICIES 5.10: a re-presented debit that bounces again beats a fresh debit of the same day.
+        self._dd_three_collections(extra=[dict(batch_id='B20250527',collection_date='2025-05-27',end_to_end_id='E5',
+                                               remittance_info='INV2',re_presentation='Y')])
+        result=BatchMatcher(self.ctx).reconcile(self.txn('-50','RUECKLASTSCHRIFT AM04 MREF+VTM-DE-0001477'))
+        self.assertEqual([(r['item_id'],r['exception']) for r in result],[('ARI-2','RETURNED')])
     def test_return_cannot_precede_source_payment(self):
         self.item('API-1','INV1','100')
         self.rows('payment_runs',[dict(run_id='RUN12345678',run_type='transfers',execution_date='2025-06-02',debtor_account_id='ES01-A',end_to_end_id='RUN12345678-1',beneficiary='Supplier',currency='EUR',transfer_amount='100',document_number='INV1',document_type='INVOICE',document_amount='100')])
