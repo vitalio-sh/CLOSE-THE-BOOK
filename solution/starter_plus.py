@@ -19,6 +19,14 @@ Standard library only. Rules, in order, for every bank line:
     (suppliers.csv); if the beneficiary is not the supplier (factor, confirming bank), a unique document number.
     Amount = document amount (positive). Exception: PARTIAL if less than the item's open balance; FX_DIFFERENCE for
     invoices in a currency other than the bank line's; credit notes none.
+0d. Card settlement (POLICIES 4, 5.3): a receipt carrying the merchant_id (or settlement_id) of a card_settlements/
+    file whose net total equals the amount clears every order of that settlement, at GROSS amount (the acquirer fee
+    is contractual, not an exception). Order number -> invoice by document number.
+0e. Cheque deposit (POLICIES 5.3): a receipt carrying a deposit_id of cheque_deposits/ with exactly its total clears
+    each cheque: customer = drawer name; invoice = stub_reference as document number (also without prefix) or as
+    customer PO, else that customer's oldest open invoice with the cheque amount.
+0f. Returned cheque / card chargeback (POLICIES 3 RETURNED): a debit carrying the number of a deposited cheque, or a
+    masked card (****1234) of a card order with exactly the debited gross amount -> that invoice, RETURNED, re-opened.
 1. One-to-one (unchanged from the starter): a token of the bank text is one of our document numbers and the document
    total equals the bank amount.
 2. One-to-many (new): the bank text cites several document numbers (also written without prefix / leading zeros,
@@ -54,6 +62,7 @@ MAX_SUBSET_SEARCH = 18   # above this many candidates of one party we only test 
 MIN_KEY_LEN = 3          # shorter numeric keys are too ambiguous
 MIN_NAME_CHARS = 12      # a truncated name must match at least this many characters
 IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b")
+CARD_MASK_RE = re.compile(r"\*{2,}(\d{4})")  # masked card number in a bank text: ****6737
 TOKEN_SPLIT = re.compile(r"[\s|,;+:/]+")  # 'MREF+VTM-DE-0001685' -> 'MREF', 'VTM-DE-0001685'
 
 
@@ -205,6 +214,7 @@ def main():
     info, by_key = {}, defaultdict(set)               # one-to-many structures
     ar_open = defaultdict(list)                       # (entity, customer, currency, open cents) -> [(issue date, item)]
     ar_all = defaultdict(list)                        # (customer, currency, total cents) -> [(issue date, item)]
+    by_po = defaultdict(list)                         # customer PO number -> AR invoices
     for ph in phases:
         for name, numcol in (("ar_invoices", "document_number"), ("ap_invoices", "supplier_invoice_number"), ("credit_notes", "document_number")):
             p = os.path.join(a.data, ph, f"{name}.csv.gz")
@@ -214,6 +224,8 @@ def main():
                 iid = r["item_id"]
                 items[iid] = cents(r["total_amount"])
                 by_number[norm(r[numcol])].append(iid)
+                if r.get("customer_po"):
+                    by_po[norm(r["customer_po"])].append(iid)
                 kind = iid[:3]                                           # ARI / ARC / API / APC
                 party = r.get("customer_id") or r.get("supplier_id") or r.get("party_id") or ""
                 info[iid] = {
@@ -245,6 +257,53 @@ def main():
         with open(p, encoding="utf-8", newline="") as fh:
             for r in csv.DictReader(fh):
                 dd_batches[norm(r["batch_id"])].append(r)
+
+    def read_dir(sub):
+        out = []
+        for p in sorted(glob.glob(os.path.join(a.data, a.phase, sub, "*.csv"))):
+            with open(p, encoding="utf-8", newline="") as fh:
+                out.extend(csv.DictReader(fh))
+        return out
+
+    # card settlements: merchant_id / settlement_id -> settlements (settlement_id -> rows); card mask -> rows
+    card_sets, card_keys, card_by_mask = defaultdict(list), defaultdict(set), defaultdict(list)
+    for r in read_dir("card_settlements"):
+        card_sets[r["settlement_id"]].append(r)
+        card_keys[norm(r["merchant_id"])].add(r["settlement_id"])
+        card_keys[norm(r["settlement_id"])].add(r["settlement_id"])
+        card_by_mask[norm(r["card"])].append(r)          # '****6737' -> '6737'
+    # cheque deposits: deposit_id -> rows; cheque number -> row
+    cheque_deps, cheque_by_number = defaultdict(list), {}
+    for r in read_dir("cheque_deposits"):
+        cheque_deps[norm(r["deposit_id"])].append(r)
+        cheque_by_number[norm(r["cheque_number"])] = r
+
+    def resolve_card_row(r):
+        cands = [iid for iid in by_number.get(norm(r["order_number"]), ()) if info[iid]["kind"] == "ARI"]
+        return cands[0] if len(cands) == 1 else None
+
+    def resolve_cheque_row(r, entity):
+        payers = names.find(entity, r["drawer"])
+        amt_ = cents(r["amount"])
+        ref = r["stub_reference"].upper()
+        keyed = {iid for k in text_keys(ref) for iid in by_key.get(k, ())} | set(by_po.get(norm(ref), ())) if ref else set()
+        cands = [iid for iid in keyed if info[iid]["kind"] == "ARI" and info[iid]["currency"] == r["currency"]
+                 and (not payers or info[iid]["cust"] in payers)]
+        if len(cands) > 1:
+            cands = [iid for iid in cands if items[iid] == amt_]
+        if len(cands) == 1:
+            return cands[0]
+        # no usable reference: the drawer's oldest open invoice with this amount; with homonym customers, only if
+        # exactly one of them has such an invoice
+        hits = []
+        for cid in payers:
+            hit = next((iid for issue, iid in ar_all.get((cid, r["currency"], amt_), ())
+                        if iid not in used and issue <= r["deposit_date"]), None)
+            if hit:
+                hits.append(hit)
+        return hits[0] if len(hits) == 1 else None
+
+    cheque_item = {}                                  # cheque number -> invoice it paid
 
     # payment-run files of the phase: end_to_end_id -> rows, run_id -> rows; supplier by IBAN
     run_by_e2e, run_by_id = defaultdict(list), defaultdict(list)
@@ -302,7 +361,7 @@ def main():
     txns = list(rcsv(os.path.join(a.data, a.phase, "bank_transactions.csv.gz")))
     result = {}                                       # bank_txn_id -> list of output rows
     pending = []                                      # receipts left for the payer + amount rule
-    n_match = n_multi = n_multi_items = n_payer = n_batch = n_batch_items = n_returned = n_run = n_run_items = 0
+    n_match = n_multi = n_multi_items = n_payer = n_batch = n_batch_items = n_returned = n_run = n_run_items = n_card = n_cheque = 0
     for t in txns:
         amt = cents(t["amount"])
         text = " ".join([t["text"], t["ref1"], t["ref2"], t["remittance_info"]]).upper()
@@ -327,6 +386,62 @@ def main():
                     n_batch += 1
                     n_batch_items += len(out)
                     continue
+
+        # 0d) card settlement: merchant / settlement id in the text, net total = amount -> orders at gross
+        if amt > 0:
+            sids = {s for x in tokens for s in card_keys.get(x, ())}
+            fits = [s for s in sids if sum(cents(r["net"]) for r in card_sets[s]) == amt
+                    and card_sets[s][0]["currency"] == t["currency"]]
+            if len(fits) == 1:
+                out = []
+                for r in card_sets[fits[0]]:
+                    iid = resolve_card_row(r)
+                    if iid and iid not in {o[1] for o in out}:
+                        used.add(iid)
+                        returned.discard(iid)
+                        out.append([t["bank_txn_id"], iid, f"{cents(r['gross']) / 100:.2f}", "", ""])
+                if out:
+                    result[t["bank_txn_id"]] = out
+                    n_card += 1
+                    continue
+
+        # 0e) cheque deposit: deposit id in the text with exactly its total
+        if amt > 0:
+            dep = next((cheque_deps[x] for x in tokens if x in cheque_deps
+                        and cents(cheque_deps[x][0]["deposit_total"]) == amt), None)
+            if dep:
+                out = []
+                for r in dep:
+                    iid = resolve_cheque_row(r, t["entity"])
+                    if iid and iid not in {o[1] for o in out}:
+                        used.add(iid)
+                        returned.discard(iid)
+                        cheque_item[norm(r["cheque_number"])] = iid
+                        out.append([t["bank_txn_id"], iid, f"{cents(r['amount']) / 100:.2f}", "", ""])
+                if out:
+                    result[t["bank_txn_id"]] = out
+                    n_cheque += 1
+                    continue
+
+        # 0f) returned cheque (cheque number) or card chargeback (masked card + gross amount)
+        if amt < 0:
+            iid = None
+            masks = {m for m in CARD_MASK_RE.findall(text)}   # only real masked cards, not any 4 digits
+            for x in tokens + [m for m in masks if m not in tokens]:
+                if x in cheque_by_number and cents(cheque_by_number[x]["amount"]) == -amt:
+                    iid = cheque_item.get(x) or resolve_cheque_row(cheque_by_number[x], t["entity"])
+                    break
+                if x in masks and x in card_by_mask:
+                    rows_ = [r for r in card_by_mask[x] if cents(r["gross"]) == -amt]
+                    if len(rows_) == 1:
+                        iid = resolve_card_row(rows_[0])
+                        break
+            if iid:
+                used.discard(iid)
+                returned.add(iid)
+                n_returned += 1
+                result[t["bank_txn_id"]] = [[t["bank_txn_id"], iid, f"{-amt / 100:.2f}", "", "RETURNED"]]
+                continue
 
         # 0b) returned direct debit: a debit carrying one of our customers' SEPA mandates
         if amt < 0:
@@ -472,7 +587,7 @@ def main():
         w = csv.writer(fh, lineterminator="\n")
         w.writerow(["bank_txn_id", "item_id", "amount", "category", "exception"])
         w.writerows(rows)
-    print(f"{len(rows)} rows ({n_batch} DD batches with {n_batch_items} items, {n_returned} returned, {n_run} payment-run lines with {n_run_items} items, {n_match} one-to-one,{n_multi} one-to-many lines with {n_multi_items} items, "
+    print(f"{len(rows)} rows ({n_batch} DD batches with {n_batch_items} items, {n_card} card settlements, {n_cheque} cheque deposits, {n_returned} returned, {n_run} payment-run lines with {n_run_items} items, {n_match} one-to-one,{n_multi} one-to-many lines with {n_multi_items} items, "
           f"{n_payer} payer+amount) -> {a.out}")
 
 
