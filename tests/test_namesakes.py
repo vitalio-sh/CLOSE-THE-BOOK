@@ -39,6 +39,13 @@ class NamesakeTests(unittest.TestCase):
         r = namesakes.reconcile(txn('1202.78'), context(items, dict(NAMESAKES)))
         self.assertEqual(r, [dict(bank_txn_id='T1', item_id='A1', amount='1202.78', category='', exception='')])
 
+    def test_named_service_month_outranks_fifo(self):
+        # Monthly fees are invoiced at the start of the following month (POLICIES 5.6).
+        items = [invoice('A1', 'C2', '926.67', '2024-08-01'), invoice('A3', 'C2', '926.67', '2024-10-01')]
+        r = namesakes.reconcile(txn('926.67', text='ACH CREDIT NOAH EVANS MAINTENANCE SEPTEMBER 2024'),
+                                context(items, dict(NAMESAKES)))
+        self.assertEqual(r[0]['item_id'], 'A3')
+
     def test_two_namesakes_with_exact_amount_abstain(self):
         items = [invoice('A1', 'C2', '1202.78', '2024-08-01'), invoice('B1', 'C3', '1202.78', '2024-09-02')]
         self.assertIsNone(namesakes.reconcile(txn('1202.78'), context(items, dict(NAMESAKES))))

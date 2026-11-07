@@ -61,6 +61,22 @@ def reconcile(txn, ctx):
     if len(exact) != 1:
         return None
     (options,) = exact.values()
+    if len(options) > 1:
+        # POLICIES 5.6: a named service month outranks FIFO (same rule as matching.reconcile).
+        stated = m._stated_service_month(m.text_of(txn), txn.get('booking_date'))
+        if stated:
+            wanted, explicit_year = stated
+            facts_of = getattr(ctx, 'pdf_facts', None)
+            monthly = []
+            for option in options:
+                facts = facts_of.get(option[0]['item_id']) if facts_of is not None else {}
+                service = facts.get('service_month') or m._invoice_service_month(option[0])
+                if (service == wanted if explicit_year
+                        else bool(service and service[-2:] == wanted[-2:] and service <= wanted)):
+                    monthly.append(option)
+            if len(monthly) != 1:
+                return None
+            options = monthly
     options.sort(key=lambda x: (x[0].get('issue_date', ''), x[0]['item_id']))
     item, fx = options[0]
     return [m.row(txn, item['item_id'], item['open_amount'], 'FX_DIFFERENCE' if fx else '')]
