@@ -1,0 +1,116 @@
+{
+  "company_name": "Grupo Valtermia",
+  "event_date": "2026-11-07",
+  "dataset_version": "v1",
+  "downloads": [
+    {
+      "id": "docs",
+      "label_es": "Empieza aquí · Documentación y maestros",
+      "label_en": "Start here · Docs and masters",
+      "url": "/data/v1/bankrec-docs-and-masters.zip",
+      "size": "10 MB",
+      "sha256": "210b2404efd011af248a251db2bc0ee85a2ddaa1d56a7a0ca0b95ede18cc1071",
+      "available": true,
+      "recommended": false,
+      "description_es": "README ES/EN, POLICIES, FORMAT, DATA_DICTIONARY, maestros, una muestra de 1 mes con golden y starter/ (starter.py y el evaluador para autoevaluaros en TRAIN).",
+      "description_en": "README ES/EN, POLICIES, FORMAT, DATA_DICTIONARY, masters, a 1-month sample with golden and starter/ (starter.py and the scorer to self-evaluate on TRAIN)."
+    },
+    {
+      "id": "train-lite",
+      "label_es": "TRAIN lite (2021-07 → 2025-06)",
+      "label_en": "TRAIN lite (2021-07 → 2025-06)",
+      "url": "/data/v1/bankrec-train-lite.tar.gz",
+      "size": "460 MB",
+      "sha256": "71defe3aa552855daae9338d83234438f1de40f0d7b7ec7cdb56327b4c11df1e",
+      "available": true,
+      "recommended": true,
+      "description_es": "Todas las tablas con golden; extractos en bruto y PDFs sólo desde 2024-07. Lo más cómodo para un portátil.",
+      "description_en": "Every table with golden; raw statements and PDFs only from 2024-07 onwards. The comfortable option for a laptop."
+    },
+    {
+      "id": "train",
+      "label_es": "TRAIN completo (2021-07 → 2025-06)",
+      "label_en": "Full TRAIN (2021-07 → 2025-06)",
+      "url": "/data/v1/bankrec-train.tar.gz",
+      "size": "657 MB",
+      "sha256": "163f51a818193f6310b6fba96e3830e4347c883b0b84bc070153f5018e3f06b8",
+      "available": true,
+      "recommended": false,
+      "description_es": "Cuatro años completos con golden: 1,49 M movimientos, 3,96 M facturas emitidas, 1,53 M recibidas y 131 k PDFs.",
+      "description_en": "Four full years with golden: 1.49 M bank lines, 3.96 M AR invoices, 1.53 M AP invoices and 131 k PDFs."
+    },
+    {
+      "id": "live",
+      "label_es": "LIVE (2025-07 → 2025-12)",
+      "label_en": "LIVE (2025-07 → 2025-12)",
+      "url": "/data/v1/bankrec-live.tar.gz",
+      "size": "87 MB",
+      "sha256": "eec490d7c605048d0d3a8400af97ee13c9fe49e68dfeb3d68546daf50d8af520",
+      "available": true,
+      "recommended": false,
+      "description_es": "203 k movimientos y 16,7 k PDFs, con partidas abiertas al inicio. Sin golden: se puntúa en la clasificación pública.",
+      "description_en": "203 k bank lines and 16.7 k PDFs, with open items at start. No golden: scored on the public leaderboard."
+    },
+    {
+      "id": "final",
+      "label_es": "FINAL (2026-01 → 2026-06)",
+      "label_en": "FINAL (2026-01 → 2026-06)",
+      "url": "/data/v1/bankrec-final.tar.gz",
+      "size": "100 MB",
+      "sha256": "",
+      "available": false,
+      "recommended": false,
+      "description_es": "220 k movimientos. Se publica a las 18:00 (hora de Madrid). Puntuación oculta hasta la revelación.",
+      "description_en": "220 k bank lines. Released at 18:00 Madrid time. Scores hidden until the reveal."
+    }
+  ],
+  "agenda": [
+    {
+      "time": "09:00",
+      "es": "Acreditación y café",
+      "en": "Check-in & coffee"
+    },
+    {
+      "time": "09:30",
+      "es": "Bienvenida y presentación del reto",
+      "en": "Welcome & challenge briefing"
+    },
+    {
+      "time": "10:00",
+      "es": "Arranca el hackathon · abre la fase LIVE",
+      "en": "Hacking starts · LIVE phase opens"
+    },
+    {
+      "time": "14:00",
+      "es": "Comida",
+      "en": "Lunch"
+    },
+    {
+      "time": "18:00",
+      "es": "Se publican los datos FINAL",
+      "en": "FINAL data released"
+    },
+    {
+      "time": "19:30",
+      "es": "Cierre de envíos",
+      "en": "Submissions close"
+    },
+    {
+      "time": "19:45",
+      "es": "Presentaciones de los equipos",
+      "en": "Team presentations"
+    },
+    {
+      "time": "20:30",
+      "es": "Revelación de la clasificación final y premios",
+      "en": "Final leaderboard reveal & awards"
+    },
+    {
+      "time": "21:00",
+      "es": "Cierre",
+      "en": "Wrap-up"
+    }
+  ],
+  "contact": "",
+  "prizes": []
+}

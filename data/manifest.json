@@ -1,0 +1,26 @@
+[
+  {
+    "id": "docs",
+    "path": "data/archives/bankrec-docs-and-masters.zip",
+    "bytes": 10432471,
+    "sha256": "210b2404efd011af248a251db2bc0ee85a2ddaa1d56a7a0ca0b95ede18cc1071"
+  },
+  {
+    "id": "train-lite",
+    "path": "data/archives/bankrec-train-lite.tar.gz",
+    "bytes": 459880090,
+    "sha256": "71defe3aa552855daae9338d83234438f1de40f0d7b7ec7cdb56327b4c11df1e"
+  },
+  {
+    "id": "train",
+    "path": "data/archives/bankrec-train.tar.gz",
+    "bytes": 656976477,
+    "sha256": "163f51a818193f6310b6fba96e3830e4347c883b0b84bc070153f5018e3f06b8"
+  },
+  {
+    "id": "live",
+    "path": "data/archives/bankrec-live.tar.gz",
+    "bytes": 87077114,
+    "sha256": "eec490d7c605048d0d3a8400af97ee13c9fe49e68dfeb3d68546daf50d8af520"
+  }
+]
