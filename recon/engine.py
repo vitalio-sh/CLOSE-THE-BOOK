@@ -1,7 +1,8 @@
 """Single ordered inference path shared by release generation and evaluation."""
-from collections import Counter
+from collections import Counter, defaultdict
 from decimal import Decimal
 import json
+import re
 
 from .validate import FIELDS
 
@@ -28,6 +29,169 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
     return handlers, document_stats
 
 
+def exact_reference_items(txn, ctx):
+    """Recognize full alphanumeric document tokens without consulting balances.
+
+    Numeric suffixes, PO numbers and amount-like strings do not establish this
+    priority. Closed items and credit notes stay in the identity catalogue.
+    """
+    from .matching import norm
+    side = 'AR' if Decimal(txn['amount']) > 0 else 'AP'
+    found = set()
+    for field in ('text', 'ref1', 'ref2', 'remittance_info', 'end_to_end_id'):
+        for match in re.finditer(r'[A-Za-z0-9][A-Za-z0-9/._-]*', str(txn.get(field) or '')):
+            token = match[0].rstrip('.,')
+            if not (re.search('[A-Za-z]', token) and re.search('[0-9]', token)):
+                continue
+            for iid in ctx.by_number.get(norm(token), ()):
+                item = ctx.items[iid]
+                if item.get('side') != side or item.get('issue_date', '') > txn['booking_date']:
+                    continue
+                owner = txn.get('entity')
+                if item.get('entity') != owner and not (owner == 'ES00' and side == 'AP'
+                        and item.get('entity') in ('ES01', 'ES02', 'PT01')):
+                    continue
+                found.add(iid)
+    facts = getattr(ctx, 'pdf_facts', None)
+    if facts is not None:
+        found = {facts.resolve(iid) for iid in found}
+    return found
+
+
+def explicit_reference_items(txn, ctx):
+    """Also accept typed numeric invoice lists within identified payer scope.
+
+    Read original spans before normalization: decimal/thousands amounts, dates,
+    percentages, bank IDs and untyped numbers never become invoice references.
+    """
+    from datetime import date
+    from .matching import norm, party_candidates
+    found = exact_reference_items(txn, ctx)
+    suffixes = set()
+    cues = {'FACTURA', 'FACTURAS', 'FAC', 'FACS', 'FRA', 'FRAS', 'FACT',
+            'FACTS', 'INVOICE', 'INVOICES', 'INV', 'RECHNUNG', 'RECHNUNGEN',
+            'RENR', 'FACTURE', 'FACTURES', 'FATTURA', 'FATTURE'}
+    currencies = r'EUR|USD|GBP|CHF|CAD|AUD|PLN|MXN|BRL|CNY|ZAR|MAD|JPY|SEK|NOK|DKK'
+    cash = abs(Decimal(txn['amount']))
+    for field in ('text', 'ref1', 'ref2', 'remittance_info', 'end_to_end_id'):
+        raw = str(txn.get(field) or '')
+        mode = False
+        end = 0
+        for match in re.finditer(r'[A-Za-z0-9][A-Za-z0-9/._-]*', raw):
+            token = match[0].rstrip('.,')
+            if not re.fullmatch(r'[\s,;:/#]*', raw[end:match.start()]):
+                mode = False
+            end = match.end()
+            key = norm(token)
+            if key in cues:
+                mode = True
+                continue
+            if mode and key in {'NO', 'NR', 'N'}:
+                continue
+            if not mode or not token.isdigit() or len(token) < 5:
+                mode = False
+                continue
+            tail = raw[match.end():]
+            if (re.match(r'[.,]\d{1,3}(?!\d)', tail)
+                    or re.match(r'\s*[$€£¥%]', tail)
+                    or re.match(r'\s*(?:' + currencies + r')\b', tail, re.I)):
+                mode = False
+                continue
+            if Decimal(token) == cash or Decimal(token) / 100 == cash:
+                continue
+            is_date = False
+            if len(token) == 8:
+                for y, m, d in ((token[:4], token[4:6], token[6:]),
+                                 (token[4:], token[2:4], token[:2])):
+                    if 1900 <= int(y) <= 2100:
+                        try:
+                            date(int(y), int(m), int(d))
+                        except ValueError:
+                            pass
+                        else:
+                            is_date = True
+            if not is_date:
+                suffixes.add(token)
+    if suffixes:
+        side = 'AR' if Decimal(txn['amount']) > 0 else 'AP'
+        owner = txn.get('entity')
+        for party in party_candidates(txn, ctx):
+            for iid in ctx.by_party.get(party, ()):
+                item = ctx.items[iid]
+                if item.get('side') != side or item.get('issue_date', '') > txn['booking_date']:
+                    continue
+                if item.get('entity') != owner and not (owner == 'ES00' and side == 'AP'
+                        and item.get('entity') in ('ES01', 'ES02', 'PT01')):
+                    continue
+                number = norm(item.get('document_number'))
+                if any(number.endswith(suffix) for suffix in suffixes):
+                    found.add(iid)
+    facts = getattr(ctx, 'pdf_facts', None)
+    return {facts.resolve(iid) for iid in found} if facts is not None else found
+
+
+def order_transactions(ctx, txns):
+    """Prioritize explicit full invoices; preserve stateful payer-day sequences.
+
+    Scheduling reads identities, static totals and bank evidence only. Matchers
+    retain all allocation decisions and Context.apply remains the balance writer.
+    """
+    from .matching import party_candidates, text_of, words, _cash
+    txns = sorted(txns, key=lambda txn: (txn['booking_date'], txn['bank_txn_id']))
+    evidence, blocked = {}, defaultdict(set)
+    boundaries = set()
+    stateful = re.compile(
+        r'RETURN|DEVOL|RUECK|CHARGEBACK|CONTRACARGO|IMPAY|REJECT|RECHAZ|STORNO|'
+        r'DUPLIC|DOBLE|REPET|PARTIAL|PARCIAL|A CUENTA|ACOMPTE|INSTAL|ECHEANCE|'
+        r'VENCIMIENTO|RETENC|RETENTION|GARANT|DISPUT|RECLAM|DEDUC|ANTICIP|PROFORMA')
+    for txn in txns:
+        tid = txn['bank_txn_id']
+        refs = explicit_reference_items(txn, ctx)
+        parties = set(party_candidates(txn, ctx))
+        parties.update(ctx.items[i].get('party_id') for i in refs if i in ctx.items)
+        parties.discard(None)
+        evidence[tid] = refs, parties
+        if stateful.search(words(text_of(txn))):
+            # Returns may name an invoice on the opposite AR/AP side.
+            reverse = {**txn, 'amount': str(-Decimal(txn['amount']))}
+            reverse_refs = explicit_reference_items(reverse, ctx)
+            parties.update(ctx.items[i].get('party_id') for i in reverse_refs if i in ctx.items)
+            parties.discard(None)
+            if parties:
+                blocked[txn['booking_date']].update(parties)
+            else:
+                boundaries.add(tid)
+    def priority(txn):
+        refs, parties = evidence[txn['bank_txn_id']]
+        if len(refs) != 1 or not parties or parties & blocked[txn['booking_date']]:
+            return False
+        item = ctx.items.get(next(iter(refs)), {})
+        if item.get('kind') != 'invoice':
+            return False
+        cash, fx = _cash(item, txn)
+        total = Decimal(str(item.get('total_amount', '0')))
+        return cash is not None and total > 0 and abs(cash - total) <= Decimal('0.01')
+    # Keep unknown-event barriers within independent entity books. The four
+    # payment-factory entities share one book for scheduling because ES00 can
+    # settle subsidiary AP items. Preserve slots of all other entity books.
+    groups, memberships, spans = defaultdict(list), {}, defaultdict(int)
+    for txn in txns:
+        tid = txn['bank_txn_id']
+        entity = txn.get('entity')
+        scope = 'ES_FACTORY' if entity in ('ES00', 'ES01', 'ES02', 'PT01') else entity
+        key = txn['booking_date'], scope
+        if tid in boundaries:
+            spans[key] += 1
+        group = key + (spans[key],)
+        memberships[tid] = group
+        groups[group].append(txn)
+        if tid in boundaries:
+            spans[key] += 1
+    streams = {key: iter(sorted(group, key=lambda txn: (not priority(txn), txn['bank_txn_id'])))
+               for key, group in groups.items()}
+    return [next(streams[memberships[txn['bank_txn_id']]]) for txn in txns]
+
+
 def execute(ctx, txns, handlers, writer, audit, progress=None):
     """Emit each decision, then apply it exactly once before the next transaction.
 
@@ -35,7 +199,7 @@ def execute(ctx, txns, handlers, writer, audit, progress=None):
     Handlers only propose rows; invalid proposals fall through to later handlers.
     """
     counts, rejected = Counter(), Counter()
-    ordered = sorted(txns, key=lambda txn: (txn['booking_date'], txn['bank_txn_id']))
+    ordered = order_transactions(ctx, txns)
     from .reversal_pairs import bank_error_pairs
     reversal_ids = bank_error_pairs(ordered)
     for n, txn in enumerate(ordered, 1):

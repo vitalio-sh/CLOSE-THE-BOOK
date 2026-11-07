@@ -19,8 +19,8 @@ class EngineTests(unittest.TestCase):
 
     def test_order_rejection_fallback_and_single_application(self):
         ctx = self.context()
-        txns = [dict(bank_txn_id='b', booking_date='2024-02-01', account_id='a'),
-                dict(bank_txn_id='a', booking_date='2024-02-01', account_id='a')]
+        txns = [dict(bank_txn_id='b', booking_date='2024-02-01', account_id='a', amount='40'),
+                dict(bank_txn_id='a', booking_date='2024-02-01', account_id='a', amount='60')]
         observed = []
         def invalid(txn):
             return [dict(bank_txn_id=txn['bank_txn_id'], item_id='missing', amount='100')]
