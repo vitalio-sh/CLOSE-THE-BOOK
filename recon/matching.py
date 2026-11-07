@@ -1,4 +1,5 @@
 """Evidence-based ordinary reconciliation. No labels are accessed at inference."""
+from bisect import bisect_right
 from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -87,6 +88,48 @@ def party_candidates(txn,ctx):
     selected=[pid for score,pid in ranked if score>=threshold][:12]
     for pid in list(selected): selected.extend(children.get(pid,()))
     return list(dict.fromkeys(selected))
+
+def index_same_day(ctx, txns):
+    """Compact texts of each entity's bank lines per booking day (read-only lookup)."""
+    groups = defaultdict(list)
+    for txn in txns:
+        groups[(txn.get('entity'), txn.get('booking_date'))].append(txn)
+    index = {}
+    for key, group in groups.items():
+        starts, ids, parts, offset = [], [], [], 0
+        for txn in group:
+            compact = norm(text_of(txn))
+            starts.append(offset); ids.append(txn['bank_txn_id']); parts.append(compact)
+            offset += len(compact) + 1
+        index[key] = ('|'.join(parts), starts, ids)
+    ctx.same_day_texts = index
+
+
+def _quoted_by_sibling(ctx, txn, items):
+    """Items whose document number another bank line of the same entity and day quotes.
+
+    POLICIES 5.6: FIFO applies only *without a usable reference*. When a sibling line
+    of the same day quotes an invoice, that invoice is the sibling's, not the oldest
+    open candidate of an unreferenced same-amount receipt.
+    """
+    index = getattr(ctx, 'same_day_texts', None)
+    entry = index.get((txn.get('entity'), txn.get('booking_date'))) if index else None
+    if not entry:
+        return set()
+    blob, starts, ids = entry
+    quoted = set()
+    for item in items:
+        number = norm(item.get('document_number'))
+        if len(number) < 6:
+            continue
+        pos = blob.find(number)
+        while pos >= 0:
+            if ids[bisect_right(starts, pos) - 1] != txn['bank_txn_id']:
+                quoted.add(item['item_id'])
+                break
+            pos = blob.find(number, pos + 1)
+    return quoted
+
 
 def _eligible(item, txn, reverse=False):
     if item.get('issue_date','') > txn.get('booking_date','9999'):return False
@@ -408,6 +451,10 @@ def reconcile(txn,ctx):
         cash,fx=_cash(item,txn)
         if cash is not None and dec(item.get('open_amount'))>0 and abs(cash-dec(item['open_amount']))<=CENT:
             exact.append((item,cash,fx))
+    if exact and dec(txn['amount']) > 0:
+        quoted = _quoted_by_sibling(ctx, txn, [x[0] for x in exact if x[0].get('side') == 'AR'])
+        if quoted:
+            exact = [x for x in exact if x[0]['item_id'] not in quoted]
     if exact:
         if len({x[0].get('party_id') for x in exact})!=1:
             # Several identified payers have an exact open item: the best-ranked payer

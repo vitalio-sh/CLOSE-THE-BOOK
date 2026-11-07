@@ -23,6 +23,17 @@ class MatchingTests(unittest.TestCase):
     def test_party_fifo(self):
         a=invoice();b=invoice('I2','FV25-00002');b['issue_date']='2025-01-02'
         self.assertEqual(reconcile(txn(text='Alice Water Works'),context([b,a]))[0]['item_id'],'I1')
+    def test_fifo_skips_invoice_quoted_by_same_day_sibling(self):
+        # POLICIES 5.6: FIFO only without a usable reference; a same-day line quoting the
+        # oldest invoice pays it, so the unreferenced receipt takes the next oldest.
+        from recon.matching import index_same_day
+        a=invoice();b=invoice('I2','FV25-00002');b['issue_date']='2025-01-02'
+        c=context([a,b]);t1=txn(text='Alice Water Works PAYMENT');t2=txn(text='Alice Water Works FV25-00001');t2['bank_txn_id']='T2'
+        index_same_day(c,[t1,t2])
+        self.assertEqual(reconcile(t1,c)[0]['item_id'],'I2')
+        other=txn(text='Alice Water Works FV25-00001');other.update(bank_txn_id='T3',booking_date='2025-01-16')
+        index_same_day(c,[t1,other])
+        self.assertEqual(reconcile(t1,c)[0]['item_id'],'I1')
     def test_accepted_discount(self):
         c=context([invoice(payment_terms='D2')]);c.payment_terms={'D2':{'early_payment_discount_pct':'2','discount_days':'14'}}
         self.assertEqual(reconcile(txn('98'),c)[0]['exception'],'SHORT_DISCOUNT')

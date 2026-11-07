@@ -205,6 +205,8 @@ def execute(ctx, txns, handlers, writer, audit, progress=None):
     ordered = order_transactions(ctx, txns)
     from .reversal_pairs import bank_error_pairs
     reversal_ids = bank_error_pairs(ordered)
+    from .matching import index_same_day
+    index_same_day(ctx, ordered)
     for n, txn in enumerate(ordered, 1):
         rows = None
         source = 'unidentified'
