@@ -508,3 +508,86 @@ def payer_candidates(txn, ctx):
     """Best-evidence tier of payer_tiers (compatibility helper used by residual_fees)."""
     tiers = payer_tiers(txn, ctx)
     return list(tiers[0]) if tiers else []
+
+
+WINDOW_MIN_KEPT = 3
+WINDOW_MAX_KEPT = 25
+WINDOW_TWO_OMIT_BOOK = 40   # two left-out invoices only in books this small ...
+WINDOW_TWO_OMIT_KEPT = 7    # ... or when the window keeps at most this many
+
+
+def window_sets(group, target, window=WINDOW):
+    """Distinct exact sets that are a due-date window of the open book with at most two
+    interior invoices left out and 3..25 kept (up to two are returned), plus the expected
+    number of coincidental hits: candidate sets within +-window of the cash per cent."""
+    order = sorted(group, key=lambda i: (i.get('due_date') or i.get('issue_date', ''), i.get('issue_date', ''), i['item_id']))
+    vals = [cents(i['open_amount']) for i in order]
+    n = len(vals)
+    if n < WINDOW_MIN_KEPT:
+        return [], order, 0.0
+    top2 = sum(sorted(vals)[-2:])
+    sets, near = set(), 0
+    for i in range(n):
+        total = 0
+        for j in range(i, n):
+            total += vals[j]
+            excess = total - target
+            length = j - i + 1
+            if excess > top2 + window or length - 2 > WINDOW_MAX_KEPT:
+                break
+            interior = vals[i + 1:j]
+            if WINDOW_MIN_KEPT <= length <= WINDOW_MAX_KEPT:
+                near += abs(excess) <= window
+                if excess == 0:
+                    sets.add(frozenset(range(i, j + 1)))
+            if WINDOW_MIN_KEPT <= length - 1 <= WINDOW_MAX_KEPT:
+                for a, v in enumerate(interior, i + 1):
+                    if abs(v - excess) <= window:
+                        near += 1
+                        if v == excess:
+                            sets.add(frozenset(range(i, j + 1)) - {a})
+            if length - 2 >= WINDOW_MIN_KEPT and excess >= -window:
+                # Pairs near the excess are counted even where two left out are not searched.
+                srt = sorted(interior)
+                for x, v in enumerate(srt):
+                    near += bisect_right(srt, excess + window - v, x + 1) - bisect_left(srt, excess - window - v, x + 1)
+                if n <= WINDOW_TWO_OMIT_BOOK or length - 2 <= WINDOW_TWO_OMIT_KEPT:
+                    seen = {}
+                    for a, v in enumerate(interior, i + 1):
+                        b = seen.get(excess - v)
+                        if b is not None:
+                            sets.add(frozenset(range(i, j + 1)) - {a, b})
+                        seen.setdefault(v, a)
+    return list(sets)[:2], order, near / (2 * window + 1)
+
+
+def due_window(txn, ctx):
+    """A named payer settling a run of invoices in due-date order, skipping one or two.
+
+    POLICIES 5.5 (no usable reference, name only): customers pay their open invoices in
+    due-date order, leaving out one or two (disputed or already in another payment). The
+    set must be the only such window in the payer's open book, the only payer with one, and
+    near-cash windows must be rare (coincidence bound); quoted invoices disable the rule.
+    """
+    if dec(txn.get('amount')) <= 0 or classify(txn, ctx):
+        return None
+    target = cents(abs(dec(txn['amount'])))
+    if target % 10000 == 0:
+        return None  # a round figure is a payment on account, not a sum of invoices
+    tokens = reference_tokens(txn)
+    for parties in payer_tiers(txn, ctx):
+        answers = []
+        for pid, group in sorted(_pool(txn, ctx, parties).items()):
+            exact, fuzzy = anchors_of(group, tokens)
+            if exact or fuzzy:
+                return None  # quoted invoices: not a name-only receipt
+            sets, order, density = window_sets(group, target)
+            if len(sets) > 1 or (sets and density > FULL_DENSITY):
+                return None
+            if sets:
+                answers.append([order[k] for k in sorted(sets[0])])
+        if len(answers) > 1:
+            return None
+        if answers:
+            return [row(txn, i['item_id'], i['open_amount']) for i in sorted(answers[0], key=lambda i: i['item_id'])]
+    return None

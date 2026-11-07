@@ -50,6 +50,8 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         from .credit_groups import reconcile as credit_reconcile
         handlers.append(('credit_groups', lambda txn: credit_reconcile(txn, ctx)))
         handlers.append(('refnoise', lambda txn: refnoise.reconcile(txn, ctx)))
+        # Name-only receipts: a due-date window of the payer's open invoices, one or two left out (5.5).
+        handlers.append(('due_window', lambda txn: refnoise.due_window(txn, ctx)))
         # Quoted invoices with one TRAIN partial share or a unique rest (cut lists, ar_n_to_m).
         from .matching import quoted_groups, quoted_only
         handlers.append(('quoted_groups', lambda txn: quoted_groups(txn, ctx)))

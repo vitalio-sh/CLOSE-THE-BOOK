@@ -101,6 +101,23 @@ class RefNoiseTests(unittest.TestCase):
         self.assertIsNone(refnoise.typo_owner(txn('541.60', 'TRANSF HOTELES PRIME S.L. FV24-0115039'), ctx))
         self.assertIsNone(refnoise.typo_owner(txn('880.00', 'WELLNESS JIMENEZ S.COO FV24-0115039'), ctx))
 
+    def test_due_date_window_with_one_invoice_left_out(self):
+        # POLICIES 5.5: name only; the payer clears a due-date run except one (disputed) invoice.
+        amounts = ['812.40', '133.07', '1290.55', '77.19', '645.30', '402.88', '958.21', '310.64']
+        items = [invoice(f'I{k}', f'FV24-00001{k:02d}', a, day=f'{k + 1:02d}') for k, a in enumerate(amounts)]
+        for k, i in enumerate(items):
+            i['due_date'] = f'2024-10-{k + 1:02d}'
+        paid = ['I1', 'I2', 'I4', 'I5']
+        total = sum(D(amounts[int(k[1:])]) for k in paid)
+        rows = refnoise.due_window(txn(str(total), 'TRANSFERENCIA ROCAVERDE PISCINAS S.L.'),
+                                   context(items, {'C1': CUSTOMERS['C1']}))
+        self.assertEqual({r['item_id'] for r in rows}, set(paid))
+        self.assertIsNone(refnoise.due_window(txn('4000.00', 'TRANSFERENCIA ROCAVERDE PISCINAS S.L.'),
+                                              context(items, {'C1': CUSTOMERS['C1']})))
+        # Fewer than three kept invoices is never a window.
+        self.assertIsNone(refnoise.due_window(txn('1423.62', 'TRANSFERENCIA ROCAVERDE PISCINAS S.L.'),
+                                              context(items, {'C1': CUSTOMERS['C1']})))
+
     def test_osa_distance_one(self):
         self.assertTrue(refnoise._osa1('1003740', '0103740'))
         self.assertTrue(refnoise._osa1('0133714', '0103714'))
