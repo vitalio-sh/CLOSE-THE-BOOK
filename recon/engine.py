@@ -40,6 +40,9 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         # matching: an exact unreferenced subset of old invoices must not take them.
         from .residual_fees import ResidualFees
         handlers.append(('residual_fees', ResidualFees(ctx).reconcile))
+        # Unreferenced receipt = one invoice less its terms discount (POLICIES §3 SHORT_DISCOUNT).
+        from .residual_fees import ResidualDiscounts
+        handlers.append(('residual_discounts', ResidualDiscounts(ctx).reconcile))
         # A later 'SETTLEMENT <invoice>' receipt pays a disputed remainder (POLICIES 3).
         from .matching import dispute_settlement
         handlers.append(('dispute_settlement', lambda txn: dispute_settlement(txn, ctx)))
