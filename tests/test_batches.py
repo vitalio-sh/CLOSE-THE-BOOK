@@ -103,4 +103,82 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(rows[0]['exception'],'')
         self.assertEqual(self.ctx.items['API-1']['open_amount'],D('100'))
 
+    def test_historical_dedup_preserves_original_ordered_row_identity(self):
+        import shutil
+        row=dict(settlement_id='SET12345',settlement_date='2025-06-01',account_id='ES01-A',currency='EUR',order_number='ORDER1',gross='100',net='98')
+        self.rows('card_settlements',[row])
+        history=self.root/'history';(history/'card_settlements').mkdir(parents=True)
+        path=history/'card_settlements/ES01_202506.csv'
+        shutil.copyfile(self.root/'card_settlements/ES01_202506.csv',path)
+        self.ctx.history_dirs=[history]
+        self.assertEqual(len(BatchMatcher(self.ctx).groups[0]['rows']),1)
+        # The previous tuple(row.items()) key intentionally included CSV column
+        # order; the memory optimization must not silently change dedup semantics.
+        with path.open('w') as stream:
+            writer=csv.DictWriter(stream,fieldnames=list(reversed(row)))
+            writer.writeheader();writer.writerow(row)
+        self.assertEqual(len(BatchMatcher(self.ctx).groups[0]['rows']),2)
+
+    def confirming_groups(self, amounts):
+        rows=[]
+        for n, amount in enumerate(amounts):
+            self.item(f'API-{n}', f'INV{n}', str(amount), party=f'S{n}')
+            rows.append(dict(run_id='CF12345678',run_type='confirming',execution_date='2025-05-01',debtor_account_id='ES01-A',end_to_end_id=f'CF12345678-{n}',beneficiary=f'Supplier {n}',currency='EUR',transfer_amount=str(amount),document_number=f'INV{n}',document_type='INVOICE',document_amount=str(amount)))
+        self.rows('payment_runs',rows)
+
+    def test_confirming_multi_beneficiary_unique_sum(self):
+        self.confirming_groups([100, 210, 440, 900])
+        # Different invoice due dates do not prevent the documented bank group.
+        self.ctx.items['API-1']['due_date']='2025-08-01'
+        result=BatchMatcher(self.ctx).reconcile(self.txn('-310','PAGO CONFIRMING REMESA CF12345678 2 PROVEEDORES'))
+        self.assertEqual({r['item_id'] for r in result},{'API-0','API-1'})
+        self.assertEqual(self.ctx.items['API-0']['open_amount'],D(100))
+
+    def test_confirming_subset_ambiguous_rejected(self):
+        self.confirming_groups([100, 200, 120, 180])
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(self.txn('-300','CF12345678 2 PROVEEDORES')))
+
+    def test_confirming_subset_requires_reference_and_count(self):
+        self.confirming_groups([100,210,440])
+        matcher=BatchMatcher(self.ctx)
+        for text in ('2 PROVEEDORES','CF12345678','CF12345678 3 PROVEEDORES'):
+            self.assertIsNone(matcher.reconcile(self.txn('-310',text)))
+
+    def test_confirming_subset_rejects_paid_or_unresolved_member(self):
+        self.confirming_groups([100,210,440])
+        self.ctx.items['API-1']['open_amount']=D(0)
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(self.txn('-310','CF12345678 2 PROVEEDORES')))
+        del self.ctx.items['API-1']
+        self.ctx.by_number[norm('INV1')]=[]
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(self.txn('-310','CF12345678 2 PROVEEDORES')))
+
+    def test_confirming_subset_wrong_account_or_currency(self):
+        self.confirming_groups([100,210,440])
+        matcher=BatchMatcher(self.ctx)
+        txn=self.txn('-310','CF12345678 2 PROVEEDORES')
+        txn['account_id']='OTHER'
+        self.assertIsNone(matcher.reconcile(txn))
+        txn['account_id']='ES01-A';txn['currency']='USD'
+        self.assertIsNone(matcher.reconcile(txn))
+
+    def test_confirming_subset_uses_net_group_but_positive_credit_rows(self):
+        self.item('API-1','INV1','100',party='S1')
+        self.item('APC-1','CN1','20',party='S1')
+        self.item('API-2','INV2','210',party='S2')
+        base=dict(run_id='CF12345678',run_type='confirming',execution_date='2025-05-01',debtor_account_id='ES01-A',currency='EUR')
+        self.rows('payment_runs',[
+            dict(base,end_to_end_id='CF12345678-1',beneficiary='Supplier One',transfer_amount='80',document_number='INV1',document_type='INVOICE',document_amount='100'),
+            dict(base,end_to_end_id='CF12345678-1',beneficiary='Supplier One',transfer_amount='80',document_number='CN1',document_type='CREDIT_NOTE',document_amount='-20'),
+            dict(base,end_to_end_id='CF12345678-2',beneficiary='Supplier Two',transfer_amount='210',document_number='INV2',document_type='INVOICE',document_amount='210')])
+        result=BatchMatcher(self.ctx).reconcile(self.txn('-290','CF12345678 2 PROVEEDORES'))
+        self.assertEqual({r['item_id']:r['amount'] for r in result},{'API-1':'100.00','APC-1':'20.00','API-2':'210.00'})
+
+    def test_unique_subset_three_four_and_budget(self):
+        from recon.batches import unique_small_subset
+        self.assertEqual(unique_small_subset([100,210,440,900],750,3),(0,1,2))
+        self.assertEqual(unique_small_subset([100,210,440,900,2000],1650,4),(0,1,2,3))
+        self.assertIsNone(unique_small_subset([100,210,440,900],750,3,max_checks=0))
+        self.assertIsNone(unique_small_subset([100,210,440,900],750,3,max_candidates=3))
+        self.assertIsNone(unique_small_subset([1,2,3,4,5],9,3))
+
 if __name__=='__main__':unittest.main()

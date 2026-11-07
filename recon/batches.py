@@ -6,6 +6,7 @@ import json
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from types import MappingProxyType
 import re
 import unicodedata
 
@@ -71,6 +72,7 @@ class BatchMatcher:
     def __init__(self, ctx):
         self.ctx = ctx
         self.groups = []
+        self.mixed_run_groups = defaultdict(list)
         self.by_amount = defaultdict(list)
         self.by_ref = defaultdict(list)
         self.by_account = defaultdict(list)
@@ -83,16 +85,19 @@ class BatchMatcher:
                         self.name_party[norm(party[key])].add(pid)
         dirs = [Path(ctx.phase_dir)] + [Path(p) for p in getattr(ctx, 'history_dirs', [])]
         seen = set()
+        mixed_seen = set()
         for folder, idcol, datecol in [('direct_debit_batches','batch_id','collection_date'),
                                      ('card_settlements','settlement_id','settlement_date'),
                                      ('cheque_deposits','deposit_id','deposit_date'),
                                      ('payment_runs','run_id','execution_date')]:
             rows_by_group = defaultdict(list)
+            mixed_run_rows = defaultdict(list)
             for root in dirs:
                 for path in sorted((root / folder).glob('*.csv')):
                     if path.name.startswith('._'):
                         continue
                     with path.open(encoding='utf-8-sig', newline='') as stream:
+                        mixed_occurrences = defaultdict(int)
                         for row in csv.DictReader(stream):
                             # Snapshot directories may overlap (sample is a subset of TRAIN).
                             # Retain a compact digest rather than a second full row
@@ -101,6 +106,21 @@ class BatchMatcher:
                             unique = hashlib.sha256(json.dumps(
                                 [folder, list(row.items())], ensure_ascii=False,
                                 separators=(',', ':')).encode('utf-8')).digest()
+                            if folder == 'payment_runs' and row['run_type'] == 'aggregated':
+                                # Preserve repeated detail fragments inside one source.
+                                # Snapshot copies share each payload's occurrence index.
+                                entity = path.name.split('_')[0]
+                                payload = hashlib.sha256(json.dumps(
+                                    [entity, sorted(row.items())], ensure_ascii=False,
+                                    separators=(',', ':')).encode('utf-8')).digest()
+                                mixed_occurrences[payload] += 1
+                                occurrence = (payload, mixed_occurrences[payload])
+                                if occurrence not in mixed_seen:
+                                    mixed_seen.add(occurrence)
+                                    detail = dict(row, _entity=entity, _source=str(path))
+                                    # Run IDs repeat across entities and bank accounts.
+                                    mixed_run_rows[(row['run_id'], row['debtor_account_id'],
+                                                    entity, row['execution_date'])].append(detail)
                             if unique in seen:
                                 continue
                             seen.add(unique)
@@ -112,6 +132,9 @@ class BatchMatcher:
                             if folder == 'payment_runs' and row['run_type'] == 'confirming':
                                 key = row['end_to_end_id']
                             rows_by_group[key].append(row)
+            for (run_id, account, entity, execution_date), details in mixed_run_rows.items():
+                if len({row['currency'] for row in details}) > 1:
+                    self.mixed_run_groups[(norm(run_id), account)].append(details)
             for key, rows in rows_by_group.items():
                 first = rows[0]
                 account = first.get('account_id', first.get('debtor_account_id'))
@@ -128,7 +151,9 @@ class BatchMatcher:
                 group = {'kind':folder, 'ref':norm(reference), 'account':account,
                          'currency':currency, 'date':when, 'amount':total, 'rows':rows,
                          'direction':-1 if folder == 'payment_runs' else 1,
-                         'confirming': folder == 'payment_runs' and first['run_type'] == 'confirming'}
+                         'confirming': folder == 'payment_runs' and first['run_type'] == 'confirming',
+                         'mixed_aggregated': folder == 'payment_runs' and first['run_type'] == 'aggregated'
+                                             and len({r['currency'] for r in rows}) > 1}
                 idx = len(self.groups)
                 self.groups.append(group)
                 self.by_ref[group['ref']].append(idx)
@@ -301,6 +326,32 @@ class BatchMatcher:
             return None
         return rows
 
+    def _mixed_currency_run(self, txn, text):
+        from .batch_fx import mixed_run_cash_evidence, mixed_run_rows_valid, mixed_run_allocate, signature, run_reference_ids
+        matches = []
+        references = run_reference_ids(txn)
+        if len(references) != 1:
+            return None
+        for (reference, account), groups in self.mixed_run_groups.items():
+            if account != txn['account_id'] or reference not in references:
+                continue
+            for details in groups:
+                cash_evidence = mixed_run_cash_evidence(self.ctx, txn, details)
+                if not cash_evidence:
+                    continue
+                rows = mixed_run_allocate(self.ctx, txn, details)
+                if rows and mixed_run_rows_valid(self.ctx, txn, rows, cash_evidence, details):
+                    matches.append((rows, details, cash_evidence))
+        if len(matches) != 1:
+            return None
+        rows, details, cash_evidence = matches[0]
+        self.ctx._mixed_run_proposal_evidence = {
+            'signature': signature(txn, rows),
+            'details': tuple(MappingProxyType(dict(detail)) for detail in details),
+            'cash': cash_evidence,
+        }
+        return rows
+
     def reconcile(self, txn):
         amount = money(txn['amount'])
         text = norm(' '.join(str(txn.get(k,'') or '') for k in
@@ -318,9 +369,15 @@ class BatchMatcher:
                 for idx in self.by_ref.get(text[start:start+length], []):
                     if self.groups[idx]['account'] == txn['account_id']:
                         candidates.add(idx)
+        mixed = self._mixed_currency_run(txn, text)
+        if mixed:
+            return mixed
         ranked = []
         for idx in candidates:
             group = self.groups[idx]
+            # Raw amounts in different currencies must never be summed as cash.
+            if group.get('mixed_aggregated'):
+                continue
             reverse = amount * group['direction'] < 0
             if reverse and not any(word in text for word in ('DEVOL','RETURN','IMPAY','REJECT')):
                 continue
