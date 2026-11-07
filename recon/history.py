@@ -67,8 +67,9 @@ indices are preserved. Call once before constructing cached matcher indices.
             first_date = booking
         for token in reference_tokens(txn):
             refs[token].add(txn.get('entity', ''))
+    suffix_refs = defaultdict(set)
     if first_date is not None:
-        result['batch_reference_tokens'] = _batch_references(ctx, phase_dir, first_date, refs)
+        result['batch_reference_tokens'] = _batch_references(ctx, phase_dir, first_date, refs, suffix_refs)
         result['reversal_reference_tokens'] = _reversal_references(ctx, phase_dir, first_date, refs, txns)
         result['repeated_transfer_tokens'] = _repeated_transfer_references(ctx, phase_dir, first_date, txns, refs)
     result['reference_tokens'] = len(refs)
@@ -103,6 +104,15 @@ indices are preserved. Call once before constructing cached matcher indices.
                 number = record.get('document_number') or record.get('supplier_invoice_number', '')
                 key = norm(number)
                 entities = refs.get(key)
+                if not entities and suffix_refs and iid.startswith('AR'):
+                    # Batch files print 'RECIBO 0121479' for INV24-0121479 (number without prefix).
+                    tail = re.search(r'(\d{6,})$', key)
+                    if tail:
+                        digits = tail.group(1)
+                        for length in range(len(digits), 5, -1):
+                            entities = suffix_refs.get(digits[-length:])
+                            if entities:
+                                break
                 if not entities:
                     continue
                 # Absence from opening proves closed only for documents issued before phase.
@@ -122,7 +132,7 @@ indices are preserved. Call once before constructing cached matcher indices.
     result['seconds'] = round(time.monotonic() - start, 3)
     return result
 
-def _batch_references(ctx, phase_dir, first_date, refs):
+def _batch_references(ctx, phase_dir, first_date, refs, suffix_refs=None):
     """Invoice numbers printed in direct-debit batch files of the phase and the six months before.
 
     A returned collection re-opens the printed invoice. When that invoice was collected
@@ -153,6 +163,9 @@ def _batch_references(ctx, phase_dir, first_date, refs):
                 if len(token) >= 5 and any(c.isdigit() for c in token) and entity not in refs[token]:
                     refs[token].add(entity)
                     added += 1
+                if suffix_refs is not None:
+                    for digits in re.findall(r'\d{6,}', row.get('remittance_info', '')):
+                        suffix_refs[digits].add(entity)
     return added
 
 

@@ -572,6 +572,13 @@ def reconcile(txn,ctx):
                 if len(monthly) != 1:
                     return None
                 exact = monthly
+        if len(exact)>1:
+            # POLICIES 5.10: after a returned direct debit the customer pays that invoice by
+            # transfer; the re-opened item outranks older same-amount invoices (FIFO).
+            reopened=[x for x in exact if any(h.get('exception')=='RETURNED'
+                      for h in getattr(ctx,'history',{}).get(x[0]['item_id'],()))]
+            if len(reopened)==1:
+                exact=reopened
         exact.sort(key=lambda x:(x[0].get('issue_date',''),x[0]['item_id']))
         item,cash,fx=exact[0]
         return [row(txn,item['item_id'],item['open_amount'],'FX_DIFFERENCE' if fx and item.get('kind')!='credit' else '')]

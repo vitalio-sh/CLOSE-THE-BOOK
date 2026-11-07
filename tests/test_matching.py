@@ -34,6 +34,11 @@ class MatchingTests(unittest.TestCase):
         other=txn(text='Alice Water Works FV25-00001');other.update(bank_txn_id='T3',booking_date='2025-01-16')
         index_same_day(c,[t1,other])
         self.assertEqual(reconcile(t1,c)[0]['item_id'],'I1')
+    def test_transfer_after_dd_return_pays_reopened_invoice(self):
+        # POLICIES 5.10: the customer pays the returned (re-opened) invoice by transfer, not the oldest.
+        a=invoice();b=invoice('I2','FV25-00002');b['issue_date']='2025-01-02'
+        c=context([b,a]);c.history={'I2':[{'item_id':'I2','exception':'RETURNED','amount':'100'}]}
+        self.assertEqual(reconcile(txn(text='Alice Water Works'),c)[0]['item_id'],'I2')
     def test_accepted_discount(self):
         c=context([invoice(payment_terms='D2')]);c.payment_terms={'D2':{'early_payment_discount_pct':'2','discount_days':'14'}}
         self.assertEqual(reconcile(txn('98'),c)[0]['exception'],'SHORT_DISCOUNT')

@@ -102,4 +102,12 @@ class HistoryTests(unittest.TestCase):
             enrich_referenced_closed(c,txns)
             self.assertIn('API-1',c.items)
             self.assertEqual(c.items['API-1']['open_amount'],Decimal(0))
+    def test_dd_batch_number_without_prefix_restores_closed_invoice(self):
+        # POLICIES 5.4/5.5: our number without prefix ('RECIBO 0121479' for INV24-0121479).
+        with tempfile.TemporaryDirectory() as d:
+            c=self.context(d)
+            self.write(c,[self.record('ARI-2025-1','INV25-0121479','2025-05-01','PT01'),self.record('ARI-2025-2','INV25-0121480','2025-05-01','PT01')])
+            self.batch(c,'direct_debit_batches','PT01_B01_202506.csv',[dict(batch_id='B1',collection_date='2025-06-20',account_id='A',currency='EUR',mandate_id='M1',debtor_name='X',amount='998.35',remittance_info='RECIBO 0121479')])
+            enrich_referenced_closed(c,[dict(text='DEVOLUCION RECIBO AM04',amount='-998.35',booking_date='2025-07-01',entity='PT01')])
+            self.assertIn('ARI-2025-1',c.items);self.assertNotIn('ARI-2025-2',c.items)
 if __name__=='__main__':unittest.main()
