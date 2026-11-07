@@ -156,6 +156,17 @@ class BatchTests(unittest.TestCase):
                                                remittance_info='INV2',re_presentation='Y')])
         result=BatchMatcher(self.ctx).reconcile(self.txn('-50','RUECKLASTSCHRIFT AM04 MREF+VTM-DE-0001477'))
         self.assertEqual([(r['item_id'],r['exception']) for r in result],[('ARI-2','RETURNED')])
+    def test_md06_skips_recent_single_row_batch_total(self):
+        # Adversarial case by LukeMininno (solution/luke-validation ba20bcd): one collection per batch, so a
+        # batch total equals the refund; MD06 must still reverse the debit of its 21-75 day window.
+        base=dict(account_id='ES01-A',currency='EUR',debtor_name='Buyer',mandate_id='VTM-DE-0001477',amount='50',re_presentation='N')
+        rows=[]
+        for m in ('03','04','05'):
+            self.item(f'ARI-{m}',f'FV-{m}','50');self.ctx.items[f'ARI-{m}']['open_amount']=D('0')
+            rows.append(dict(base,batch_id=f'B2025{m}29',collection_date=f'2025-{m}-29',end_to_end_id=f'E{m}',remittance_info=f'FV-{m}'))
+        self.rows('direct_debit_batches',rows)
+        result=BatchMatcher(self.ctx).reconcile(self.txn('-50','RUECKLASTSCHRIFT MD06 MREF+VTM-DE-0001477'))
+        self.assertEqual([(r['item_id'],r['exception']) for r in result],[('ARI-04','RETURNED')])
     def test_return_cannot_precede_source_payment(self):
         self.item('API-1','INV1','100')
         self.rows('payment_runs',[dict(run_id='RUN12345678',run_type='transfers',execution_date='2025-06-02',debtor_account_id='ES01-A',end_to_end_id='RUN12345678-1',beneficiary='Supplier',currency='EUR',transfer_amount='100',document_number='INV1',document_type='INVOICE',document_amount='100')])

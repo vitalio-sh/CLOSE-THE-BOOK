@@ -777,6 +777,10 @@ class BatchMatcher:
         # 'DEVOLUCION SALDO A FAVOR' is a supplier refund, not a return.
         rejected_transfer = amount > 0 and bool(REJECTED_TRANSFER.search(
             ' '.join(str(txn.get(k) or '') for k in ('text', 'remittance_info')).upper()))
+        # MD06 is a refund request weeks after the debit (POLICIES 3 RETURNED; TRAIN 21-75 days):
+        # a recent single-row batch with the same total is the next debit, not the refunded one.
+        md06 = amount < 0 and bool(re.search(r'(?<![A-Z0-9])MD06(?![A-Z0-9])', ' '.join(
+            str(txn.get(k) or '') for k in ('text', 'remittance_info')).upper()))
         ranked = []
         for idx in candidates:
             group = self.groups[idx]
@@ -800,6 +804,8 @@ class BatchMatcher:
             explicit_transfer = (bool(cut_run) and group['kind'] == 'payment_runs' and not group['confirming']
                                  and group['ref'].startswith(cut_run))
             ref = group['ref'] in text or explicit_transfer
+            if reverse and md06 and not ref and group['kind'] == 'direct_debit_batches' and delta < 21:
+                continue
             # A rejected transfer often quotes only the beneficiary (POLICIES 3, RETURNED).
             beneficiary = norm(group['rows'][0].get('beneficiary', '')) if group['kind'] == 'payment_runs' else ''
             named = (reverse and not ref and not group['confirming'] and len(beneficiary) >= 6
