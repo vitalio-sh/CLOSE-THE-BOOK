@@ -68,6 +68,7 @@ indices are preserved. Call once before constructing cached matcher indices.
             refs[token].add(txn.get('entity', ''))
     if first_date is not None:
         result['batch_reference_tokens'] = _batch_references(ctx, phase_dir, first_date, refs)
+        result['reversal_reference_tokens'] = _reversal_references(ctx, phase_dir, first_date, refs, txns)
     result['reference_tokens'] = len(refs)
     if first_date is None:
         result['skipped_reason'] = 'No dated transactions'
@@ -137,4 +138,77 @@ def _batch_references(ctx, phase_dir, first_date, refs):
                 if len(token) >= 5 and any(c.isdigit() for c in token) and entity not in refs[token]:
                     refs[token].add(entity)
                     added += 1
+    return added
+
+
+CHARGEBACK = re.compile(r'CHARGEBACK|CONTRACARGO|RUECKBELASTUNG|RETROCESION TARJETA|RIADDEBITO', re.I)
+RETURN_TEXT = re.compile(r'RETURN|DEVOLUCION TRANSF|RUECKUEBERWEISUNG|RUCKUBERWEISUNG|RETOUR|REJECT', re.I)
+MASKED_CARD = re.compile(r'\*{2,}\s*(\d{4})\b')
+
+
+def _reversal_references(ctx, phase_dir, first_date, refs, txns):
+    """Documents behind a returned cheque, a card chargeback or a returned supplier transfer.
+
+    POLICIES section 3 (RETURNED): every item of the returned operation gets the row. The bank text
+    quotes the cheque number, the masked card plus merchant id, or the payment-run end-to-end id
+    (or only the beneficiary name), never the invoice. The invoice was usually settled before the
+    phase, so it is absent from the opening snapshot; restore its identity at zero balance, only
+    for batch rows that a return line of the phase actually points to.
+    """
+    try:
+        floor = (date.fromisoformat(first_date).replace(day=1) - timedelta(days=183)).strftime('%Y%m')
+    except ValueError:
+        return 0
+    card_keys = set()
+    returns_by_amount = defaultdict(list)
+    for txn in txns:
+        raw = ' '.join(str(txn.get(f) or '') for f in FIELDS)
+        try:
+            amount = Decimal(str(txn.get('amount') or '0'))
+        except ArithmeticError:
+            continue
+        if amount < 0 and CHARGEBACK.search(raw):
+            digits = {t for t in re.findall(r'\d{6,}', raw)}
+            for last4 in MASKED_CARD.findall(raw):
+                for mid in digits:
+                    card_keys.add((txn.get('entity', ''), mid, last4))
+        if amount > 0 and RETURN_TEXT.search(raw):
+            returns_by_amount[amount].append((txn.get('entity', ''), norm(raw)))
+    added = 0
+    roots = [phase_dir] + [Path(p) for p in getattr(ctx, 'history_dirs', ())]
+    for folder in ('cheque_deposits', 'card_settlements', 'payment_runs'):
+        seen = set()
+        for root in roots:
+            for path in sorted((Path(root) / folder).glob('*.csv')):
+                if path.name.startswith('._') or path.name in seen:
+                    continue
+                month = re.search(r'_(\d{6})(?:_\d+)?\.csv$', path.name)
+                if not month or month.group(1) < floor:
+                    continue
+                seen.add(path.name)
+                entity = path.name.split('_')[0]
+                for row in read_csv(path):
+                    token = ''
+                    if folder == 'cheque_deposits':
+                        if entity in refs.get(norm(row.get('cheque_number', '')), ()):
+                            token = norm(row.get('stub_reference', ''))
+                    elif folder == 'card_settlements':
+                        card = re.sub(r'\D', '', row.get('card', ''))[-4:]
+                        if (entity, norm(row.get('merchant_id', '')), card) in card_keys:
+                            token = norm(row.get('order_number', ''))
+                    elif row.get('run_type') == 'transfers':
+                        quoted = entity in refs.get(norm(row.get('end_to_end_id', '')), ())
+                        if not quoted:
+                            try:
+                                cash = Decimal(row.get('transfer_amount') or '0')
+                            except ArithmeticError:
+                                cash = None
+                            name = norm(row.get('beneficiary', ''))
+                            quoted = len(name) >= 6 and any(
+                                e == entity and name in text for e, text in returns_by_amount.get(cash, ()))
+                        if quoted:
+                            token = norm(row.get('document_number', ''))
+                    if len(token) >= 3 and any(c.isdigit() for c in token) and entity not in refs[token]:
+                        refs[token].add(entity)
+                        added += 1
     return added

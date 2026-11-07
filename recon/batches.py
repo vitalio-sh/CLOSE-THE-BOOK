@@ -107,6 +107,7 @@ class BatchMatcher:
         self.by_ref = defaultdict(list)
         self.by_account = defaultdict(list)
         self.return_details = defaultdict(list)
+        self.card_orders = defaultdict(list)
         self.name_party = defaultdict(set)
         for mapping in (getattr(ctx, 'customers', {}), getattr(ctx, 'suppliers', {})):
             for pid, party in mapping.items():
@@ -204,6 +205,11 @@ class BatchMatcher:
                 elif folder == 'cheque_deposits':
                     for row in rows:
                         self.return_details[norm(row['cheque_number'])].append((folder,row))
+                elif folder == 'card_settlements':
+                    for row in rows:
+                        last4 = re.sub(r'[^0-9]', '', row.get('card', ''))[-4:]
+                        if last4:
+                            self.card_orders[(row['_entity'], norm(row['merchant_id']), last4)].append(row)
 
         self.ref_lengths = {len(key) for key in self.by_ref if key}
         self.return_lengths = {len(key) for key in self.return_details if key}
@@ -480,6 +486,31 @@ class BatchMatcher:
         }
         return rows
 
+    def _card_chargeback(self, txn, amount):
+        """A card chargeback reverses one card order (POLICIES 3, RETURNED).
+
+        The bank text carries the masked card and the merchant id ('CHARGEBACK ****1159 MID 993110427');
+        the settled order with that card, merchant and exact gross, operated before the chargeback,
+        is the returned one. Ambiguity abstains.
+        """
+        if amount >= 0:
+            return None
+        raw = ' '.join(str(txn.get(k, '') or '') for k in ('text', 'ref1', 'ref2', 'remittance_info'))
+        if not re.search(r'CHARGEBACK|CONTRACARGO|RUECKBELASTUNG|RETROCESION TARJETA|RIADDEBITO', raw.upper()):
+            return None
+        hits = {}
+        for last4 in re.findall(r'\*{2,}\s*(\d{4})\b', raw):
+            for mid in set(re.findall(r'\d{6,}', raw)):
+                for row in self.card_orders.get((txn.get('entity', ''), mid, last4), ()):
+                    if row['currency'] != txn['currency'] or abs(money(row['gross']) - abs(amount)) > CENT:
+                        continue
+                    if row.get('operation_date', row.get('settlement_date', '')) >= txn['booking_date']:
+                        continue
+                    hits[(row['settlement_id'], row['order_number'])] = row
+        if len(hits) != 1:
+            return None
+        return self._allocate({'kind': 'card_settlements', 'rows': list(hits.values())}, txn, returned=True)
+
     def reconcile(self, txn):
         amount = money(txn['amount'])
         text = norm(' '.join(str(txn.get(k,'') or '') for k in
@@ -513,6 +544,10 @@ class BatchMatcher:
                 continue
             delta = _days(txn['booking_date'], group['date'])
             ref = group['ref'] in text
+            # A rejected transfer often quotes only the beneficiary (POLICIES 3, RETURNED).
+            beneficiary = norm(group['rows'][0].get('beneficiary', '')) if group['kind'] == 'payment_runs' else ''
+            named = (reverse and not ref and not group['confirming'] and len(beneficiary) >= 6
+                     and beneficiary in text)
             bank_amount = abs(amount)
             if group['currency'] != txn['currency']:
                 if txn.get('orig_currency') != group['currency'] or not txn.get('orig_amount'):
@@ -520,9 +555,9 @@ class BatchMatcher:
                 bank_amount = abs(money(txn['orig_amount']))
             if abs(bank_amount-group['amount']) > CENT:
                 continue
-            if delta > (120 if ref and (group['confirming'] or reverse) else 10 if ref else 3):
+            if delta > (120 if ref and (group['confirming'] or reverse) else 60 if named else 10 if ref else 3):
                 continue
-            ranked.append((int(ref)*100-delta,idx,reverse))
+            ranked.append((int(ref)*100+int(named)*50-delta,idx,reverse))
         ranked.sort(reverse=True)
         if ranked and not (len(ranked)>1 and ranked[0][0] == ranked[1][0]):
             result = self._allocate(self.groups[ranked[0][1]],txn,returned=ranked[0][2],
@@ -533,6 +568,9 @@ class BatchMatcher:
                       or self._confirming_subset(txn, text, candidates))
         if confirming:
             return confirming
+        chargeback = self._card_chargeback(txn, amount)
+        if chargeback:
+            return chargeback
         # Only explicit return text activates reverse-direction receipt matching.
         if amount < 0 and any(word in text for word in RETURN_WORDS):
             matches = []

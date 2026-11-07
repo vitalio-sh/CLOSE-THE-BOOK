@@ -47,4 +47,23 @@ class HistoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             c=self.context(d);(c.phase_dir/'open_items_at_start.csv.gz').unlink()
             self.assertIn('Missing',enrich_referenced_closed(c,[self.txn()])['skipped_reason'])
+    def batch(self,ctx,folder,name,rows):
+        (ctx.phase_dir/folder).mkdir(exist_ok=True)
+        with open(ctx.phase_dir/folder/name,'w',newline='') as f:
+            w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
+    def test_reversal_restores_cheque_card_and_transfer_documents(self):
+        # POLICIES 3 RETURNED: the returned operation's documents are restored (closed, zero balance).
+        with tempfile.TemporaryDirectory() as d:
+            c=self.context(d)
+            self.write(c,[self.record('ARI-2025-1','1072420363','2025-05-01','US01'),self.record('ARI-2025-2','WEB259002496','2025-05-01','FR01'),
+                          self.record('ARI-2025-3','FV25-77777','2025-05-01','US01')])
+            self.batch(c,'cheque_deposits','US01_202506.csv',[dict(deposit_id='LBX1',deposit_date='2025-06-01',account_id='A',currency='USD',deposit_total='159.79',cheque_number='5127738',drawer='X',drawer_bank_routing='1',amount='159.79',stub_reference='1072420363'),
+                                                             dict(deposit_id='LBX1',deposit_date='2025-06-01',account_id='A',currency='USD',deposit_total='159.79',cheque_number='5127799',drawer='X',drawer_bank_routing='1',amount='10',stub_reference='FV25-77777')])
+            self.batch(c,'card_settlements','FR01_202506.csv',[dict(settlement_id='S1',acquirer='P',merchant_id='993110427',settlement_date='2025-06-02',account_id='B',currency='EUR',order_number='WEB259002496',card='****1159',auth_code='1',operation_date='2025-06-01',gross='189.79',fee='1',net='188.79')])
+            txns=[dict(text='RETURNED ITEM CHK 5127738 STOP PAYMENT',amount='-159.79',booking_date='2025-07-01',entity='US01'),
+                  dict(text='CHARGEBACK ****1159 MID 993110427',amount='-189.79',booking_date='2025-07-02',entity='FR01')]
+            r=enrich_referenced_closed(c,txns)
+            self.assertIn('ARI-2025-1',c.items);self.assertIn('ARI-2025-2',c.items)
+            self.assertNotIn('ARI-2025-3',c.items)  # cheque never returned
+            self.assertEqual(r['reversal_reference_tokens'],2)
 if __name__=='__main__':unittest.main()

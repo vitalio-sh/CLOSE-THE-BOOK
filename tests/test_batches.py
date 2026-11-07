@@ -72,6 +72,29 @@ class BatchTests(unittest.TestCase):
         result=BatchMatcher(self.ctx).reconcile(self.txn('100','DEVOLUCION TRANSFERENCIA RUN12345678-1'))
         self.assertEqual(result[0]['exception'],'RETURNED')
 
+    def test_card_chargeback_masked_card_and_merchant(self):
+        # POLICIES 3 RETURNED: a card chargeback re-opens the order behind card + merchant + gross.
+        self.item('ARI-1','WEB249002496','189.79')
+        self.ctx.items['ARI-1']['open_amount']=D('0')
+        self.rows('card_settlements',[dict(settlement_id='0427240813',acquirer='PayNexo',merchant_id='993110427',settlement_date='2025-05-13',account_id='ES01-A',currency='EUR',order_number='WEB249002496',card='****1159',auth_code='1',operation_date='2025-05-12',gross='189.79',fee='1.71',net='188.08'),
+                                      dict(settlement_id='0427240814',acquirer='PayNexo',merchant_id='993110427',settlement_date='2025-05-14',account_id='ES01-A',currency='EUR',order_number='WEB249002497',card='****7006',auth_code='2',operation_date='2025-05-13',gross='189.79',fee='1.71',net='188.08')])
+        result=BatchMatcher(self.ctx).reconcile(dict(self.txn('-189.79','CHARGEBACK ****1159 MID 993110427'),entity='ES01'))
+        self.assertEqual([(r['item_id'],r['amount'],r['exception']) for r in result],[('ARI-1','189.79','RETURNED')])
+    def test_card_chargeback_needs_matching_gross(self):
+        self.item('ARI-1','WEB249002496','189.79')
+        self.rows('card_settlements',[dict(settlement_id='0427240813',acquirer='PayNexo',merchant_id='993110427',settlement_date='2025-05-13',account_id='ES01-A',currency='EUR',order_number='WEB249002496',card='****1159',auth_code='1',operation_date='2025-05-12',gross='189.79',fee='1.71',net='188.08')])
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(dict(self.txn('-50.00','CHARGEBACK ****1159 MID 993110427'),entity='ES01')))
+    def test_supplier_transfer_return_named_beneficiary(self):
+        # A rejected transfer that quotes only the beneficiary still re-opens the paid documents.
+        self.item('API-1','INV1','100',party='S1');self.item('APC-1','CN1','20',party='S1')
+        base=dict(run_id='RUN12345678',run_type='transfers',execution_date='2025-05-10',debtor_account_id='ES01-A',end_to_end_id='RUN12345678-1',beneficiary='Franco Logistica S.A.',currency='EUR',transfer_amount='80')
+        self.rows('payment_runs',[dict(base,document_number='INV1',document_type='INVOICE',document_amount='100'),dict(base,document_number='CN1',document_type='CREDIT_NOTE',document_amount='-20')])
+        result=BatchMatcher(self.ctx).reconcile(self.txn('80','DEVOLUCION TRANSFERENCIA AC04 | FRANCO LOGISTICA S.A.'))
+        self.assertEqual({(r['item_id'],r['amount'],r['exception']) for r in result},{('API-1','100.00','RETURNED'),('APC-1','20.00','RETURNED')})
+    def test_named_return_without_return_words_ignored(self):
+        self.item('API-1','INV1','100',party='S1')
+        self.rows('payment_runs',[dict(run_id='RUN12345678',run_type='transfers',execution_date='2025-05-10',debtor_account_id='ES01-A',end_to_end_id='RUN12345678-1',beneficiary='Franco Logistica S.A.',currency='EUR',transfer_amount='100',document_number='INV1',document_type='INVOICE',document_amount='100')])
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(self.txn('100','TRANSFERENCIA FRANCO LOGISTICA S.A.')))
     def test_return_cannot_precede_source_payment(self):
         self.item('API-1','INV1','100')
         self.rows('payment_runs',[dict(run_id='RUN12345678',run_type='transfers',execution_date='2025-06-02',debtor_account_id='ES01-A',end_to_end_id='RUN12345678-1',beneficiary='Supplier',currency='EUR',transfer_amount='100',document_number='INV1',document_type='INVOICE',document_amount='100')])
