@@ -102,6 +102,18 @@ class RefNoiseTests(unittest.TestCase):
         self.assertEqual(refnoise.reference_sequences({'text': text}),
                          [('RE2401', '105621', '105515', '240105', '105155')])
 
+    def test_transposed_number_of_another_customer_goes_to_named_payer(self):
+        customers = {'C1': {'name': 'Wellness Jimenez S.Coop.', 'entity': 'ES01'},
+                     'C9': {'name': 'Hoteles Prime S.L.', 'entity': 'ES01'}}
+        items = [invoice('X', 'FV24-0115039', '880.00', 'C9'), invoice('Y', 'FV24-0115309', '541.60', 'C1'),
+                 invoice('Z', 'FV24-0115310', '120.00', 'C1')]
+        ctx = context(items, customers)
+        t = txn('541.60', 'TRANSFERENCIAS WELLNESS JIMENEZ S.COO | WELLNESS J FRA. FV24-0115039')
+        self.assertEqual([r['item_id'] for r in refnoise.typo_owner(t, ctx)], ['Y'])
+        # The quoted invoice's own customer named, or its amount equal to the cash: no override.
+        self.assertIsNone(refnoise.typo_owner(txn('541.60', 'TRANSF HOTELES PRIME S.L. FV24-0115039'), ctx))
+        self.assertIsNone(refnoise.typo_owner(txn('880.00', 'WELLNESS JIMENEZ S.COO FV24-0115039'), ctx))
+
     def test_osa_distance_one(self):
         self.assertTrue(refnoise._osa1('1003740', '0103740'))
         self.assertTrue(refnoise._osa1('0133714', '0103714'))

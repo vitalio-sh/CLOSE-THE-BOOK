@@ -472,3 +472,41 @@ def reconcile(txn, ctx):
             reconcile.last_rule = rule
             return [row(txn, i['item_id'], i['open_amount']) for i in sorted(items, key=lambda i: i['item_id'])]
     return None
+
+
+def typo_owner(txn, ctx):
+    """A quoted number that is another customer's invoice, one typo from the named payer's.
+
+    POLICIES 5.5: transposed digits can turn our number into a real invoice of a different
+    customer. When the payer named in the text is not that invoice's customer (nor its
+    group), the cash differs from that invoice, and exactly one open invoice of the named
+    payer is one edit from the quoted number with an open amount equal to the cash, the
+    receipt pays that invoice.
+    """
+    if dec(txn.get('amount')) <= 0:
+        return None
+    target = cents(abs(dec(txn['amount'])))
+    owned = []
+    for t in reference_tokens(txn):
+        for iid in ctx.by_number.get(t, ()):
+            item = ctx.items.get(iid)
+            if (item and item.get('side') == 'AR' and item.get('kind') == 'invoice'
+                    and item.get('entity') == txn.get('entity') and dec(item.get('open_amount')) > 0):
+                owned.append((t, item))
+    if not owned or any(cents(item['open_amount']) == target for _, item in owned):
+        return None
+    tiers = payer_tiers(txn, ctx)
+    named = {pid for tier in tiers for pid in tier}
+    if not named or any(item.get('party_id') in named for _, item in owned):
+        return None
+    for parties in tiers:
+        pools = _pool(txn, ctx, parties)
+        hits = {i['item_id']: i for group in pools.values() for i in group for t, _ in owned
+                if cents(i['open_amount']) == target and _osa1(norm(i.get('document_number')), t)}
+        if len(hits) > 1:
+            return None
+        if hits:
+            item = next(iter(hits.values()))
+            reconcile.last_rule = 'typo_owner'
+            return [row(txn, item['item_id'], item['open_amount'])]
+    return None

@@ -29,6 +29,9 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         handlers.append(('return_groups', lambda txn: reconcile_return_group(txn, ctx)))
         from .schedules import Schedules
         handlers.append(('schedules', Schedules(ctx).reconcile))
+        # A quoted number that is another customer's invoice, one typo from the named payer's (5.5).
+        from . import refnoise
+        handlers.append(('refnoise_typo', lambda txn: refnoise.typo_owner(txn, ctx)))
         handlers.append(('matching', lambda txn: reconcile(txn, ctx)))
         from .financial_sequences import FinancialSequences
         handlers.append(('financial_sequences', FinancialSequences(ctx).reconcile))
@@ -38,7 +41,6 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         # Unreferenced cross-border receipts short by a fixed intermediary fee (POLICIES §3).
         from .residual_fees import ResidualFees
         handlers.append(('residual_fees', ResidualFees(ctx).reconcile))
-        from . import refnoise
         handlers.append(('refnoise', lambda txn: refnoise.reconcile(txn, ctx)))
         # Last resort: uniquely anchored printed fragments of a payer's documents (partial).
         from .matching import fragment_partial
