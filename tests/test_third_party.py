@@ -3,7 +3,7 @@ from decimal import Decimal
 import unittest
 
 from recon.context import Context
-from recon.third_party import reconcile_confirming, reconcile_homonym_month
+from recon.third_party import reconcile_agency, reconcile_confirming, reconcile_homonym_month
 
 
 def context():
@@ -72,6 +72,35 @@ class HomonymMonthTests(unittest.TestCase):
 
     def test_no_month_abstains(self):
         self.assertIsNone(reconcile_homonym_month(self.receipt('PAYMENT'), self.ctx()))
+
+
+class AgencyTests(unittest.TestCase):
+    def ctx(self):
+        ctx = object.__new__(Context)
+        ctx.customers = {'C9': {'customer_id': 'C9', 'entity': 'US01', 'name': 'Pool Builders Fairhaven LLC'},
+                         'C8': {'customer_id': 'C8', 'entity': 'US01', 'name': 'Spa Service Blue Inc.'}}
+        ctx.items, ctx.by_party = {}, defaultdict(list)
+        for iid, pid, number, amount in (('ARI-1', 'C9', '1122415544', '453.11'), ('ARI-2', 'C9', '1122416097', '4279.48'),
+                                         ('ARI-3', 'C8', '1042415544', '1099.38')):
+            ctx.items[iid] = {'item_id': iid, 'party_id': pid, 'entity': 'US01', 'side': 'AR', 'kind': 'invoice',
+                              'issue_date': '2024-09-01', 'currency': 'USD', 'document_number': number,
+                              'open_amount': Decimal(amount)}
+            ctx.by_party[pid].append(iid)
+        return ctx
+
+    def receipt(self, amount):
+        return {'bank_txn_id': 'B5', 'amount': amount, 'currency': 'USD', 'entity': 'US01', 'booking_date': '2024-10-16',
+                'text': 'ACH CREDIT ARVENTO RECOVERI CCD PAYMENT ID:3363904417',
+                'remittance_info': 'EXPTE 58576 POOL BUILDERS FAIRHA 415544'}
+
+    def test_anchor_invoice_or_whole_account(self):
+        rows = reconcile_agency(self.receipt('453.11'), self.ctx())
+        self.assertEqual([r['item_id'] for r in rows], ['ARI-1'])
+        rows = reconcile_agency(self.receipt('4732.59'), self.ctx())
+        self.assertEqual([r['item_id'] for r in rows], ['ARI-1', 'ARI-2'])
+
+    def test_other_cash_difference_abstains(self):
+        self.assertIsNone(reconcile_agency(self.receipt('4000.00'), self.ctx()))
 
 
 if __name__ == '__main__':
