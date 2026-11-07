@@ -20,6 +20,10 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         handlers.append(('documents', matcher.reconcile))
     if 'matching' in enabled:
         from .matching import reconcile, classify
+        from .nonitem import NonItemClassifier
+        # Lines that TRAIN shows never settle an item go first, so no matcher can consume
+        # an open item for them (POLICIES §3 UNIDENTIFIED, §4 categories and reversals).
+        handlers.insert(0, ('nonitem', NonItemClassifier(ctx).reconcile))
         handlers.append(('category', lambda txn: classify(txn, ctx)))
         from .return_groups import reconcile_return_group
         handlers.append(('return_groups', lambda txn: reconcile_return_group(txn, ctx)))
@@ -205,6 +209,7 @@ def execute(ctx, txns, handlers, writer, audit, progress=None):
     """
     counts, rejected = Counter(), Counter()
     ordered = order_transactions(ctx, txns)
+    ctx.phase_txns = ordered  # read-only view for phase-level pairing (bank reversals)
     from .reversal_pairs import bank_error_pairs
     reversal_ids = bank_error_pairs(ordered)
     from .matching import index_same_day
@@ -226,14 +231,16 @@ def execute(ctx, txns, handlers, writer, audit, progress=None):
                 break
         if not rows:
             # POLICIES §3: UNIDENTIFIED exception means "a receipt for which
-            # no open item exists".  Clear the exception when the payer was
-            # identified (party_candidates non-empty) or the line is outgoing
-            # (negative cash), keeping only the UNIDENTIFIED category.
-            from .matching import party_candidates
+            # no open item exists".  Every matcher abstained here, so most such lines are
+            # missed matches; claim the exception only with text evidence of an unknown
+            # payer (generic reference, cash deposit, initials-only payer, round amount).
+            # In TRAIN the UNIDENTIFIED category always carries the exception, so the
+            # category-only row is kept as an honest abstention.
+            from .nonitem import unidentified_evidence
             # UNIDENTIFIED is a receipt-only category: in TRAIN no outgoing line carries
             # it, and BANK_FEES is by far the most common no-item outgoing category.
             outgoing = Decimal(txn['amount']) < 0
-            exc = '' if outgoing or party_candidates(txn, ctx) else 'UNIDENTIFIED'
+            exc = 'UNIDENTIFIED' if not outgoing and unidentified_evidence(txn) else ''
             category = 'BANK_FEES' if outgoing and 'BANK_FEES' in getattr(ctx, 'categories', ()) else 'UNIDENTIFIED'
             rows = [dict(zip(FIELDS, [txn['bank_txn_id'], '', '', category, exc]))]
         rows = [{key: str(row.get(key, '') or '') for key in FIELDS} for row in rows]
