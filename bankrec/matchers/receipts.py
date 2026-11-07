@@ -812,6 +812,25 @@ def match(ph, st):
                 break
         if st.claimed(t):
             continue
+        if not fx:
+            # POLICIES §3 SHORT_WITHHOLDING without reference: one open invoice of the payer (MX/BR/MA customers)
+            # whose total less 1.25 / 1.5 / 10 % withheld equals the cash; oldest first among equal ones (§5.6)
+            wh = []
+            for i in cands_p:
+                ri = cx.info[i]
+                if ri["item_type"] != "ARI" or ri["currency"] != cur:
+                    continue
+                if ((cx.cust.get(ri["party_id"]) or {}).get("country") or "") not in ("MX", "BR", "MA"):
+                    continue
+                tot, opi = ri["total_amount"] or 0, st.open.get(i, 0)
+                if abs(tot - opi) > 0.01:
+                    continue
+                if any(abs(round(tot * (1 - w), 2) - amt) <= 0.011 for w in WITHHOLD):
+                    wh.append(i)
+            if wh:
+                wh.sort(key=lambda i: (cx.info[i]["issue_date"] or "", cx.info[i]["document_number"] or ""))
+                st.assign(t, [(wh[0], st.open[wh[0]], "SHORT_WITHHOLDING")])
+                continue
         if not fx and 1 < len(cands_p) <= 60:
             vals = [cents(i) for i in cands_p]
             idx = _subset(vals, target)
