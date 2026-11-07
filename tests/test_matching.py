@@ -144,4 +144,83 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(reconcile(t,c)[0]['exception'],'PARTIAL')
     def test_no_card_settlement_fee(self):
         self.assertIsNone(classify(txn('100','LIQUIDACION REMESA DE COMERCIOS'),context([])))
+    def test_four_invoice_unique_subset(self):
+        items=[invoice(str(i),'FV25-'+str(10000+i),str(a)) for i,a in enumerate((11,23,47,89))]
+        rows=reconcile(txn('170','Alice Water Works PAYMENT'),context(items))
+        self.assertEqual({r['item_id'] for r in rows},{'0','1','2','3'})
+    def test_large_unreferenced_subset_abstains(self):
+        items=[invoice(str(i),'FV25-'+str(10000+i),str(2**i)) for i in range(8)]
+        self.assertIsNone(reconcile(txn('255','Alice Water Works PAYMENT'),context(items)))
+    def test_multiple_references_net_related_unmentioned_credit(self):
+        a=invoice(amount='100');b=invoice('I2','FV25-00002','70')
+        cr=invoice('CREDIT','CN25-90001','20');cr.update(kind='credit',related_document=a['document_number'])
+        rows=reconcile(txn('150','Alice Water Works FV25-00001 FV25-00002'),context([a,b,cr]))
+        self.assertEqual({r['item_id']:r['amount'] for r in rows},{'I1':'100.00','I2':'70.00','CREDIT':'20.00'})
+        self.assertTrue(all(not r['exception'] for r in rows))
+    def test_netting_does_not_take_unrelated_credit(self):
+        a=invoice();b=invoice('I2','FV25-00002','70')
+        cr=invoice('CREDIT','CN25-90001','20');cr.update(kind='credit',related_document='UNRELATED')
+        self.assertIsNone(reconcile(txn('150','Alice Water Works FV25-00001 FV25-00002'),context([a,b,cr])))
+    def test_group_discount_policy_and_late_partial(self):
+        a=invoice(payment_terms='D2');b=invoice('I2','FV25-00002','70')
+        c=context([a,b]);c.payment_terms={'D2':{'early_payment_discount_pct':'2','discount_days':'14'}}
+        t=txn('168','Alice Water Works FV25-00001 FV25-00002')
+        rows={r['item_id']:r for r in reconcile(t,c)}
+        self.assertEqual((rows['I1']['amount'],rows['I1']['exception']),('100.00','SHORT_DISCOUNT'))
+        c.payment_terms['D2']['discount_days']='2'
+        rows={r['item_id']:r for r in reconcile(t,c)}
+        self.assertEqual((rows['I1']['amount'],rows['I1']['exception']),('98.00','PARTIAL'))
+    def test_group_deduction_ambiguity_abstains(self):
+        a=invoice(payment_terms='D2');b=invoice('I2','FV25-00002','100',payment_terms='D2')
+        c=context([a,b]);c.payment_terms={'D2':{'early_payment_discount_pct':'2','discount_days':'14'}}
+        self.assertIsNone(reconcile(txn('198','Alice Water Works FV25-00001 FV25-00002'),c))
+    def test_noisy_refs_to_other_party_do_not_override_identified_payer(self):
+        a=invoice('A','FV25-10001','60');b=invoice('B','FV25-10002','40')
+        x=invoice('X','FV25-90001','17');x['party_id']='OTHER'
+        y=invoice('Y','FV25-90002','23');y['party_id']='OTHER'
+        rows=reconcile(txn('100','Alice Water Works FV25-90001 FV25-90002'),context([a,b,x,y]))
+        self.assertEqual({r['item_id'] for r in rows},{'A','B'})
+    def test_yearless_service_month_uses_next_month_invoice(self):
+        a=invoice();a['issue_date']='2025-05-01'
+        b=invoice('I2','FV25-00002');b['issue_date']='2025-06-01'
+        t=txn('100','Alice Water Works SERVICIOS MAYO');t['booking_date']='2025-06-20'
+        self.assertEqual(reconcile(t,context([a,b]))[0]['item_id'],'I2')
+    def test_yearless_service_month_crosses_year_boundary(self):
+        a=invoice();a['issue_date']='2024-12-01'
+        b=invoice('I2','FV25-00002');b['issue_date']='2025-01-01'
+        t=txn('100','Alice Water Works MANT. DICIEMBRE')
+        self.assertEqual(reconcile(t,context([a,b]))[0]['item_id'],'I2')
+    def test_service_month_ambiguous_or_missing_does_not_guess_fifo(self):
+        a=invoice();b=invoice('I2','FV25-00002');b['issue_date']='2025-01-02'
+        c=context([a,b])
+        self.assertIsNone(reconcile(txn('100','Alice Water Works SERVICE DECEMBER 2024'),c))
+        self.assertIsNone(reconcile(txn('100','Alice Water Works SERVICE OCTOBER 2024'),c))
+    def test_yearless_service_month_does_not_choose_between_years(self):
+        a=invoice();a['issue_date']='2024-05-01'
+        b=invoice('I2','FV25-00002');b['issue_date']='2025-05-01'
+        t=txn('100','Alice Water Works SERVICE APRIL');t['booking_date']='2025-06-01'
+        self.assertIsNone(reconcile(t,context([a,b])))
+        t['text']='Alice Water Works SERVICE APRIL 2025'
+        self.assertEqual(reconcile(t,context([a,b]))[0]['item_id'],'I2')
+    def test_other_party_search_budget_cannot_prove_unique_payer(self):
+        for size in (7,25):
+            with self.subTest(size=size):
+                items=[invoice('A'+str(i),'FA-'+str(10000+i),'1') for i in range(size)]
+                for iid,amount in [('B1',2),('B2',size-2)]:
+                    item=invoice(iid,'FB-'+iid,str(amount));item['party_id']='C2';items.append(item)
+                c=context(items);c.customers['C2']={'name':'Alice Water Works','country':'ES'}
+                self.assertIsNone(reconcile(txn(str(size),'Alice Water Works PAYMENT'),c))
+    def test_over_budget_party_with_insufficient_total_is_not_ambiguous(self):
+        items=[invoice('A'+str(i),'FA-'+str(10000+i),'1') for i in range(25)]
+        for iid,amount in [('B1',40),('B2',60)]:
+            item=invoice(iid,'FB-'+iid,str(amount));item['party_id']='C2';items.append(item)
+        c=context(items);c.customers['C2']={'name':'Alice Water Works','country':'ES'}
+        self.assertEqual({r['item_id'] for r in reconcile(txn('100','Alice Water Works PAYMENT'),c)},{'B1','B2'})
+    def test_explicit_payer_references_scope_budget_proof(self):
+        items=[invoice('A'+str(i),'FA-'+str(10000+i),'2') for i in range(25)]
+        for iid,number,amount in [('B1','FB-90001',10),('B2','FB-90002',15),('B3','FB-90003',5)]:
+            item=invoice(iid,number,str(amount));item['party_id']='C2';items.append(item)
+        c=context(items);c.customers['C2']={'name':'Alice Water Works','country':'ES'}
+        rows=reconcile(txn('30','Alice Water Works FB-90001 FB-90002'),c)
+        self.assertEqual({r['item_id'] for r in rows},{'B1','B2','B3'})
 if __name__=='__main__':unittest.main()
