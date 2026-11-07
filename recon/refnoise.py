@@ -572,6 +572,8 @@ def due_window(txn, ctx):
     if dec(txn.get('amount')) <= 0 or classify(txn, ctx):
         return None
     target = cents(abs(dec(txn['amount'])))
+    if target % 10000 == 0:
+        return None  # a round figure is a payment on account, not a sum of invoices
     tokens = reference_tokens(txn)
     for parties in payer_tiers(txn, ctx):
         answers = []

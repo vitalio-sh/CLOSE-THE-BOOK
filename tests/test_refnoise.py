@@ -112,6 +112,8 @@ class RefNoiseTests(unittest.TestCase):
         rows = refnoise.due_window(txn(str(total), 'TRANSFERENCIA ROCAVERDE PISCINAS S.L.'),
                                    context(items, {'C1': CUSTOMERS['C1']}))
         self.assertEqual({r['item_id'] for r in rows}, set(paid))
+        self.assertIsNone(refnoise.due_window(txn('4000.00', 'TRANSFERENCIA ROCAVERDE PISCINAS S.L.'),
+                                              context(items, {'C1': CUSTOMERS['C1']})))
         # Fewer than three kept invoices is never a window.
         self.assertIsNone(refnoise.due_window(txn('1423.62', 'TRANSFERENCIA ROCAVERDE PISCINAS S.L.'),
                                               context(items, {'C1': CUSTOMERS['C1']})))
