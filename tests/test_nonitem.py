@@ -9,7 +9,8 @@ from recon.engine import execute
 from recon.nonitem import (NonItemClassifier, reversal_originals, text_key, unidentified_evidence)
 from recon.validate import FIELDS
 
-CATEGORIES = {'BANK_FEES', 'BANK_REVERSAL', 'UNIDENTIFIED', 'INSURANCE', 'TAX_PAYMENT', 'SOCIAL_SECURITY'}
+CATEGORIES = {'BANK_FEES', 'BANK_REVERSAL', 'UNIDENTIFIED', 'INSURANCE', 'TAX_PAYMENT', 'SOCIAL_SECURITY',
+              'CUSTOMER_REFUND', 'SUPPLIER_REFUND', 'INTERCOMPANY', 'TAX_REFUND'}
 
 
 def txn(tid, amount, text='', date='2024-10-02', account='ES01-X-EUR', **kw):
@@ -102,6 +103,17 @@ class LookupTests(unittest.TestCase):
             self.assertEqual((rows[0]['category'], rows[0]['exception']), (category, ''), text)
 
 
+class TextRuleTests(unittest.TestCase):
+    def test_refund_wording(self):
+        classifier = NonItemClassifier(context())
+        cases = [('-234.49', 'FP ASHBRIDGE SPA SERV REFUND DUPLICATE P', 'CUSTOMER_REFUND'),
+                 ('512.00', 'TRANSF. A SU FAVOR | DEVOLUCION PAGO DUPLICADO', 'SUPPLIER_REFUND'),
+                 ('-66178.75', 'DGFIP TVA', 'TAX_PAYMENT'),
+                 ('100000.00', 'DEVOLUCION PRESTAMO VALTERMIA IBERICA, | S.A.U.', 'INTERCOMPANY')]
+        for amount, text, category in cases:
+            self.assertEqual(classifier.reconcile(txn('x', amount, text))[0]['category'], category, text)
+
+
 class FallbackTests(unittest.TestCase):
     def run_fallback(self, line):
         out, audit = io.StringIO(), io.StringIO()
@@ -116,6 +128,15 @@ class FallbackTests(unittest.TestCase):
 
     def test_unmatched_receipt_with_evidence_gets_exception(self):
         self.assertEqual(self.run_fallback(txn('a', '300.00', 'ACH CREDIT WATER CARE')), ('UNIDENTIFIED', 'UNIDENTIFIED'))
+
+
+    def test_unmatched_reembolso_receipt_is_supplier_refund(self):
+        line = txn('a', '5327.09', 'ACH CREDIT SERVICES SANDERS CCD', remittance_info='REEMBOLSO INV0002506')
+        self.assertEqual(self.run_fallback(line), ('SUPPLIER_REFUND', ''))
+
+    def test_unmatched_outgoing_line_is_customer_refund(self):
+        line = txn('a', '-434.21', 'TRANSFERENCIA A VIDAL Y HERRERO HOTELE | S S.A.')
+        self.assertEqual(self.run_fallback(line), ('CUSTOMER_REFUND', ''))
 
 
 if __name__ == '__main__':

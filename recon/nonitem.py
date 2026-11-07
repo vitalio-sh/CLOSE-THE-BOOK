@@ -161,6 +161,36 @@ def unidentified_evidence(txn, allow_round=True):
     return None
 
 
+# Explicit category wording that, in TRAIN, never comes with an item (sign, pattern, category).
+_TEXT_RULES = [
+    ('-', re.compile(r'DUPLICAD|PAGO DOBLE|DUPLICATE|\bREFUND'), 'CUSTOMER_REFUND'),   # §3/§4 refund of a duplicate
+    ('+', re.compile(r'DUPLICAD|PAGO DOBLE|DUPLICATE'), 'SUPPLIER_REFUND'),
+    ('-', re.compile(r'\bDGFIP\b'), 'TAX_PAYMENT'),
+    ('+', re.compile(r'\bAEAT\b'), 'TAX_REFUND'),
+    ('', re.compile(r'PRESTAMO INTRAGRUP|DEVOLUCION PRESTAM'), 'INTERCOMPANY'),
+]
+
+
+def text_rule_category(txn):
+    sign, text = _sign(txn), _full_text(txn)
+    for rule_sign, pattern, category in _TEXT_RULES:
+        if rule_sign in ('', sign) and pattern.search(text):
+            return category
+    return None
+
+
+def fallback_category(txn):
+    """Category for a line every handler abstained on (no exception implied).
+
+    Receipts quoting "REEMBOLSO" that settle no supplier credit note are refunds of a
+    payment we made twice (§3 DUPLICATE_PAYMENT, §4 SUPPLIER_REFUND).  Outgoing lines left
+    over after the explicit fee/tax/payroll wording are, in TRAIN, customer refunds.
+    """
+    if _sign(txn) == '+':
+        return 'SUPPLIER_REFUND' if 'REEMBOLSO' in _full_text(txn) else 'UNIDENTIFIED'
+    return 'CUSTOMER_REFUND'
+
+
 class NonItemClassifier:
     """Front handler: only proposals that TRAIN shows never settle an item."""
 
@@ -182,6 +212,9 @@ class NonItemClassifier:
         if 'BANK_REVERSAL' in categories and (is_reversal_line(txn) or txn['bank_txn_id'] in self.pairs()):
             return [_row(txn, 'BANK_REVERSAL')]
         category = CATEGORY_LOOKUP.get(text_key(txn))
+        if category and category in categories:
+            return [_row(txn, category)]
+        category = text_rule_category(txn)
         if category and category in categories:
             return [_row(txn, category)]
         if 'UNIDENTIFIED' in categories and unidentified_evidence(txn, allow_round=False):
