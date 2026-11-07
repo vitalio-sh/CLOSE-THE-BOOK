@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 
@@ -25,10 +26,16 @@ def pat(s) -> str:
 
 
 def _model(cutoff: str | None) -> pl.DataFrame:
-    path = os.path.join(CACHE, f"nonitem_model_{cutoff or 'all'}.parquet")
+    # cache keyed on the TRAIN golden + bank files actually used (data root, size, mtime) and the cutoff,
+    # so a different / refreshed / truncated TRAIN never reuses a stale model
+    gpath = os.path.join(DATA, "train", "golden_allocations.csv.gz")
+    bpath = os.path.join(DATA, "train", "bank_transactions.csv.gz")
+    sig = "|".join(f"{os.path.realpath(x)}:{os.path.getsize(x)}:{int(os.path.getmtime(x))}" for x in (gpath, bpath))
+    key = hashlib.sha256(sig.encode()).hexdigest()[:16]
+    path = os.path.join(CACHE, f"nonitem_model_{cutoff or 'all'}_{key}.parquet")
     if os.path.exists(path):
         return pl.read_parquet(path)
-    g = _read(os.path.join(DATA, "train", "golden_allocations.csv.gz"))
+    g = _read(gpath)
     b = _bank("train")
     if cutoff:
         b = b.filter(pl.col("booking_date") < cutoff)
@@ -42,6 +49,7 @@ def _model(cutoff: str | None) -> pl.DataFrame:
          .with_columns(pl.col("n").sum().over(["pos", "bank_code", "pat"]).alias("tot"))
          .sort("n", descending=True).unique(["pos", "bank_code", "pat"], keep="first")
          .with_columns((pl.col("n") / pl.col("tot")).alias("purity")))
+    os.makedirs(CACHE, exist_ok=True)
     m.write_parquet(path)
     return m
 

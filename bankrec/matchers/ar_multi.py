@@ -265,7 +265,7 @@ def _line(cx, aux, st, r):
             hit |= {
                 i
                 for i in aux.suffix.get((ent, k), ())
-                if not fam or cx.info[i]["party_id"] in fam
+                if fam and cx.info[i]["party_id"] in fam  # no payer identified -> no suffix hits
             }
         for i in hit:
             if (
