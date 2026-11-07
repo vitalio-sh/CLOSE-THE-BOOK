@@ -250,13 +250,19 @@ class BatchMatcher:
             return tied[0][2]
         return candidates[0][2]
 
-    def _allocate(self, group, txn, returned=False):
+    def _allocate(self, group, txn, returned=False, allow_partial=False):
         out = {}
         reserved = defaultdict(lambda: ZERO)
+        unresolved = 0
         for detail in group['rows']:
             item = self._resolve(detail, group['kind'], txn, reserved=reserved, require_exact=returned)
             if item is None:
-                return None
+                # The batch total already matched this line exactly: keep the rows we can
+                # resolve instead of dropping every pair because one row is unknown.
+                if not allow_partial:
+                    return None
+                unresolved += 1
+                continue
             iid = item['item_id']
             amount = abs(money(detail.get('document_amount', detail.get('gross',detail.get('amount')))))
             reserved[iid] += amount
@@ -265,6 +271,8 @@ class BatchMatcher:
             else:
                 out[iid] = {'bank_txn_id':txn['bank_txn_id'], 'item_id':iid,
                             'amount':f'{amount:.2f}', 'category':'', 'exception':''}
+        if not out or unresolved * 2 > len(group['rows']):
+            return None
         # Classify the complete allocation, not each fragment: two explicitly
         # referenced partial detail rows can together fully settle one invoice.
         for iid, row in out.items():
@@ -403,7 +411,8 @@ class BatchMatcher:
             ranked.append((int(ref)*100-delta,idx,reverse))
         ranked.sort(reverse=True)
         if ranked and not (len(ranked)>1 and ranked[0][0] == ranked[1][0]):
-            result = self._allocate(self.groups[ranked[0][1]],txn,returned=ranked[0][2])
+            result = self._allocate(self.groups[ranked[0][1]],txn,returned=ranked[0][2],
+                                    allow_partial=not ranked[0][2])
             if result:
                 return result
         confirming = self._confirming_subset(txn, text, candidates)

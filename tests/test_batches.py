@@ -36,8 +36,16 @@ class BatchTests(unittest.TestCase):
     def test_incomplete_group_rejected(self):
         self.item('ARI-1','INV1','100')
         base=dict(batch_id='BATCH12345',collection_date='2025-06-01',account_id='ES01-A',currency='EUR',debtor_name='Buyer',mandate_id='M1',end_to_end_id='E1')
+        self.rows('direct_debit_batches',[dict(base,remittance_info='INV1',amount='100'),dict(base,remittance_info='MISSING',amount='50'),
+                                          dict(base,remittance_info='MISSING2',amount='25')])
+        # Most rows unknown: the exact batch total is not enough evidence.
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(self.txn('175','BATCH12345')))
+    def test_batch_keeps_resolvable_rows(self):
+        self.item('ARI-1','INV1','100')
+        base=dict(batch_id='BATCH12345',collection_date='2025-06-01',account_id='ES01-A',currency='EUR',debtor_name='Buyer',mandate_id='M1',end_to_end_id='E1')
         self.rows('direct_debit_batches',[dict(base,remittance_info='INV1',amount='100'),dict(base,remittance_info='MISSING',amount='50')])
-        self.assertIsNone(BatchMatcher(self.ctx).reconcile(self.txn('150','BATCH12345')))
+        result=BatchMatcher(self.ctx).reconcile(self.txn('150','BATCH12345'))
+        self.assertEqual([(r['item_id'],r['amount']) for r in result],[('ARI-1','100.00')])
     def test_wrong_direction_rejected(self):
         self.item('ARI-1','ORDER1','100')
         self.rows('card_settlements',[dict(settlement_id='SET12345',settlement_date='2025-06-01',account_id='ES01-A',currency='EUR',order_number='ORDER1',gross='100',net='98')])
