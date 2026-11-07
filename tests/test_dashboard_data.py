@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from scripts.build_dashboard_data import Examples, export_dashboard
 
@@ -37,9 +38,13 @@ class DashboardExportTests(unittest.TestCase):
         self.write_csv(data / 'masters/entities.csv', [{'entity': 'E1', 'legal_name': 'Example entity'}])
         counts = {'matching': 1, 'category': 1, 'unidentified': 1}
         Path(str(submission) + '.report.json').write_text(json.dumps({'phase': 'live', 'modules': counts,
-            'sha256': hashlib.sha256(submission.read_bytes()).hexdigest(), 'seconds': 1.5, 'validation': {'ok': True}}))
+            'sha256': hashlib.sha256(submission.read_bytes()).hexdigest(), 'seconds': 1.5, 'validation': {'ok': True, 'transactions': 3, 'covered': 3, 'missing': 0, 'rows': 3}, 'official_structure': {'ok': True}, 'source_changed_during_run': False}))
         Path(str(submission) + '.audit.jsonl').write_text('\n'.join(json.dumps({'bank_txn_id': bid, 'module': module})
             for bid, module in [('B1', 'matching'), ('B2', 'category'), ('B3', 'unidentified')]))
+        report_path = Path(str(submission) + '.report.json')
+        report = json.loads(report_path.read_text())
+        report['audit_sha256'] = hashlib.sha256(Path(str(submission) + '.audit.jsonl').read_bytes()).hexdigest()
+        report_path.write_text(json.dumps(report))
         return submission, data
 
     def test_real_evidence_currency_separation_and_historical_metadata(self):
@@ -64,8 +69,43 @@ class DashboardExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             submission, data = self.fixture(Path(folder))
             report = Path(str(submission) + '.report.json')
-            report.write_text(json.dumps({'phase': 'live', 'sha256': 'wrong'}))
+            value = json.loads(report.read_text())
+            value['sha256'] = 'wrong'
+            report.write_text(json.dumps(value))
             with self.assertRaisesRegex(ValueError, 'SHA-256'):
+                export_dashboard(submission, data)
+
+    def test_audit_tampering_and_mid_export_artifact_changes_are_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            submission, data = self.fixture(Path(folder))
+            audit = Path(str(submission) + '.audit.jsonl')
+            original = audit.read_bytes()
+            audit.write_bytes(original + b'\n')
+            with self.assertRaisesRegex(ValueError, 'Audit SHA-256'):
+                export_dashboard(submission, data)
+            audit.write_bytes(original)
+            from scripts.build_dashboard_data import sha256
+            calls = []
+            def changing_digest(path):
+                calls.append(path)
+                return sha256(path) if len(calls) < 3 else '0' * 64
+            with patch('scripts.build_dashboard_data.sha256', side_effect=changing_digest):
+                with self.assertRaisesRegex(ValueError, 'changed during export'):
+                    export_dashboard(submission, data)
+
+    def test_failed_validation_and_missing_coverage_are_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            submission, data = self.fixture(Path(folder))
+            path = Path(str(submission) + '.report.json')
+            report = json.loads(path.read_text())
+            report['validation']['ok'] = False
+            path.write_text(json.dumps(report))
+            with self.assertRaisesRegex(ValueError, 'does not certify'):
+                export_dashboard(submission, data)
+            report['validation']['ok'] = True
+            report['validation']['covered'] = 2
+            path.write_text(json.dumps(report))
+            with self.assertRaisesRegex(ValueError, 'coverage/counts'):
                 export_dashboard(submission, data)
 
     def test_selection_is_order_independent_and_keeps_rare_exception(self):

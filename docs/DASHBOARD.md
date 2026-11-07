@@ -21,8 +21,26 @@ Design sources and decisions are documented in [DASHBOARD_DESIGN.md](DASHBOARD_D
 
 Verified in-browser: desktop and 390px mobile layout, search with zero results, outcome filtering, transaction detail, guided examples, process and export screens. The mobile document has no horizontal overflow; wider tables scroll within their container. Exporter and server regression tests cover stratification, currency separation, artifact hash mismatch and file access boundaries.
 
-## Published team view
+## Published team view and automatic updates
 
-[Open the dashboard](https://valtermia-team10-reconciliation.peakedalbatross1.chatgpt.site). The owner approved public access without sign-in. This is a snapshot of the verified LIVE release, containing whole-run summaries and 200 examples; the complete candidate CSV is only downloadable through the local server. No automatic refresh or competition submission is configured.
+[Open the dashboard](https://valtermia-team10-reconciliation.peakedalbatross1.chatgpt.site). The owner approved public access without sign-in. The same site URL shows the latest accepted LIVE or FINAL run, containing whole-run summaries and 200 representative examples. The complete candidate CSV remains downloadable through the local server; public publication is not a competition submission.
 
-The registered Site identity and publication metadata are in `dashboard/site.json`. Its separate checkout is `outputs/hosted-dashboard`, with `.openai/hosting.json` retained there. Refresh `dashboard/data.json`, then run `python3 scripts/package_dashboard_site.py`; use the Sites source workflow and publish a new version of the same project. Do not create a replacement Site.
+The update happens after a successful reconciliation run. With publication configured, the normal `recon.run` command publishes its verified LIVE/FINAL snapshot after the candidate and its audit/report have passed checks. SAMPLE, TRAIN, and runs with a nonstandard matching-module selection are excluded. This hook exports an existing result: it does **not** launch another reconciliation, run on a timer, or infer new results when someone opens the site.
+
+A visible browser tab checks `/api/version` every 15 seconds and immediately when the tab becomes visible again. When the run ID or output hash changes, it fetches the new snapshot without using the browser cache. The page updates without reloading, preserving the active screen, search, outcome filter, selected transaction when still in the filtered examples, and page number where possible. Pagination is clamped if the example list becomes shorter. The header shows the publication time and update status. A network error leaves the previous run visible with a stale-status message; it never turns an unsuccessful refresh into a claim of new results.
+
+Only snapshots with `hosting.auto_refresh: true` enable these requests. Ordinary local exports have no polling requirement or `/api/version` dependency. Hidden tabs pause polling. Updates do not request a competition score or submit a candidate to the hackathon.
+
+## Publication setup and retry
+
+Publication is configured in the local, Git-ignored `.dashboard-publish.json` file. It has `enabled: true`, the full HTTPS endpoint URL ending in `/api/snapshot`, and the authorized publication token. Environment overrides are `DASHBOARD_PUBLISH_ENABLED`, `DASHBOARD_PUBLISH_URL`, and `DASHBOARD_PUBLISH_TOKEN`. This workspace is configured by the owner; another team checkout needs its own authorized setup. Never commit the token, embed it in browser assets, or put it in a public report. The browser reads snapshots without this write credential.
+
+A network publication failure does not invalidate or remove the locally verified candidate. Its `.dashboard-status.json` sidecar records the result, and `outputs/dashboard-outbox/` retains pending publication information. Retry publication of an existing verified candidate with:
+
+```sh
+python3.12 scripts/publish_dashboard.py --submission outputs/submission_live_release.csv.gz --data data/workspace
+```
+
+The retry validates the output and audit identities, coverage and recorded source stability, rebuilds the snapshot, and preserves the original run identity and timestamps. It does not run inference. The command prints a sanitized status: `pending` exits with status 1; `published`, `superseded`, or `skipped` exit with status 0. A skipped result, for example when the token is missing or the phase is SAMPLE, is not a successful upload. An older run is marked superseded rather than replacing the newer public result. Legacy candidates receive a clearly identified fallback run identity and timestamp provenance.
+
+The registered Site identity is in `dashboard/site.json`. Its separate checkout is `outputs/hosted-dashboard`, with `.openai/hosting.json` retained there. The initial service deployment and later interface changes use the existing Sites source workflow and publish a new version of the **same** project. Successful inference runs update the stored snapshot through the publication hook; they do not create a replacement site or require the reader to refresh the page manually.

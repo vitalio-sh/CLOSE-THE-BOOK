@@ -8,7 +8,7 @@ until JSON serialization; bank amounts are aggregated only within each currency.
 import argparse
 from collections import Counter, defaultdict
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import gzip
 import hashlib
@@ -106,11 +106,21 @@ def export_dashboard(submission, data_root, sample_size=200, report_path=None, a
     submission, data_root = Path(submission), Path(data_root)
     report_path = Path(report_path or str(submission) + '.report.json')
     audit_path = Path(audit_path or str(submission) + '.audit.jsonl')
-    report = json.loads(report_path.read_text())
+    report_bytes = report_path.read_bytes()
+    report = json.loads(report_bytes)
+    if report.get('validation', {}).get('ok') is not True or report.get('official_structure', {}).get('ok') is not True:
+        raise ValueError('Run report does not certify valid submission and official structure')
+    if report.get('source_changed_during_run') is not False:
+        raise ValueError('Run report does not certify stable source files')
+    if report.get('checked_inputs_changed') or report.get('publication', 'validated') != 'validated':
+        raise ValueError('Run report records rejected or changed input artifacts')
     phase = report.get('phase', 'live')
     digest = sha256(submission)
     if report.get('sha256') and digest != report['sha256']:
         raise ValueError('Submission SHA-256 differs from its run report; refusing mixed artifacts')
+    audit_digest = sha256(audit_path)
+    if report.get('audit_sha256') and audit_digest != report['audit_sha256']:
+        raise ValueError('Audit SHA-256 differs from its run report')
     modules = {}
     with audit_path.open() as stream:
         for line in stream:
@@ -235,11 +245,31 @@ def export_dashboard(submission, data_root, sample_size=200, report_path=None, a
         totals['outcomes'] = dict(totals['outcomes'])
     sources = {'submission': source_info(submission), 'report': source_info(report_path),
         'audit': source_info(audit_path), 'bank_transactions': source_info(bank_path), 'invoice_metadata': item_sources}
-    pipeline = {key: report.get(key) for key in ('phase', 'seconds', 'validation', 'official_structure',
+    pipeline = {key: report.get(key) for key in ('phase', 'started_at', 'finished_at', 'run_id', 'enabled_modules', 'seconds', 'validation', 'official_structure',
         'modules', 'document_parsing', 'pdf_facts', 'historical_references', 'source_hashes',
         'source_changed_during_run', 'rejected_proposals')}
+    if not pipeline.get('run_id'):
+        finished = datetime.fromtimestamp(report_path.stat().st_mtime, timezone.utc)
+        elapsed = max(0, float(report.get('seconds') or 0))
+        pipeline.update({'run_id': 'legacy-' + digest,
+            'started_at': (finished - timedelta(seconds=elapsed)).isoformat(),
+            'finished_at': finished.isoformat(),
+            'timestamp_source': 'legacy report modification time minus recorded run duration'})
+    else:
+        pipeline['timestamp_source'] = 'runner UTC timestamps'
+    if pipeline.get('enabled_modules') is None and all(k in (report.get('modules') or {}) for k in ('batches', 'documents', 'matching')):
+        pipeline['enabled_modules'] = ['batches', 'documents', 'matching']
     pipeline.update({'sha256': digest, 'hash_verified': report.get('sha256') == digest,
+        'audit_sha256': audit_digest, 'audit_hash_verified': report.get('audit_sha256') == audit_digest,
         'live_accuracy': None, 'accuracy_note': 'No hidden LIVE labels were read. Coverage and format validation are not accuracy scores.'})
+    validation = report['validation']
+    if (missing_submission or states.keys() - bank_seen or states.keys() - modules.keys()
+            or dict(module_counts) != report.get('modules') or not bank_count
+            or validation.get('transactions') != bank_count or validation.get('covered') != bank_count
+            or validation.get('missing') != 0 or validation.get('rows') != submission_rows):
+        raise ValueError('Export coverage/counts differ from validated run artifacts')
+    if sha256(submission) != digest or sha256(audit_path) != audit_digest or report_path.read_bytes() != report_bytes:
+        raise ValueError('Run artifacts changed during export; retry after publication completes')
     return {'schema_version': 1, 'generated_at': datetime.now(timezone.utc).isoformat(),
         'sources': sources, 'pipeline': pipeline,
         'summary': {'transactions': bank_count, 'submission_transactions': len(states), 'submission_rows': submission_rows,

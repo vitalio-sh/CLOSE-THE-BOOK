@@ -2,6 +2,8 @@
 import argparse
 from collections import Counter
 from contextlib import contextmanager
+from datetime import datetime, timezone
+from uuid import uuid4
 import csv
 import gzip
 import hashlib
@@ -77,6 +79,8 @@ def main(argv=None):
     p.add_argument('--pdf-budget-seconds', type=float, default=30)
     a = p.parse_args(argv)
     start = time.monotonic()
+    started_at = datetime.now(timezone.utc).isoformat()
+    run_id = str(uuid4())
     initial_hashes = source_hashes()
     ctx = Context(a.data, a.phase)
     print(f'Loaded {len(ctx.items)} items in {time.monotonic()-start:.1f}s', flush=True)
@@ -141,7 +145,7 @@ def main(argv=None):
                 if (i+1) % 1000 == 0:
                     print(f'{i+1}/{len(txns)} {dict(counts)} elapsed={time.monotonic()-start:.1f}s', flush=True)
         report = {
-            'phase': a.phase, 'master_coverage': ctx.master_coverage, 'opening_coverage': ctx.opening_coverage,
+            'phase': a.phase, 'started_at': started_at, 'run_id': run_id, 'enabled_modules': enabled, 'master_coverage': ctx.master_coverage, 'opening_coverage': ctx.opening_coverage,
             'document_parsing': document_stats, 'historical_references': history_report,
             'pdf_facts': getattr(getattr(ctx, 'pdf_facts', None), 'stats', None),
             'modules': dict(counts), 'rejected_proposals': dict(rejected), 'source_hashes': initial_hashes,
@@ -155,6 +159,7 @@ def main(argv=None):
         report['source_changed_during_run'] = initial_hashes != source_hashes()
         valid = report['validation']['ok'] and report['official_structure']['ok'] and not report['source_changed_during_run']
         report['publication'] = 'validated' if valid else 'rejected'
+        report['finished_at'] = datetime.now(timezone.utc).isoformat()
         report_path = Path(str(candidate) + '.report.json')
         report_path.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
         print(json.dumps(report, indent=2))
@@ -163,6 +168,13 @@ def main(argv=None):
             os.replace(report_path, Path(str(out) + '.failed.report.json'))
             raise SystemExit(1)
         publish_bundle(candidate, out)
+    # Dashboard publication is best effort and never invalidates this CSV bundle.
+    try:
+        from .dashboard_publish import publish_dashboard
+        dashboard_status = publish_dashboard(out, a.data, enabled_modules=enabled)
+        print('Dashboard: ' + json.dumps(dashboard_status), flush=True)
+    except Exception:
+        print('Dashboard: publication hook failed; reconciliation bundle remains valid', flush=True)
     return report
 
 

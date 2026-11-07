@@ -2,9 +2,12 @@
   "project_id": "appgprj_6aeeee9b05188191b51bceb5d292b322",
   "checkout": "outputs/hosted-dashboard",
   "access_mode": "public",
-  "source_commit": "fd91fdb4a03b100a1cf6204860de3a19c683bcd4",
-  "version_id": "appgprj_6aeeee9b05188191b51bceb5d292b322~appgver_538efee3499081919a481cfb50bfa186",
-  "deployment_id": "appgdep_6aeeeeebc91c819191abea4d5171c4d3",
+  "source_commit": "4db945a076f950170158cf311fe69c95f4f4a7dd",
+  "version_id": "appgprj_6aeeee9b05188191b51bceb5d292b322~appgver_8b9ce78f39e0819195f67be4a6910830",
+  "deployment_id": "appgdep_6aeef12307b88191a8a6ed68d154a926",
   "url": "https://valtermia-team10-reconciliation.peakedalbatross1.chatgpt.site",
-  "status": "succeeded"
+  "status": "succeeded",
+  "auto_refresh": true,
+  "storage": "R2",
+  "snapshot_endpoint": "/api/snapshot"
 }
