@@ -1,6 +1,8 @@
 # Video script — Team 10, "Close the Books" (4.5 min, 720p)
 
-Each scene lists the screen content, the words to say and the duration. Total: about 4 min 30 s. [DA CONFERMARE: who records each scene]
+Each scene lists the screen content, the words to say and the duration. Total: about 4 min 30 s.
+
+> Draft. Final wording, who records each scene and the delivery are Vitalii's decision.
 
 ---
 
@@ -29,32 +31,32 @@ batch files → remittance advices → references + payer → exceptions → PDF
 Show the matching module in the repo briefly.
 
 **Say:**
-"We built a deterministic chain of rules, from the strongest evidence to the weakest. First, the batch files: direct debits, cards, cheques and payment runs are expanded to their invoices. Then remittance advices, then invoice references and payer identity, including parent companies and confirming banks. Then the exceptions, exactly as the policy defines them: discounts within terms, FX differences against ECB rates, partial payments, returns. Finally, facts from the PDFs and categories learned from TRAIN. One principle above all: never force a match. When the evidence is ambiguous, we abstain."
+"We built a deterministic chain of rules, from the strongest evidence to the weakest. First, the batch files: direct debits, cards, cheques and payment runs are expanded to their invoices. Then remittance advices, then invoice references and payer identity, including parent companies and confirming banks. Then the exceptions, exactly as the policy defines them: discounts within terms, FX differences against ECB rates, partial payments, returns. Finally, facts from the PDFs and categories looked up from TRAIN history. One principle above all: never force a match. When the evidence is ambiguous, we abstain. And no model runs at solve time: the solver is plain Python. Claude helped us build, test and coordinate it."
 
 ## Scene 4 — How we worked: agents and validation (2:10–3:15)
 **Screen:**
 - Vitalii's orchestrator coordinating several Claude agents;
-- a list of the integration rounds r6 … r11;
+- a list of the integration rounds r6 … r14;
 - the `make_holdout.py` command and its per-segment output;
 - the `RESULTS.md` reason-code table.
 
 **Say:**
-"Vitalii ran a Claude orchestrator that coordinates several agents. Each of us worked on our own branch, and the best ideas were integrated in rounds, from r6 to r11. To avoid fooling ourselves, Luke built a fair holdout: TRAIN cut at the end of March, and April to June turned into a LIVE-shaped phase, so any solution runs unchanged and is scored per segment. Before each integration we ran adversarial checks. For direct-debit returns, the solver was right on 1,796 of 1,835. The errors were concentrated in MD06 refund requests, and unit tests that encode the policy found a precedence bug, which we fixed. An independent check on March 2025, a month we never tuned on, moved from 93.51 to 94.20 between rounds r9 and r11. That is the same gain as on the live leaderboard. Marina contributed entity-first payer identification: when several customers match, only those of the company that owns the bank account are ranked, so a same-named customer abroad can't win, and Ivan the categories learned from TRAIN history."
+"Vitalii ran a Claude orchestrator that coordinates several agents. Each of us worked on our own branch, and the best ideas were integrated in rounds, from r6 to r14. To avoid fooling ourselves, Luke built a fair holdout: TRAIN cut at the end of March, and April to June turned into a LIVE-shaped phase, so any solution runs unchanged and is scored per segment. Before each integration we ran adversarial checks. For direct-debit returns, round r6 was right on 1,796 of 1,835. The errors were concentrated in MD06 refund requests. Unit tests that encode the policy found a precedence bug, and the fix is in the final version. An independent check on March 2025, a month we never tuned on, moved from 93.51 to 94.20 between rounds r9 and r11. That is the same gain as on the live leaderboard. Marina contributed entity-first payer identification: when several customers match, only those of the company that owns the bank account are ranked, so a same-named customer abroad can't win. Ivan built an independent pipeline and reviewed our rules; the issues he found were fixed."
 
 ## Scene 5 — Results (3:15–3:50)
 **Screen:** A chart or table of the LIVE scores over the day:
 
 ```
-81.13 → 84.06 → 87.81 → 92.96 → 93.41 → 94.76
+81.13 → 84.06 → 87.81 → 92.96 → 93.41 → 94.76 → 94.82 → 94.87 → 94.91
 ```
 
 Show a leaderboard screenshot at 2nd place.
 
 **Say:**
-"On the live leaderboard we went from 81 in the morning to 94.76 with round 11, second place at 16:19. Every step was first confirmed on the holdout. For FINAL we checked the drift: the new ZA01 company in rand, the updated masters, and the new bank format." [DA CONFERMARE: result of the FINAL readiness check and the FINAL score, if known]
+"On the live leaderboard we went from 81 in the morning to 94.91 with round 14, second place. Each round was checked on held-out data first. For FINAL we checked the drift: we simulated the new ZA01 company in rand with updated masters, and the solver runs cleanly. The FINAL score is hidden until the reveal."
 
 ## Scene 6 — Next steps and close (3:50–4:30)
-**Screen:** Three bullet points, then the GitHub link and the team names.
+**Screen:** Four bullet points, then the GitHub link and the team names.
 
 **Say:**
-"With more time, we would do three things. First, link MD06 refunds to the right monthly collection through re-presentations: today they cause 27 wrong returns and 25 false duplicate payments. Second, link late remittance advices better. Third, handle noisy references and many-to-many payments. The code, the holdout tools and the validation reports are on GitHub. Thank you!"
+"With more time, we would do four things. First, measure how much the re-presentation lookahead fixes the MD06 refund errors we found on round 6. Second, link late remittance advices better. Third, handle noisy references and many-to-many payments. Fourth, teach the category rules English bank wording for the new South African company, so a line like 'bank charges' becomes a bank fee. The code, the holdout tools and the validation reports are on GitHub. Thank you!"
