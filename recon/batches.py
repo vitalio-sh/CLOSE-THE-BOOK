@@ -757,13 +757,9 @@ class BatchMatcher:
                 for idx in self.by_ref.get(text[start:start+length], []):
                     if self.groups[idx]['account'] == txn['account_id']:
                         candidates.add(idx)
-        from .history import transfer_reference
-        # A cut run reference plus the transfer sequence rebuild the end-to-end ID.
-        rebuilt = transfer_reference(txn)
-        if rebuilt:
-            for idx in self.by_ref.get(rebuilt, []):
-                if self.groups[idx]['account'] == txn['account_id'] and self.groups[idx]['kind'] == 'payment_runs':
-                    candidates.add(idx)
+        from .history import transfer_run_prefix
+        # The debit quotes its run ID cut after the dash ('PR010024091060-0').
+        _, cut_run = transfer_run_prefix(txn) if amount < 0 else ('', '')
         mixed = self._mixed_currency_run(txn, text)
         if mixed:
             return mixed
@@ -783,7 +779,11 @@ class BatchMatcher:
             if reverse and group['date'] > txn['booking_date']:
                 continue
             delta = _days(txn['booking_date'], group['date'])
-            ref = group['ref'] in text or (bool(rebuilt) and group['ref'] == rebuilt)
+            # Exact amount and account within the quoted run identify one transfer
+            # (POLICIES 3 DUPLICATE_PAYMENT: a repeated transfer may be weeks old).
+            explicit_transfer = (bool(cut_run) and group['kind'] == 'payment_runs' and not group['confirming']
+                                 and group['ref'].startswith(cut_run))
+            ref = group['ref'] in text or explicit_transfer
             # A rejected transfer often quotes only the beneficiary (POLICIES 3, RETURNED).
             beneficiary = norm(group['rows'][0].get('beneficiary', '')) if group['kind'] == 'payment_runs' else ''
             named = (reverse and not ref and not group['confirming'] and len(beneficiary) >= 6
@@ -795,8 +795,6 @@ class BatchMatcher:
                 bank_amount = abs(money(txn['orig_amount']))
             if abs(bank_amount-group['amount']) > CENT:
                 continue
-            # A rebuilt end-to-end ID is an explicit transfer identity (duplicates repeat old transfers).
-            explicit_transfer = bool(rebuilt) and group['ref'] == rebuilt
             if delta > (120 if ref and (group['confirming'] or reverse or explicit_transfer)
                         else 60 if named else 10 if ref else 3):
                 continue

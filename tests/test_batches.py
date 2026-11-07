@@ -376,12 +376,13 @@ class BatchTests(unittest.TestCase):
         # A supplier refund naming the beneficiary is not a returned transfer.
         self.assertIsNone(matcher.reconcile(self.txn('32273.31','TT IN MOTORS CORAL BAY NORTH PTY LTD DEVOLUCION SALDO A FAVOR')))
 
-    def test_rebuilt_transfer_reference_flags_duplicate_payment(self):
-        self.item('API-1','FV-24-0100','2844.12',party='S1')
+    def test_cut_run_reference_flags_duplicate_payment(self):
+        self.item('API-1','FV-24-0100','2844.12',party='S1'); self.item('API-2','A9','500.00',party='S2')
         self.ctx.items['API-1'].update(open_amount=D(0),historical_closed=True)
-        base=dict(run_id='PR010024091060',run_type='transfers',execution_date='2025-05-01',debtor_account_id='ES01-A',beneficiary='Proveedor Uno S.L.',beneficiary_iban='',currency='EUR',transfer_amount='2844.12',document_type='INVOICE',remittance_info='')
-        self.rows('payment_runs',[dict(base,end_to_end_id='PR010024091060-0001',document_number='FV-24-0100',document_amount='2844.12'),
-                                  dict(base,end_to_end_id='PR010024091060-0002',document_number='FV-24-0100',document_amount='2844.12')])
+        base=dict(run_id='PR010024091060',run_type='transfers',execution_date='2025-05-01',debtor_account_id='ES01-A',beneficiary='Proveedor Uno S.L.',beneficiary_iban='',currency='EUR',document_type='INVOICE',remittance_info='')
+        self.rows('payment_runs',[dict(base,end_to_end_id='PR010024091060-0109',transfer_amount='2844.12',document_number='FV-24-0100',document_amount='2844.12'),
+                                  dict(base,end_to_end_id='PR010024091060-0001',transfer_amount='500.00',document_number='A9',document_amount='500.00')])
+        # The trailing '000001' of the text is not the transfer sequence.
         txn=self.txn('-2844.12','PAGO TRANSFERENCIAS | 4799-56-1122872-73 051775 000001'); txn['ref2']='PR010024091060-0'
         result=BatchMatcher(self.ctx).reconcile(txn)
         self.assertEqual([(r['item_id'],r['exception']) for r in result],[('API-1','DUPLICATE_PAYMENT')])
@@ -389,11 +390,21 @@ class BatchTests(unittest.TestCase):
         txn['ref2']=''
         self.assertIsNone(BatchMatcher(self.ctx).reconcile(txn))
 
-    def test_transfer_reference_rebuild(self):
-        from recon.history import transfer_reference
-        self.assertEqual(transfer_reference({'ref2':'PR010024101092-0','text':'PAGO TRANSFERENCIAS | 0971-56-6918583-73 317899 000118'}),'PR0100241010920118')
-        self.assertEqual(transfer_reference({'ref2':'PR010024101092-1','text':'PAGO TRANSFERENCIAS | 0971 317899 000118'}),'')
-        self.assertEqual(transfer_reference({'ref2':'NO242842873273','text':'FP X 000118'}),'')
+    def test_cut_run_reference_tie_abstains(self):
+        self.item('API-1','FV-24-0100','2844.12',party='S1'); self.item('API-2','FV-24-0101','2844.12',party='S2')
+        for iid in ('API-1','API-2'): self.ctx.items[iid].update(open_amount=D(0),historical_closed=True)
+        base=dict(run_id='PR010024091060',run_type='transfers',execution_date='2025-05-01',debtor_account_id='ES01-A',beneficiary='Proveedor',beneficiary_iban='',currency='EUR',transfer_amount='2844.12',document_type='INVOICE',remittance_info='',document_amount='2844.12')
+        self.rows('payment_runs',[dict(base,end_to_end_id='PR010024091060-0109',document_number='FV-24-0100'),
+                                  dict(base,end_to_end_id='PR010024091060-0110',document_number='FV-24-0101')])
+        txn=self.txn('-2844.12','PAGO TRANSFERENCIAS | 4799 051775 000001'); txn['ref2']='PR010024091060-0'
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(txn))
+
+    def test_transfer_run_prefix(self):
+        from recon.history import transfer_run_prefix
+        self.assertEqual(transfer_run_prefix({'ref2':'PR010024101092-0'}),('PR010024101092','PR0100241010920'))
+        self.assertEqual(transfer_run_prefix({'ref1':'PR010024101009-0','ref2':'ME242841120091'}),('PR010024101009','PR0100241010090'))
+        self.assertEqual(transfer_run_prefix({'ref2':'PR010024101092-0118'}),('',''))
+        self.assertEqual(transfer_run_prefix({'ref2':'NO242842873273'}),('',''))
 
     def test_supplier_direct_debit_truncated_name_and_factory(self):
         self.item('API-1','INV0001012','822.95',party='S1'); self.item('API-2','INV9','822.95',party='S2')

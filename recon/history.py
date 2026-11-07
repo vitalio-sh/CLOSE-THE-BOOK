@@ -229,36 +229,32 @@ def _reversal_references(ctx, phase_dir, first_date, refs, txns):
     return added
 
 
-def transfer_reference(txn):
-    """Rebuild a per-transfer end-to-end ID cut by the bank statement.
+CUT_RUN = re.compile(r'(PR\d{12})-(\d{0,3})')
 
-    Norma 43 lines carry the run ID truncated after the dash in ref1/ref2
-    ('PR010024091060-0') and the transfer sequence at the end of the text
-    ('PAGO TRANSFERENCIAS | 4799-56-1122872-73 051775 000001'). Return the
-    normalized 'PR0100240910600001', or '' unless both parts agree.
+
+def transfer_run_prefix(txn):
+    """The payment-run ID a statement line quotes cut after the dash.
+
+    Norma 43 debits carry 'PR010024091060-0' in ref1/ref2: the run ID plus the first
+    digits of the transfer sequence. The trailing digits of the text are not the
+    sequence. Return (run_id, normalized end-to-end prefix) or ('', '').
     """
-    run = None
     for key in ('ref2', 'ref1'):
-        run = re.fullmatch(r'(PR\d{12})-(\d{0,3})', str(txn.get(key) or '').strip())
+        run = CUT_RUN.fullmatch(str(txn.get(key) or '').strip())
         if run:
-            break
-    if not run:
-        return ''
-    sequence = re.search(r'\b(\d{6})\s*$', str(txn.get('text') or ''))
-    if not sequence or not sequence[1][-4:].startswith(run[2]):
-        return ''
-    return norm(run[1] + '-' + sequence[1][-4:])
+            return run[1], norm(run[1] + '-' + run[2])
+    return '', ''
 
 
 def _repeated_transfer_references(ctx, phase_dir, first_date, txns, refs):
     """Documents of an earlier supplier transfer that a phase debit pays again.
 
     POLICIES 3 (DUPLICATE_PAYMENT): paying the same transfer twice is a duplicate of
-    the documents it settled. The debit quotes the run ID cut after the dash plus the
-    transfer sequence (rebuilt by transfer_reference). When the original transfer was
-    made before the phase, its documents are closed and absent from the opening
-    snapshot; restore their identities at zero balance. Numbers that are open in the
-    snapshot are left alone.
+    the documents it settled. The debit quotes the run ID cut after the dash; within
+    that run and paying account, the single transfer of exactly the debited amount is
+    the repeated one. When it was made before the phase, its documents are closed and
+    absent from the opening snapshot; restore their identities at zero balance.
+    Numbers open in the snapshot are left alone.
     """
     wanted = {}
     for txn in txns:
@@ -266,17 +262,16 @@ def _repeated_transfer_references(ctx, phase_dir, first_date, txns, refs):
             amount = Decimal(str(txn.get('amount') or '0'))
         except ArithmeticError:
             continue
-        if amount < 0:
-            rebuilt = transfer_reference(txn)
-            if rebuilt:
-                wanted[(rebuilt, txn.get('account_id'))] = txn
+        run, prefix = transfer_run_prefix(txn)
+        if amount < 0 and run:
+            wanted[(run, txn.get('account_id'), -amount)] = prefix
     if not wanted:
         return 0
     try:
         floor = (date.fromisoformat(first_date).replace(day=1) - timedelta(days=92)).strftime('%Y%m')
     except ValueError:
         return 0
-    added = 0
+    found = defaultdict(lambda: defaultdict(list))
     roots = [phase_dir] + [Path(p) for p in getattr(ctx, 'history_dirs', ())]
     seen = set()
     for root in roots:
@@ -289,12 +284,22 @@ def _repeated_transfer_references(ctx, phase_dir, first_date, txns, refs):
             seen.add(path.name)
             entity = path.name.split('_')[0]
             for row in read_csv(path):
-                if row.get('run_type') not in ('transfers', 'confirming'):
+                if row.get('run_type') != 'transfers':
                     continue
-                if (norm(row.get('end_to_end_id', '')), row.get('debtor_account_id')) not in wanted:
+                try:
+                    cash = Decimal(row.get('transfer_amount') or '0')
+                except ArithmeticError:
                     continue
-                token = norm(row.get('document_number', ''))
-                if token and not ctx.by_number.get(token) and entity not in refs[token]:
-                    refs[token].add(entity)
-                    added += 1
+                key = (row.get('run_id'), row.get('debtor_account_id'), cash)
+                e2e = norm(row.get('end_to_end_id', ''))
+                if key in wanted and e2e.startswith(wanted[key]):
+                    found[key][e2e].append((entity, norm(row.get('document_number', ''))))
+    added = 0
+    for transfers in found.values():
+        if len(transfers) != 1:
+            continue
+        for entity, token in next(iter(transfers.values())):
+            if token and not ctx.by_number.get(token) and entity not in refs[token]:
+                refs[token].add(entity)
+                added += 1
     return added

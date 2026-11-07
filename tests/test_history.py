@@ -42,7 +42,7 @@ class HistoryTests(unittest.TestCase):
             fields=['run_id','run_type','execution_date','debtor_account_id','end_to_end_id','beneficiary','currency','transfer_amount','document_number','document_amount']
             with (runs/'ES01_202409_0.csv').open('w',newline='') as f:
                 w=csv.DictWriter(f,fieldnames=fields);w.writeheader()
-                w.writerow(dict(run_id='PR010024091060',run_type='transfers',execution_date='2024-09-10',debtor_account_id='ES01-A',end_to_end_id='PR010024091060-0001',beneficiary='Proveedor Uno',currency='EUR',transfer_amount='2844.12',document_number='FV-24-0100',document_amount='2844.12'))
+                w.writerow(dict(run_id='PR010024091060',run_type='transfers',execution_date='2024-09-10',debtor_account_id='ES01-A',end_to_end_id='PR010024091060-0109',beneficiary='Proveedor Uno',currency='EUR',transfer_amount='2844.12',document_number='FV-24-0100',document_amount='2844.12'))
                 w.writerow(dict(run_id='PR010024091060',run_type='transfers',execution_date='2024-09-10',debtor_account_id='ES01-A',end_to_end_id='PR010024091060-0002',beneficiary='Proveedor Dos',currency='EUR',transfer_amount='606.23',document_number='A003252',document_amount='606.23'))
             txns=[dict(text='PAGO TRANSFERENCIAS | 4799-56-1122872-73 051775 000001',ref2='PR010024091060-0',amount='-2844.12',account_id='ES01-A',booking_date='2024-10-20',entity='ES01'),
                   dict(text='PAGO TRANSFERENCIAS | 4799-56-1122872-73 051775 000002',ref2='PR010024091060-0',amount='-606.23',account_id='ES01-B',booking_date='2024-10-20',entity='ES01')]
