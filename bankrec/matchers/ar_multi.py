@@ -178,6 +178,48 @@ def match(ph, st):
             _line(cx, aux, st, r)
         except Exception:  # never let one line break the stage
             continue
+    try:
+        _duplicates(st, rows)
+    except Exception:
+        pass
+
+
+_DSTOP = {"DIRECT", "CREDIT", "WIRE", "TRANSFER", "TRANSFERENCIA", "TRANSFERENCIAS", "SEPA", "ACH", "CCD", "PAYMENT",
+          "ORDP", "REMI", "ORG", "RFB", "OBI", "EREF", "SVWZ", "UEBERWEISUNG", "NOTPROVIDED", "NONREF", "INVOICE", "INV",
+          "VIR", "RECU", "MOTIF", "REF", "FAVOR", "ABONO", "PIX", "RECEBIDO", "LTD", "PTY", "INC", "LLC", "GMBH", "SARL",
+          "S.A.", "S.L.", "FACTURA", "FACTURE", "FACT", "PAGO", "ORDER", "TRANSF", "SU", "DE", "LA", "THE", "AND", "TT",
+          "IN", "LIQUIDACAO", "BOLETO", "INSTANT", "INMEDIATA", "CONCEPTO", "FRA", "RECHNUNG", "PAGAMENTO", "PEDIDO"}
+
+
+def _sig_words(r) -> set:
+    t = " ".join(str(r.get(c) or "") for c in ("text", "counterparty_name")).upper()
+    return {w for w in re.findall(r"[A-Z][A-Z&]{2,}", t) if w not in _DSTOP}
+
+
+def _duplicates(st, rows):
+    """POLICIES §3 DUPLICATE_PAYMENT: an unclaimed credit with the same amount as an earlier line (<= 45 days) of the
+    same entity and payer that settled exactly one invoice for that full amount -> the same invoice is paid again."""
+    prev = defaultdict(list)  # (entity, cents) -> [(date, row, item)]
+    for r in rows:
+        t = r["bank_txn_id"]
+        key = (r["entity"], round((r["amount"] or 0) * 100))
+        if st.claimed(t):
+            al = st.rows.get(t) or []
+            if len(al) == 1 and al[0][0] and al[0][3] in ("", "FX_DIFFERENCE") \
+                    and abs((al[0][1] or 0) - r["amount"]) <= 0.01:
+                prev[key].append((r["booking_date"], r, al[0][0]))
+            continue
+        d = date.fromisoformat(str(r["booking_date"])[:10])
+        w = _sig_words(r)
+        if len(w) < 2:
+            continue
+        hits = []
+        for pd_, pr, iid in prev.get(key, []):
+            dd = (d - date.fromisoformat(str(pd_)[:10])).days
+            if 0 <= dd <= 45 and len(w & _sig_words(pr)) >= 2:
+                hits.append(iid)
+        if len(set(hits)) == 1:
+            st.assign(t, [(hits[0], r["amount"], "DUPLICATE_PAYMENT")])
 
 
 def _line(cx, aux, st, r):
