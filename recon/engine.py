@@ -87,6 +87,9 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         # FX receipts whose instructed amount is exactly a unique set of the payer's invoices.
         from .matching import fx_invoice_set
         handlers.append(('fx_set', lambda txn: fx_invoice_set(txn, ctx)))
+        # Last resort: remainders of earlier partial payments plus a unique fresh rest.
+        from .matching import residual_group
+        handlers.append(('residual_group', lambda txn: residual_group(txn, ctx)))
     return handlers, document_stats
 
 

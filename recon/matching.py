@@ -1604,3 +1604,59 @@ def dispute_settlement(txn, ctx):
         return None
     fx = item.get('currency') != txn.get('currency')
     return [dict(rows[0], exception='FX_DIFFERENCE' if fx else '')]
+
+
+def residual_group(txn, ctx):
+    """Last resort: a receipt of an identified payer that pays the open remainder of an earlier
+    partially paid invoice (open < total; POLICIES 2/3, the remainder of a PARTIAL is settled
+    later) together with one more open invoice, both in full (TRAIN ar_n_to_m second payments).
+
+    Accepted only when that pair is the single combination of one, two or three of the
+    payer's open invoices that makes up the cash exactly; a related credit note abstains.
+    """
+    cash = dec(txn['amount'])
+    if cash <= 0 or classify(txn, ctx):
+        return None
+    if re.search(_RETURN_RE, words(text_of(txn))):
+        return None
+    parties = party_candidates(txn, ctx)
+    if not parties:
+        return None
+    cents = lambda amount: int((amount * 100).to_integral_value())
+    target = cents(cash)
+    readings = []
+    for pid in parties:
+        pool = [ctx.items[i] for i in ctx.by_party.get(pid, ()) if i in ctx.items]
+        pool = sorted((i for i in pool if i.get('kind') != 'credit' and i.get('side') == 'AR'
+                       and i.get('currency') == txn.get('currency') and i.get('entity') == txn.get('entity')
+                       and _eligible(i, txn) and D(0) < dec(i.get('open_amount')) <= cash),
+                      key=lambda i: i['item_id'])
+        if not any(dec(i['open_amount']) < dec(i.get('total_amount')) for i in pool):
+            continue
+        if len(pool) > 400 or _related_credit(ctx, txn, pid):
+            return None
+        values = [cents(dec(i['open_amount'])) for i in pool]
+        where = defaultdict(list)
+        for k, v in enumerate(values):
+            where[v].append(k)
+        found = [(k,) for k in where.get(target, ())]
+        for a in range(len(pool)):
+            found += [(a, b) for b in where.get(target - values[a], ()) if b > a]
+            if len(found) > 1:
+                return None
+        for a in range(len(pool)):
+            for b in range(a + 1, len(pool)):
+                rest = target - values[a] - values[b]
+                if rest > 0:
+                    found += [(a, b, c) for c in where.get(rest, ()) if c > b]
+            if len(found) > 1:
+                return None
+        readings += [[pool[k] for k in combo] for combo in found]
+        if len(readings) > 1:
+            return None
+    if len(readings) != 1 or len(readings[0]) != 2:
+        return None
+    pair = readings[0]
+    if not any(dec(i['open_amount']) < dec(i.get('total_amount')) for i in pair):
+        return None
+    return [row(txn, i['item_id'], i['open_amount']) for i in pair]

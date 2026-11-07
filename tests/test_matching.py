@@ -418,6 +418,18 @@ class MatchingTests(unittest.TestCase):
         self.assertIsNone(dispute_settlement(txn('120','ALICE WATER WORKS PAGO FV25-00001'),c))
         self.assertIsNone(dispute_settlement(txn('120','CARD SETTLEMENT 20250101 FV25-00001'),c))
         self.assertIsNone(dispute_settlement(txn('120','ALICE WATER WORKS SETTLEMENT 2025'),c))
+    def test_residual_group_remainder_plus_one_invoice(self):
+        from recon.matching import residual_group
+        items=[invoice('A','INV24-0110001','100.10'),invoice('B','INV24-0110002','400.50'),invoice('C','INV24-0110003','37.00'),
+               invoice('D','INV24-0110004','55.55')]
+        items[1]['open_amount']=D('160.20')   # 60 % of B was paid earlier: the remainder is open
+        rows=residual_group(txn('197.20','Alice Water Works PAYMENT'),context(items))   # B remainder + C
+        self.assertEqual({(r['item_id'],r['amount'],r['exception']) for r in rows},{('B','160.20',''),('C','37.00','')})
+        # A pair of fresh invoices (A+C) is not this rule.
+        self.assertIsNone(residual_group(txn('137.10','Alice Water Works PAYMENT'),context(items)))
+        # A competing fresh triple of the same total (A+D+E = 197.20) abstains.
+        e=invoice('E','INV24-0110005','41.55')
+        self.assertIsNone(residual_group(txn('197.20','Alice Water Works PAYMENT'),context(items+[e])))
 if __name__=='__main__':unittest.main()
 
 
