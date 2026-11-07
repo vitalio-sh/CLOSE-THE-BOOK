@@ -62,7 +62,7 @@ One scene per slide, in `docs/video_slides.html`; press → to move to the next 
 
 ## Slide 9 — Results (3:50–4:20)
 > On the live leaderboard, we reached ninety-four point nine one. Rank two.
-> So we checked March 2025, a month we never used for tuning. This is not an official score.
+> To check that we did not overfit, we tested March 2025, a month we never used for tuning. This is not an official score.
 > From version nine to version eleven, the gain was the same as on the official leaderboard.
 > And version fourteen had no regressions.
 > So the solution generalizes.
