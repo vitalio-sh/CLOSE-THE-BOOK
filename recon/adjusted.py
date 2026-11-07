@@ -364,6 +364,23 @@ def _subsets_for_targets(values, targets, limit=2):
     return found
 
 
+# TRAIN: invoices paid together by one unreferenced transfer are almost always issued within the
+# last 180 days (the same window the quoted-set rest search uses).
+RECENT_POOL_DAYS = 180
+
+
+def _recent_pool(group, txn):
+    """The payer's pool for a set search: all of it, or its last 180 days when it is large."""
+    if len(group) <= MAX_SET_ITEMS:
+        return group
+    try:
+        limit = (date.fromisoformat(txn['booking_date']) - timedelta(days=RECENT_POOL_DAYS)).isoformat()
+    except (KeyError, TypeError, ValueError):
+        return None
+    recent = [i for i in group if i.get('issue_date', '') >= limit]
+    return recent if len(recent) <= MAX_SET_ITEMS else None
+
+
 def adjusted_sets(txn, ctx):
     """Several invoices of one identified payer, no usable reference, one documented difference.
 
@@ -391,7 +408,8 @@ def adjusted_sets(txn, ctx):
             group = sorted((i for i in invoices if i.get('currency') == currency), key=lambda i: i['item_id'])
             if target is None or len(group) < 2:
                 continue
-            if len(group) > MAX_SET_ITEMS:
+            group = _recent_pool(group, txn)
+            if group is None:
                 return None
             cents = int(target * 100)
             opens = [int(dec(i['open_amount']) * 100) for i in group]
@@ -464,7 +482,8 @@ def _multi_discount_set(txn, ctx, invoices):
     for currency in sorted({i.get('currency') for i in invoices}):
         target, fx = target_for(txn, currency)
         group = sorted((i for i in invoices if i.get('currency') == currency), key=lambda i: i['item_id'])
-        if target is None or len(group) < 2 or len(group) > MAX_SET_ITEMS:
+        group = _recent_pool(group, txn) if len(group) >= 2 else None
+        if target is None or not group or len(group) < 2:
             continue
         options, terms = [], []
         for item in group:

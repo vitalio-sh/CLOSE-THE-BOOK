@@ -190,6 +190,17 @@ class AdjustedSetTests(unittest.TestCase):
         items[0]['issue_date'] = '2024-12-20'; items[1]['issue_date'] = '2021-06-01'
         self.assertIsNone(adjusted_sets(txn('153.55', 'Alice Water Works PAYMENT'), ctx(items)))
 
+    def test_large_pool_searches_its_last_180_days(self):
+        from recon.adjusted import adjusted_sets
+        old = [invoice('O%02d' % k, 'G%02d' % k, str(1000 + 7 * k)) for k in range(30)]
+        for item in old:
+            item['issue_date'] = '2024-03-01'
+        items = old + [invoice('A', 'F1', '100', payment_terms='D2'), invoice('B', 'F2', '55.55'), invoice('C', 'F3', '31.17')]
+        items[-3]['issue_date'] = '2024-12-20'
+        rows = adjusted_sets(txn('153.55', 'Alice Water Works PAYMENT'), ctx(items))
+        self.assertEqual({r['item_id']: (r['amount'], r['exception']) for r in rows},
+                         {'A': ('98.00', 'PARTIAL'), 'B': ('55.55', '')})
+
     def test_plain_subset_or_two_patterns_abstain(self):
         from recon.adjusted import adjusted_sets
         items = [invoice('A', 'F1', '100', payment_terms='D2'), invoice('B', 'F2', '50'), invoice('C', 'F3', '98')]
