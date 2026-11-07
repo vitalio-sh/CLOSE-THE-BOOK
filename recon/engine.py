@@ -49,8 +49,12 @@ def execute(ctx, txns, handlers, writer, audit, progress=None):
             # identified (party_candidates non-empty) or the line is outgoing
             # (negative cash), keeping only the UNIDENTIFIED category.
             from .matching import party_candidates
-            exc = '' if Decimal(txn['amount']) < 0 or party_candidates(txn, ctx) else 'UNIDENTIFIED'
-            rows = [dict(zip(FIELDS, [txn['bank_txn_id'], '', '', 'UNIDENTIFIED', exc]))]
+            # UNIDENTIFIED is a receipt-only category: in TRAIN no outgoing line carries
+            # it, and BANK_FEES is by far the most common no-item outgoing category.
+            outgoing = Decimal(txn['amount']) < 0
+            exc = '' if outgoing or party_candidates(txn, ctx) else 'UNIDENTIFIED'
+            category = 'BANK_FEES' if outgoing and 'BANK_FEES' in getattr(ctx, 'categories', ()) else 'UNIDENTIFIED'
+            rows = [dict(zip(FIELDS, [txn['bank_txn_id'], '', '', category, exc]))]
         rows = [{key: str(row.get(key, '') or '') for key in FIELDS} for row in rows]
         writer.writerows(rows)
         ctx.apply(txn, rows)
