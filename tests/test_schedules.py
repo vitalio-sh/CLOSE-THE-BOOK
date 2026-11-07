@@ -63,9 +63,12 @@ class InstalmentTests(unittest.TestCase):
         items = [invoice(amount='3440.78'), invoice('I2', 'FV25-00002', '1146.92')]
         c, m = matcher(items, {'I1': {'instalments_count': 3}})
         self.assertIsNone(m.reconcile(txn('1146.92', 'ALICE WATER WORKS')))
-        items = [invoice(amount='3440.78'), invoice('I2', 'FV25-00002', '500')]
+        items = [invoice(amount='3440.78'), invoice('I2', 'FV25-00002', '5000')]
         c, m = matcher(items, {'I1': {'instalments_count': 3}})
         self.assertIsNone(m.reconcile(txn('1146.92', 'ALICE WATER WORKS FV25-00002')))
+        items = [invoice(amount='3440.78'), invoice('I2', 'FV25-00777', '500')]
+        c, m = matcher(items, {'I1': {'instalments_count': 3}})
+        self.assertIsNone(m.reconcile(txn('1146.92', 'ALICE WATER WORKS FV25-00777')))
 
     def test_two_plans_with_same_share_abstain_unless_cited(self):
         items = [invoice(amount='3440.78'), invoice('I2', 'FV25-00002', '3440.78')]
@@ -75,6 +78,22 @@ class InstalmentTests(unittest.TestCase):
         r = m.reconcile(txn('1146.92', 'ALICE WATER WORKS FRA FV25-00002'))
         self.assertEqual(r[0]['item_id'], 'I2')
 
+    def test_mistyped_reference_of_the_only_fitting_plan(self):
+        items = [invoice(number='FV24-0105411', amount='2289.70'), invoice('I2', 'FV24-0105412', '500')]
+        c, m = matcher(items, {'I1': {'instalments_count': 3}})
+        r = m.reconcile(txn('763.23', 'ALICE WATER WORKS PLAZO 1/3 FACTURA FV24-0105412'))
+        self.assertEqual((r[0]['item_id'], r[0]['exception']), ('I1', 'PARTIAL'))
+        items = [invoice(number='FV24-0105411', amount='2289.70'), invoice('I2', 'FV24-0105412', '763.23')]
+        c, m = matcher(items, {'I1': {'instalments_count': 3}})
+        self.assertIsNone(m.reconcile(txn('763.23', 'ALICE WATER WORKS FACTURA FV24-0105412')))
+
+    def test_fx_instalment(self):
+        a = invoice(amount='11856.57')
+        a['currency'] = 'USD'
+        c, m = matcher([a], {'I1': {'instalments_count': 4}})
+        r = m.reconcile(txn('20852.34', 'ALICE WATER WORKS INSTALMENT 1/4', orig_amount='2964.14', orig_currency='USD'))
+        self.assertEqual((r[0]['amount'], r[0]['exception']), ('2964.14', 'PARTIAL'))
+
     def test_stated_plan_size_must_agree(self):
         c, m = matcher([invoice(amount='3440.78')], {'I1': {'instalments_count': 3}})
         self.assertIsNone(m.reconcile(txn('1146.92', 'ALICE WATER WORKS PLAZO 1/4')))
@@ -83,6 +102,41 @@ class InstalmentTests(unittest.TestCase):
         c, m = matcher([invoice(amount='3440.78')], {'I1': {'instalments_count': 3}})
         self.assertIsNone(m.reconcile(txn('1146.92', 'ALICE WATER WORKS DISPUTED PRICE')))
         self.assertIsNone(m.reconcile(txn('-1146.92', 'ALICE WATER WORKS')))
+
+
+class AdvanceAndRetentionTests(unittest.TestCase):
+    def test_advance_deduction_is_partial_for_net_due(self):
+        facts = {'I1': {'advance_proforma': 'PF24-0300010', 'advance_amount': '718.53', 'net_due': '1676.57'}}
+        c, m = matcher([invoice(amount='2395.10')], facts)
+        r = m.reconcile(txn('1676.57', 'DIRECT CREDIT ALICE WATER WORKS'))
+        self.assertEqual((r[0]['item_id'], r[0]['amount'], r[0]['exception']), ('I1', '1676.57', 'PARTIAL'))
+
+    def test_advance_fx_keeps_partial(self):
+        a = invoice(amount='3053.71')
+        a['currency'] = 'USD'
+        facts = {'I1': {'advance_amount': '916.11', 'net_due': '2137.60'}}
+        c, m = matcher([a], facts)
+        r = m.reconcile(txn('40966.45', 'ALICE WATER WORKS', orig_amount='2137.60', orig_currency='USD'))
+        self.assertEqual((r[0]['amount'], r[0]['exception']), ('2137.60', 'PARTIAL'))
+
+    def test_retention_with_unparsed_net_uses_percentage(self):
+        # 23,047.13 x 0.95 = 21,894.7735 -> 21,894.77 (the PDF prints 21 894,78).
+        c, m = matcher([invoice(amount='23047.13')], {'I1': {'retention_pct': '5'}})
+        r = m.reconcile(txn('21894.77', 'ALICE WATER WORKS VIREMENT'))
+        self.assertEqual((r[0]['amount'], r[0]['exception']), ('21894.77', 'PARTIAL'))
+
+    def test_retention_outranks_withholding_lookalike(self):
+        c, m = matcher([invoice(amount='382109.54')], {'I1': {'retention_pct': '10', 'net_due': '343898.59'}})
+        r = m.reconcile(txn('343898.59', 'LIQUIDACION ALICE WATER WORKS'))
+        self.assertEqual(r[0]['exception'], 'PARTIAL')
+
+    def test_retention_requires_untouched_invoice_and_documented_pct(self):
+        a = invoice(amount='23047.13')
+        a['open_amount'] = D('20000')
+        c, m = matcher([a], {'I1': {'retention_pct': '5'}})
+        self.assertIsNone(m.reconcile(txn('21894.77', 'ALICE WATER WORKS')))
+        c, m = matcher([invoice(amount='23047.13')], {'I1': {'retention_pct': '20'}})
+        self.assertIsNone(m.reconcile(txn('18437.70', 'ALICE WATER WORKS')))
 
 
 if __name__ == '__main__':
