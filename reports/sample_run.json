@@ -1,0 +1,61 @@
+{
+  "phase": "sample",
+  "historical_references": {
+    "added_count": 0,
+    "scanned_rows": 0,
+    "reference_tokens": 0,
+    "seconds": 0.0,
+    "skipped_reason": "Only LIVE/FINAL have an authoritative opening snapshot"
+  },
+  "pdf_facts": {
+    "extractions": 0,
+    "cache_hits": 832,
+    "memory_hits": 0,
+    "failures": 0,
+    "timeouts": 0,
+    "budget_skips": 0,
+    "time_budget_skips": 0,
+    "indexed": 2147,
+    "active_seconds": 0.243933,
+    "max_seconds": 30.0,
+    "time_budget_exhausted": false,
+    "sources_with_facts": 458,
+    "replacement_links": 131,
+    "service_month_facts": 3
+  },
+  "modules": {
+    "matching": 4325,
+    "category": 697,
+    "documents": 311,
+    "unidentified": 1295,
+    "batches": 1871
+  },
+  "rejected_proposals": {},
+  "source_hashes": {
+    "__init__.py": "a523c28ee4d9ac6faeca15c47d9844631a6d178caf884d96e3878fd3ee373875",
+    "batches.py": "1dfa44d0ea4bb8a42512d4ccbba0a2852345822a282cadbbec551bd2821ac2ea",
+    "context.py": "34c545faf58fff605439301459716e065c34c410e09fe19ba89a777820727ead",
+    "documents.py": "48a3a8fd4684c07c0f2f54d84323d64fa9d3097b391c91429822ad1a83d75c5c",
+    "history.py": "92e3e2a6b9a823a0532af0fd29d6973d9808f95cd6cd4a77b27953924adc9fac",
+    "matching.py": "c7a1395b7311897d8e23bba090daba5b67964a121745737455300c24e8127bd7",
+    "pdf_facts.py": "793ad045daa9b816b4e486adaaecf1477111a60f62b9bb1b3b575db5d3a80bf2",
+    "run.py": "0eaf1cb622b10bcb93b221d1c8e5dc1de22cc9a5aae1be58750ee78ccd839f8f",
+    "validate.py": "69619cf19d4c4ec98277271255915acd42e21913aad39916b2a800f3f7afbfd8"
+  },
+  "seconds": 20.81,
+  "validation": {
+    "ok": true,
+    "rows": 26404,
+    "transactions": 8499,
+    "covered": 8499,
+    "missing": 0,
+    "uncompressed_bytes": 1133623,
+    "errors": []
+  },
+  "official_structure": {
+    "ok": true,
+    "errors": [],
+    "note": "Format only; no hidden labels or accuracy estimate."
+  },
+  "sha256": "d82408c0a7e48965377326903bbf088998f0ba343dc98755d8ab00804af4ff3b"
+}

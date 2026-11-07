@@ -1,0 +1,104 @@
+"""Recover explicitly referenced, already-closed historical items without labels.
+
+An opening snapshot is authoritative about which OLD items remain open. Historical
+items absent from it must never be reintroduced as payable balances. This helper
+only restores their identity/metadata for duplicate and return handling.
+"""
+from collections import defaultdict
+from decimal import Decimal
+from pathlib import Path
+import re
+import time
+
+from .context import read_csv, norm
+
+FIELDS = ('text', 'ref1', 'ref2', 'remittance_info', 'end_to_end_id')
+INVOICE_HINT = re.compile(r'(?:FRA(?:S)?\.?|FACTURA(?:S)?|FACT|INVOICE(?:S)?|INV|RECHNUNG|RE-NR|RE|FAC|FATURA)\s*[:.#-]?\s*$', re.I)
+
+
+def reference_tokens(txn):
+    """Exact printed tokens only: no fuzzy, substring, amount, or ID guessing.
+
+Mixed alphabetic/numeric printed references need at least five normalized
+characters. Numeric-only references need an invoice cue or >=6 digits; short
+supplier invoice numbers are accepted after e.g. FRA or INVOICE.
+    """
+    result = set()
+    for field in FIELDS:
+        text = str(txn.get(field) or '')
+        # SWIFT field delimiters are transport syntax, not part of invoice numbers.
+        text = re.sub(r'/(?:ORDP|REMI|EREF|REF|MOTIF|CHGS|BENM)/', ' ', text, flags=re.I)
+        for match in re.finditer(r'[A-Za-z0-9][A-Za-z0-9._/-]*', text):
+            token = norm(match[0])
+            if len(token) < 4 or not any(c.isdigit() for c in token):
+                continue
+            if token.isdigit():
+                if len(token) < 6 and not INVOICE_HINT.search(text[max(0, match.start()-30):match.start()]):
+                    continue
+            elif len(token) < 5:
+                continue
+            result.add(token)
+    return result
+
+
+def enrich_referenced_closed(ctx, txns):
+    """Add referenced old identities with Decimal(0) balance; return audit counts.
+
+Only LIVE/FINAL with an opening snapshot qualify. Existing items, balances and
+indices are preserved. Call once before constructing cached matcher indices.
+    """
+    start = time.monotonic()
+    result = {'added_count': 0, 'scanned_rows': 0, 'reference_tokens': 0,
+              'seconds': 0.0, 'skipped_reason': None}
+    phase_dir = Path(ctx.phase_dir)
+    if phase_dir.name not in ('live', 'final'):
+        result['skipped_reason'] = 'Only LIVE/FINAL have an authoritative opening snapshot'
+        return result
+    if not (phase_dir / 'open_items_at_start.csv.gz').exists():
+        result['skipped_reason'] = 'Missing authoritative opening snapshot'
+        return result
+    refs = defaultdict(set)
+    first_date = None
+    for txn in txns:
+        booking = txn.get('booking_date')
+        if booking and (first_date is None or booking < first_date):
+            first_date = booking
+        for token in reference_tokens(txn):
+            refs[token].add(txn.get('entity', ''))
+    result['reference_tokens'] = len(refs)
+    if first_date is None:
+        result['skipped_reason'] = 'No dated transactions'
+        return result
+    seen_roots = set()
+    for folder in getattr(ctx, 'history_dirs', ()):
+        folder = Path(folder)
+        resolved = folder.resolve()
+        if resolved == phase_dir.resolve() or resolved in seen_roots:
+            continue
+        seen_roots.add(resolved)
+        for filename in ('ar_invoices.csv.gz', 'ap_invoices.csv.gz', 'credit_notes.csv.gz'):
+            for record in read_csv(folder / filename):
+                result['scanned_rows'] += 1
+                iid = record['item_id']
+                if iid in ctx.items:
+                    continue
+                number = record.get('document_number') or record.get('supplier_invoice_number', '')
+                key = norm(number)
+                entities = refs.get(key)
+                if not entities:
+                    continue
+                # Absence from opening proves closed only for documents issued before phase.
+                issue_date = record.get('issue_date', '')
+                if not issue_date or issue_date >= first_date:
+                    continue
+                entity = record.get('entity', '')
+                factory = iid.startswith('AP') and entity in ('ES01', 'ES02', 'PT01') and 'ES00' in entities
+                if entity not in entities and '' not in entities and not factory:
+                    continue
+                restored = dict(record, open_amount=Decimal('0'), historical_closed=True)
+                ctx.add_item(restored)
+                ctx.by_number[key].append(iid)
+                ctx.by_party[ctx.items[iid]['party_id']].append(iid)
+                result['added_count'] += 1
+    result['seconds'] = round(time.monotonic() - start, 3)
+    return result
