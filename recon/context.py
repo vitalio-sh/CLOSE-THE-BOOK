@@ -32,6 +32,7 @@ class Context:
         self.by_number = defaultdict(list)
         self.by_party = defaultdict(list)
         self.history = defaultdict(list)
+        self.previous_masters = {}
         for attr, filename, key in [('customers','customers','customer_id'),('suppliers','suppliers','supplier_id'),('accounts','bank_accounts','account_id'),('payment_terms','payment_terms','code')]:
             setattr(self,attr,{r[key]:r for r in self.read_master(filename) if r.get(key)})
         self.categories = {r['category'] for r in self.read_master('categories') if r.get('category')}
@@ -54,6 +55,11 @@ class Context:
         rows = list(read_csv(path))
         self.master_coverage[name] = {'source': source, 'path': str(path),
                                       'exists': path.is_file(), 'rows': len(rows)}
+        if source == 'final' and name in ('customers', 'suppliers'):
+            # masters_final shows current names and accounts only (DATA_DICTIONARY "Masters are a
+            # snapshot"; POLICIES 5.5/6: renames and bank changes). Earlier lines of the phase still
+            # carry the previous name or IBAN, so the base snapshot stays available as aliases.
+            self.previous_masters[name] = list(read_csv(self.masters_dir / (name + '.csv')))
         return rows
 
     def load_items(self):

@@ -50,6 +50,22 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(ctx.master_coverage['customers']['source'], 'final')
             self.assertEqual(ctx.master_coverage['categories']['source'], 'base')
 
+    def test_final_keeps_previous_master_names_and_ibans_as_aliases(self):
+        # POLICIES 5.5/6: renamed customers and new bank details; early FINAL lines carry the old ones.
+        from recon.matching import party_candidates
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture(root)
+            write(root/'masters/customers.csv', ['customer_id', 'name', 'iban'],
+                  [{'customer_id': 'C1', 'name': 'Iberia Logistica', 'iban': 'ES9100000000000000000001'}])
+            write(root/'final/masters_final/customers.csv', ['customer_id', 'name', 'iban'],
+                  [{'customer_id': 'C1', 'name': 'Nova Transportes Global', 'iban': 'ES9100000000000000000002'}])
+            ctx = Context(root, 'final')
+            self.assertEqual(ctx.customers['C1']['name'], 'Nova Transportes Global')
+            self.assertEqual(party_candidates({'text': 'TRANSFERENCIA DE IBERIA LOGISTICA'}, ctx), ['C1'])
+            self.assertEqual(party_candidates({'text': 'X', 'counterparty_account': 'ES9100000000000000000001'}, ctx), ['C1'])
+            self.assertEqual(party_candidates({'text': 'TRANSFERENCIA NOVA TRANSPORTES GLOBAL'}, ctx), ['C1'])
+
     def test_empty_override_fails_instead_of_silently_using_base(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

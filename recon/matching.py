@@ -34,6 +34,7 @@ def _index(ctx):
     if cached is not None:
         return cached
     prefixes, ibans, aliases, children = defaultdict(set), defaultdict(set), defaultdict(set), defaultdict(set)
+    previous_accounts = defaultdict(set)
     parties = dict(getattr(ctx,'customers',{})); parties.update(getattr(ctx,'suppliers',{}))
     for pid, p in parties.items():
         for key in ('name','trade_name'):
@@ -44,6 +45,19 @@ def _index(ctx):
             n = norm(p.get(key))
             if n: ibans[n].add(pid)
         if p.get('parent_customer_id'): children[p['parent_customer_id']].add(pid)
+    # FINAL: previous master names and accounts of renamed / re-banked parties stay valid aliases.
+    for name, key in (('customers', 'customer_id'), ('suppliers', 'supplier_id')):
+        for p in getattr(ctx, 'previous_masters', {}).get(name, ()):
+            pid = p.get(key)
+            if not pid: continue
+            for field in ('name', 'trade_name'):
+                n = norm(p.get(field))
+                if len(n) >= 6 and n not in aliases[pid]:
+                    aliases[pid].add(n); prefixes[n[:10]].add(pid)
+            for field in ('iban', 'account_number', 'sepa_mandate_id'):
+                n = norm(p.get(field))
+                if n:
+                    ibans[n].add(pid); previous_accounts[pid].add(n)
     # Historical printed names are necessary when current masters have been renamed.
     for item in ctx.items.values():
         pid = item.get('party_id')
@@ -52,6 +66,7 @@ def _index(ctx):
             n = norm(item.get(key))
             if len(n) >= 6 and n not in aliases[pid]:
                 aliases[pid].add(n); prefixes[n[:10]].add(pid)
+    ctx._previous_accounts = previous_accounts
     cached = (prefixes,ibans,aliases,children,parties)
     ctx._matching_index = cached
     return cached
@@ -71,6 +86,7 @@ def party_candidates(txn,ctx):
     for pid in candidates:
         p=parties.get(pid,{})
         account_hit=any(norm(p.get(k)) and norm(p.get(k)) in compact for k in ('iban','account_number','sepa_mandate_id'))
+        account_hit=account_hit or any(a in compact for a in getattr(ctx,'_previous_accounts',{}).get(pid,()))
         score=100 if account_hit else 0
         for alias in aliases[pid]:
             if alias==explicit:score=max(score,90)
