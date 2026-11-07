@@ -14,6 +14,7 @@ import time
 from .context import read_csv, norm
 
 FIELDS = ('text', 'ref1', 'ref2', 'remittance_info', 'end_to_end_id')
+RECENT_CLOSED_DAYS = 120
 INVOICE_HINT = re.compile(r'(?:FRA(?:S)?\.?|FACTURA(?:S)?|FACT|INVOICE(?:S)?|INV|RECHNUNG|RE-NR|RE|FAC|FATURA)\s*[:.#-]?\s*$', re.I)
 
 
@@ -74,6 +75,14 @@ indices are preserved. Call once before constructing cached matcher indices.
         result['skipped_reason'] = 'No dated transactions'
         return result
     seen_roots = set()
+    # Recently closed invoices (issued shortly before the phase, absent from the
+    # authoritative opening snapshot) by party: the catalogue for duplicate payments.
+    try:
+        recent_floor = (date.fromisoformat(first_date) - timedelta(days=RECENT_CLOSED_DAYS)).isoformat()
+    except ValueError:
+        recent_floor = first_date
+    recent_closed = defaultdict(list)
+    ctx.recent_closed = recent_closed
     for folder in getattr(ctx, 'history_dirs', ()):
         folder = Path(folder)
         resolved = folder.resolve()
@@ -86,6 +95,10 @@ indices are preserved. Call once before constructing cached matcher indices.
                 iid = record['item_id']
                 if iid in ctx.items:
                     continue
+                if filename != 'credit_notes.csv.gz' and recent_floor <= record.get('issue_date', '') < first_date:
+                    party = record.get('customer_id') or record.get('supplier_id') or ''
+                    if party:
+                        recent_closed[party].append(record)
                 number = record.get('document_number') or record.get('supplier_invoice_number', '')
                 key = norm(number)
                 entities = refs.get(key)
@@ -104,6 +117,7 @@ indices are preserved. Call once before constructing cached matcher indices.
                 ctx.by_number[key].append(iid)
                 ctx.by_party[ctx.items[iid]['party_id']].append(iid)
                 result['added_count'] += 1
+    result['recent_closed_parties'] = len(recent_closed)
     result['seconds'] = round(time.monotonic() - start, 3)
     return result
 

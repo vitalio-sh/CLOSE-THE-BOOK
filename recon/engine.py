@@ -40,6 +40,8 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         # Last resort: uniquely anchored printed fragments of a payer's documents (partial).
         from .matching import fragment_partial
         handlers.append(('fragments', lambda txn: fragment_partial(txn, ctx)))
+        from .duplicates import ClosedDuplicates
+        handlers.append(('closed_duplicate', ClosedDuplicates(ctx).reconcile))
     return handlers, document_stats
 
 
