@@ -69,3 +69,7 @@ This refreshes availability/checksums and downloads newly published packages. It
 The repository is private. Arrange jury access when delivering the project. Keep team tokens and registration credentials outside Git (for example in an ignored `.env` file).
 
 Source: https://hackathon.usetalky.com/datos
+
+## Reconciliation dashboard
+
+Open the real-data transaction explorer, pipeline explanation and validated candidate download locally. See [dashboard startup](docs/DASHBOARD.md) and [design decisions](docs/DASHBOARD_DESIGN.md).

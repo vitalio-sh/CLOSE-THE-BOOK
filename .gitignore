@@ -11,3 +11,5 @@ data/processed/
 outputs/
 *.log
 data/workspace/
+
+dashboard/data.json
