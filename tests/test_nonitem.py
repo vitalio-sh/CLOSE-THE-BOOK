@@ -190,5 +190,18 @@ class FallbackTests(unittest.TestCase):
         self.assertEqual(self.run_fallback(line), ('CUSTOMER_REFUND', ''))
 
 
+class EntityFirstPayerTests(unittest.TestCase):
+    def test_local_party_is_not_crowded_out_by_same_named_foreign_party(self):
+        # POLICIES 5.2: the receipt belongs to the account's entity; idea from marinamoncayola.
+        from recon.matching import party_candidates
+        ctx = context()
+        ctx.customers = {'CFR01': {'customer_id': 'CFR01', 'entity': 'FR01', 'name': 'Pool Supply Blue SARL'},
+                         'CUS01': {'customer_id': 'CUS01', 'entity': 'US01', 'name': 'Pool Supply Blue Corp.'}}
+        ctx.suppliers, ctx.previous_masters = {}, {}
+        line = txn('a', '100.00', 'ACH CREDIT POOL SUPPLY BLUE CCD PAYMENT ID:1', entity='US01',
+                   counterparty_name='Pool Supply Blue SARL')
+        self.assertEqual(party_candidates(line, ctx), ['CUS01'])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -99,6 +99,15 @@ def party_candidates(txn,ctx):
         if score:
             ranked.append((score,pid))
     if not ranked:return []
+    # Entity first (POLICIES 5.2): when a candidate belongs to the bank account's entity (or,
+    # for ES00, to the payment-factory entities ES01/ES02/PT01), rank only those, so a
+    # same-named party of another country cannot crowd the local one out.
+    # Idea credit: marinamoncayola (solution/marinamoncayola d4a3744).
+    owner=txn.get('entity')
+    if owner:
+        allowed={owner}|({'ES01','ES02','PT01'} if owner=='ES00' else set())
+        local=[(score,pid) for score,pid in ranked if parties.get(pid,{}).get('entity') in allowed]
+        if local: ranked=local
     ranked.sort(reverse=True)
     threshold=max(42,ranked[0][0]-8)
     selected=[pid for score,pid in ranked if score>=threshold][:12]
