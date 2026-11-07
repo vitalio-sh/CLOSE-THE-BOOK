@@ -28,7 +28,31 @@ Congelar el código **a las 17:00**. Lo que no esté probado en dev a esa hora n
 
 Dev es nuestro simulador de LIVE (tiene golden). **No se itera contra el leaderboard.**
 
-## Estado 14:50 (lo más reciente: empieza aquí)
+## Estado 15:50 (lo más reciente: empieza aquí)
+
+- **Congelación movida a las 17:45** (decisión del usuario). LIVE solo se genera si dev llega a 95 (no se alcanzará hoy).
+- `.venv/bin/python` repuntado a `~/.local/share/uv/python/cpython-3.12.16-macos-aarch64-none` (el homebrew 3.12 no existe en esta máquina).
+- Método que funciona: **micro-lotes** (50–150 líneas de un segmento, script de segundos, pasos a/b/c medidos) y una sola vuelta de marzo al integrar.
+- Marzo (fast loop): 70,37 → **89,01** (F1 pares 0,927, precisión 0,990, recall 0,873, línea 0,921, exc. F1 0,750). Sample 86,36.
+
+| Commit | Cambio | Marzo |
+|---|---|---|
+| 8f7a606 | remittance: parser estructurado de avisos (csv/xlsx/txt/pdf) + enlace línea↔aviso | 80,51 |
+| 85edb81 | solver de referencias truncadas en texto + FX (avisos con orig_amount, payment runs agregados mixtos) | 85,26 |
+| afb0ac6 | motivo RET → SHORT_WITHHOLDING | 87,08 |
+| 29cec25 | sin OVERPAYMENT de una partida si cobro > 1,5× | 87,76 |
+| 53c4153 | SHORT_WITHHOLDING sin aviso (MX/BR/MA, tasas POLICIES) | 88,09 |
+| b0ba2f0 | pase DUPLICATE_PAYMENT en ar_multi | 89,01 |
+
+- Lo que **no** se puede ganar con seguridad: `ar_ref_noise` sin reclamar (≈6 facturas de ≈40 abiertas, suma exacta,
+  no FIFO, no contiguas → subset-sum ambiguo); `ar_short_dispute` sin fichero de aviso; UNIDENTIFIED (quitar la
+  etiqueta cuesta más en líneas que lo que da). SHORT_BANK_CHARGES sin referencia probado y revertido (88,35).
+- En curso (hasta 16:45): micro-lote de referencias de pedido (`OC…`, `PED…`, `ORDER`) → `ar_invoices.customer_po`.
+- 16:45: dev completo (6 meses) sobre el último commit para confirmar. 18:00: `scripts/final.sh` (descarga, extrae en
+  `data/final`, ejecuta, valida; **no envía**). FINAL lo envía el usuario con `submit.py ... --i-know-final-is-one-shot`.
+- Análisis para revisión manual: `out/review/pair_errors_march.csv`, `out/review/ar_ref_noise_errors.csv`.
+
+## Estado 14:50
 
 - Último dev completo: **69,88** (log `out/C_deveval.log`, run `out/C_devrun.log`), con el commit `f7fec83` ("a").
   Por matcher (líneas): payment_runs 53.919, receipts 86.795, ar_multi 7.183, payments 8.629, nonitem 13.719,
