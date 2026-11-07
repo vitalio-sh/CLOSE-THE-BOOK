@@ -11,7 +11,7 @@ from collections import defaultdict
 from decimal import Decimal
 import re
 
-from .matching import norm, row, dec, text_of, _eligible, _index, classify
+from .matching import norm, row, dec, text_of, words, _eligible, _index, classify
 
 D = Decimal
 WINDOW = 2000            # cents; neighbourhood used to estimate coincidental exact sums
@@ -20,6 +20,8 @@ FULL_DENSITY = 0.03      # max expected coincidental hits for an exhaustive sear
 SMALL_K = 3              # larger pools: only sets of at most this many unreferenced items
 SMALL_DENSITY = 0.02
 MAX_SECOND_TIER = 3
+PREFER_QUOTED = True
+CHARGES_GUARD = False
 AMOUNT_ONLY_K = 99         # max set size without any reference anchor
 
 
@@ -151,16 +153,18 @@ def anchors_of(group, tokens):
     a single typo or transposition of its aligned tail (POLICIES 5.5).
     """
     numbers = [(i, norm(i.get('document_number'))) for i in group]
-    exact, fuzzy = {}, {}
+    exact, fuzzy, mentioned = {}, {}, set()
     for t in tokens:
         hits = [(i, _level(n, t)) for i, n in numbers if len(n) >= 5]
         sub = [i for i, level in hits if level == 2]
+        mentioned.update(i['item_id'] for i, level in hits if level)
         if len(sub) == 1:
             exact[sub[0]['item_id']] = sub[0]
         elif not sub:
             one = [i for i, level in hits if level == 1]
             if len(one) == 1:
                 fuzzy[one[0]['item_id']] = one[0]
+    anchors_of.mentioned = mentioned
     return list(exact.values()), [i for k, i in fuzzy.items() if k not in exact]
 
 
@@ -288,9 +292,10 @@ def _remainder(rest, gap):
     return found[0]
 
 
-def _solve_party(group, target, tokens):
+def _solve_party(group, target, tokens, amount_only=True):
     """(items, rule) for the unique evidence-consistent exact set, 'ambiguous', or None."""
     exact, fuzzy = anchors_of(group, tokens)
+    mentioned = anchors_of.mentioned
     attempts = [(exact + fuzzy, 'anchored_fuzzy')] if fuzzy else []
     attempts.append((exact, 'anchored' if exact else 'amount_only'))
     for anchors, rule in attempts:
@@ -301,16 +306,26 @@ def _solve_party(group, target, tokens):
             if anchors:
                 return anchors, rule
             continue
+        if not anchors and not amount_only:
+            continue
         chosen = {i['item_id'] for i in anchors}
         rest = [i for i in group if i['item_id'] not in chosen and 0 < cents(i['open_amount']) <= gap]
-        found = _remainder(rest, gap)
-        if found == 'ambiguous':
-            return 'ambiguous'
-        if found is not None:
-            if not anchors and len(found) > AMOUNT_ONLY_K:
+        # A reference list that quotes every paid invoice (truncated or garbled) restricts
+        # the remainder to the quoted invoices; otherwise the whole open book is searched.
+        quoted = [i for i in rest if i['item_id'] in mentioned]
+        for pool, suffix in (((quoted, '+quoted'),) if quoted and len(quoted) < len(rest) else ()) + ((rest, ''),):
+            found = _remainder(pool, gap)
+            if found == 'ambiguous':
                 return 'ambiguous'
-            return anchors + [rest[k] for k in found], rule
+            if found is not None:
+                if not anchors and len(found) > AMOUNT_ONLY_K:
+                    return 'ambiguous'
+                return anchors + [pool[k] for k in found], rule + suffix
     return None
+
+
+_CHARGED = re.compile(r'\b(?:SWIFT|TRANSFER EN DIV|TRANSFERENCIA INTERNACIONAL|INTERNATIONAL TRANSFER|WIRE TRANSFER'
+                      r'|GASTOS (?:SHA|BEN|OUR)|CHGS)\b')
 
 
 def reconcile(txn, ctx):
@@ -321,11 +336,21 @@ def reconcile(txn, ctx):
         return None
     target = cents(abs(dec(txn['amount'])))
     tokens = reference_tokens(txn)
+    # POLICIES 3 SHORT_BANK_CHARGES: a cross-border transfer can arrive short of the
+    # invoices, so an exact amount-only set is not evidence there.
+    bank_text = words(' | '.join(str(txn.get(k) or '') for k in ('text', 'ref1', 'ref2', 'remittance_info')))
+    charged = CHARGES_GUARD and (bool(_CHARGED.search(bank_text)) or 'XBCT' in str(txn.get('bank_code') or '').upper())
     for parties in tiers:
         pools = _pool(txn, ctx, parties)
+        # The payer is the customer whose invoices the text quotes: when one customer has
+        # two or more uniquely quoted invoices, customers quoted less cannot be the payer.
+        quoted = {pid: len(anchors_of(group, tokens)[0]) for pid, group in pools.items()}
+        best = max(quoted.values(), default=0)
         answers = []
         for pid in sorted(pools):
-            result = _solve_party(pools[pid], target, tokens)
+            if PREFER_QUOTED and best >= 2 and quoted[pid] < best:
+                continue
+            result = _solve_party(pools[pid], target, tokens, amount_only=not charged)
             if result == 'ambiguous':
                 return None
             if result:
