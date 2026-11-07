@@ -2,7 +2,7 @@
 from bisect import bisect_right
 from collections import defaultdict
 from datetime import date, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN
 import re
 import unicodedata
 from .subsets import unique_subset, subset_solutions, positive_subsets
@@ -181,7 +181,18 @@ def _exception(item, cash, txn, ctx, fx=False):
     if opened <= 0:return 'DUPLICATE_PAYMENT',cash
     if abs(cash-opened)<=CENT:return ('FX_DIFFERENCE' if fx and item.get('kind')!='credit' else ''),opened
     if cash > opened:
-        return ('FX_DIFFERENCE' if fx else 'OVERPAYMENT'),opened
+        if fx:
+            return 'FX_DIFFERENCE',opened
+        # POLICIES §3 OVERPAYMENT: the customer paid more than the open amount. In TRAIN
+        # the excess is always a round amount or exactly 1 %/10 % of the invoice; any
+        # other excess is another document of the same payment (an unquoted invoice,
+        # a discounted or partial item), so the referenced invoice is cleared without
+        # claiming an overpayment.
+        excess=cash-opened
+        if excess in OVERPAY_ROUND or any(abs(excess-(opened*r).quantize(CENT,rounding=ROUND_HALF_UP))<=CENT
+                                          for r in (D('0.01'),D('0.10'))):
+            return 'OVERPAYMENT',opened
+        return '',opened
     # Discounts must use booking date and the total, not remaining balance.
     terms=getattr(ctx,'payment_terms',{})
     term=terms.get(item.get('payment_terms'),{}) if isinstance(terms,dict) else {}
@@ -202,16 +213,22 @@ def _exception(item, cash, txn, ctx, fx=False):
     text=words(text_of(txn))
     if any(x in text for x in ('DISPUT','RECLAM','DAMAGED','PENALTY','DEDUCCION')):
         return 'SHORT_DISPUTE',cash
-    # Intermediary charges on a documented non-SEPA cross-border receipt.
-    # A small difference alone never establishes this exception.
+    # Intermediary charges on a documented cross-border receipt (POLICIES §3).
+    # A small difference alone never establishes this exception: the bank line
+    # must carry a cross-border marker and the payer must be foreign.
     sepa={'AD','AL','AT','BE','BG','CH','CY','CZ','DE','DK','EE','ES','FI','FR','GB','GI','GR','HR','HU','IE','IS','IT','LI','LT','LU','LV','MC','MD','ME','MK','MT','NL','NO','PL','PT','RO','RS','SE','SI','SK','SM','VA'}
     country=customer.get('country','').upper()
     bank_text=words(' | '.join(str(txn.get(k) or '') for k in ('text','ref1','ref2','remittance_info')))
     transfer=bool(re.search(r'\b(?:SWIFT|TRANSFER EN DIV|TRANSFERENCIA INTERNACIONAL|INTERNATIONAL TRANSFER|WIRE TRANSFER|GASTOS (?:SHA|BEN)|CHGS)\b',bank_text))
     # ISO 20022 bank transaction code PMNT/RCDT/XBCT = cross-border credit transfer.
     transfer=transfer or 'XBCT' in str(txn.get('bank_code') or '').upper()
+    # TRAIN history: foreign SEPA-member payers (CH, GB, PL, MT...) that pay by an
+    # international transfer also lose the intermediary fee, so a payer whose country
+    # differs from the receiving entity's country qualifies like a non-SEPA payer.
+    entity_country=str(txn.get('entity') or item.get('entity') or '')[:2].upper()
+    foreign=bool(country) and (country not in sepa or country!=entity_country)
     if (not fx and item.get('side')=='AR' and item.get('kind')!='credit'
-            and country and country not in sepa and transfer):
+            and foreign and transfer):
         short=opened-cash
         currency=item.get('currency')
         rate=D(1) if currency=='EUR' else None
@@ -219,9 +236,27 @@ def _exception(item, cash, txn, ctx, fx=False):
             rates=getattr(ctx,'fx_rates',{})
             dates=[day for day,values in rates.items() if day<=txn.get('booking_date','') and currency in values]
             if dates:rate=dec(rates[max(dates)][currency])
-        if rate and rate>0 and 0<short<=opened*D('0.02') and short/rate<=D(60):
-            return 'SHORT_BANK_CHARGES',opened
+        if rate and rate>0 and 0<short and short/rate<=D(60):
+            # A fixed fee can exceed 2 % of a small invoice (TRAIN: up to ~5 %), but a
+            # shortfall that is an exact percentage share of the total is a late discount,
+            # a retention or a partial payment, never a bank fee. The original non-SEPA
+            # rule (<= 2 %) is kept unchanged; the share guard applies to the extension.
+            if (country not in sepa and short<=opened*D('0.02')) or \
+                    (short<=total*D('0.05') and not _percent_share(short,total)):
+                return 'SHORT_BANK_CHARGES',opened
     return 'PARTIAL',cash
+
+
+_SHARE_PCTS = tuple(D(x) for x in ('1', '1.25', '1.5', '2', '2.5', '3', '4', '5', '10', '15', '20'))
+
+
+def _percent_share(short, total):
+    """True when ``short`` is an exact common percentage of ``total`` (either rounding)."""
+    for pct in _SHARE_PCTS:
+        x = total * pct / 100
+        if short in (x.quantize(CENT, rounding=ROUND_HALF_UP), x.quantize(CENT, rounding=ROUND_DOWN)):
+            return True
+    return False
 
 def classify(txn,ctx):
     """Only explicit category evidence; return None for unknown lines."""

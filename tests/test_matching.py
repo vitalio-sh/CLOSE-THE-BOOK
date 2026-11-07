@@ -146,6 +146,29 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(reconcile(t,c)[0]['exception'],'PARTIAL')
         c=context([invoice(amount='10000')]);c.customers['C1']['country']='US'
         self.assertEqual(reconcile(txn('9900','SWIFT TRANSFER FV25-00001'),c)[0]['exception'],'PARTIAL')
+    def test_bank_charge_foreign_sepa_member_and_fixed_fee(self):
+        # TRAIN: a CH payer of an Italian entity loses a fixed intermediary fee (/CHGS/).
+        a=invoice(amount='1029.67');a['entity']='IT01';c=context([a]);c.customers['C1']['country']='CH'
+        t=txn('1009.67','ALICE AG PAGO FV25-00001 /CHGS/EUR20,00');t['entity']='IT01'
+        r=reconcile(t,c)[0];self.assertEqual((r['amount'],r['exception']),('1029.67','SHORT_BANK_CHARGES'))
+        # Same country as the entity: never a bank fee.
+        c.customers['C1']['country']='IT'
+        self.assertEqual(reconcile(t,c)[0]['exception'],'PARTIAL')
+        # An exact 2 % share is a late discount (PARTIAL), not a fee, for an extended payer.
+        b=invoice(amount='463.12');b['entity']='IT01';c=context([b]);c.customers['C1']['country']='CH'
+        t=txn('453.86','ALICE AG PAGO FV25-00001 /CHGS/');t['entity']='IT01'
+        self.assertEqual(reconcile(t,c)[0]['exception'],'PARTIAL')
+        # A 45 EUR-equivalent fee is 2.4 % of a small CAD invoice: still a bank fee.
+        d=invoice(amount='2762.76');d.update(currency='CAD',entity='US01');c=context([d]);c.customers['C1']['country']='CA'
+        c.fx_rates={'2025-01-14':{'CAD':D('1.48')}}
+        t=txn('2696.16','WIRE IN /ORG/ALICE LTD /OBI/INVOICE FV25-00001',bank_code='PMNT/RCDT/XBCT');t.update(currency='CAD',entity='US01')
+        self.assertEqual(reconcile(t,c)[0]['exception'],'SHORT_BANK_CHARGES')
+    def test_overpayment_requires_round_or_percent_excess(self):
+        c=context([invoice(amount='607.42')])
+        r=reconcile(txn('691.81','PAGO FV25-00001'),c)[0]
+        self.assertEqual((r['item_id'],r['amount'],r['exception']),('I1','607.42',''))
+        r=reconcile(txn('612.42','PAGO FV25-00001'),c)[0]
+        self.assertEqual((r['amount'],r['exception']),('607.42','OVERPAYMENT'))
     def test_bank_charge_last_available_fx_rate(self):
         a=invoice(amount='10000');a['currency']='USD';c=context([a]);c.customers['C1']['country']='US'
         c.fx_rates={'2025-01-14':{'USD':D(2)},'2025-01-16':{'USD':D(1)}}
