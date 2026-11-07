@@ -32,10 +32,16 @@ def execute(ctx, txns, handlers, writer, audit, progress=None):
     """
     counts, rejected = Counter(), Counter()
     ordered = sorted(txns, key=lambda txn: (txn['booking_date'], txn['bank_txn_id']))
+    from .reversal_pairs import bank_error_pairs
+    reversal_ids = bank_error_pairs(ordered)
     for n, txn in enumerate(ordered, 1):
         rows = None
         source = 'unidentified'
-        for name, handler in handlers:
+        active_handlers = handlers
+        if txn['bank_txn_id'] in reversal_ids:
+            from .matching import row
+            active_handlers = [('bank_error_pair', lambda t: [row(t, category='BANK_REVERSAL')])]
+        for name, handler in active_handlers:
             rows = handler(txn)
             if rows and not ctx.proposal_valid(txn, rows):
                 rejected[name] += 1
