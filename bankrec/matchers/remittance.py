@@ -184,6 +184,10 @@ def match(ph, st) -> None:
     ra_rows, texts = _ra_index(ph)
     if not ra_rows:
         return
+    try:
+        _match_structured(ph, st, ra_rows)
+    except Exception as e:  # never let the structured pass kill the legacy one
+        print(f"  remittance structured pass failed: {e!r}")
     make = _entity_resolver(ph)
     # reference digits -> advices (header refs), entity from the index row
     by_ref = {}
@@ -280,4 +284,167 @@ def _allocs(st, info, p):
             allocs.append((item, paid, exc))
         else:
             return None
+    return allocs
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Structured pass (advice_big): big key-account advices with dozens/hundreds of documents, per-row deductions/reasons.
+# ----------------------------------------------------------------------------------------------------------------------
+_TOKS = re.compile(r"[A-Za-z0-9/\-]{6,}")
+
+
+def _parsed_advices(ph, ra_rows):
+    from . import advice_big as A
+    key = "_ra_struct"
+    if key in ph.extra:
+        return ph.extra[key]
+    os.makedirs(CACHE, exist_ok=True)
+    cache_path = os.path.join(CACHE, "ra_struct_v2.pkl")
+    cache = {}
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "rb") as fh:
+                cache = pickle.load(fh)
+        except Exception:
+            cache = {}
+    dirty = False
+    out = []
+    for r in ra_rows:
+        p = r["path"]
+        k = (p, os.path.getmtime(p))
+        if k not in cache:
+            try:
+                cache[k] = A.parse_file(p)
+            except Exception:
+                cache[k] = {"ref": "", "date": None, "total": None, "rows": []}
+            dirty = True
+        a = cache[k]
+        if a["rows"]:
+            out.append((r, a))
+    if dirty:
+        try:
+            with open(cache_path, "wb") as fh:
+                pickle.dump(cache, fh)
+        except Exception:
+            pass
+    ph.extra[key] = out
+    return out
+
+
+def _match_structured(ph, st, ra_rows):
+    from . import advice_big as A
+    advs = _parsed_advices(ph, ra_rows)
+    if not advs:
+        return
+    info = item_info(ph)
+    # exact printed number per entity (AR side), then the customer's order number, then the noisy index
+    docmap, pomap = {}, {}
+    for iid, r in info.items():
+        if r.get("item_type") not in ("ARI", "ARC"):
+            continue
+        docmap.setdefault((r["entity"], A.nrm(r.get("document_number"))), []).append(iid)
+        if r.get("po"):
+            pomap.setdefault((r["entity"], A.nrm(r["po"])), []).append(iid)
+    make = _entity_resolver(ph)
+    terms = {}
+    try:
+        for c, pct, dd in ph.masters["payment_terms"].select("code", "early_payment_discount_pct",
+                                                              "discount_days").iter_rows():
+            terms[c] = (float(pct) if pct not in (None, "") else 0.0, int(float(dd)) if dd not in (None, "") else 0)
+    except Exception:
+        pass
+
+    by_ent = {}
+    for r, a in advs:
+        a_sum = round(sum(x[4] for x in a["rows"]), 2)
+        d = a.get("date") or _date(r.get("received_date"))
+        by_ent.setdefault(r.get("entity") or "", []).append([r, a, a_sum, A.nrm(a.get("ref")), d, False])
+    by_sum = {}
+    for ent, lst in by_ent.items():
+        for e in lst:
+            by_sum.setdefault((ent, e[2]), []).append(e)
+
+    def near(e, bd):
+        return e[4] is not None and -12 <= (e[4] - bd).days <= 30
+
+    for row in bank_rows(ph):
+        t = row["bank_txn_id"]
+        amt = row["amount"] or 0
+        if amt <= 0 or st.claimed(t):
+            continue
+        ent = row.get("entity") or ""
+        lst = by_ent.get(ent)
+        if not lst:
+            continue
+        bd = _date(row.get("booking_date"))
+        if bd is None:
+            continue
+        raw = " ".join(str(row.get(c) or "") for c in ("text", "ref1", "ref2", "end_to_end_id", "remittance_info"))
+        text = A.nrm(raw)
+        sum_ok = lambda e: abs(e[2] - amt) <= 0.011  # noqa: E731
+        cands = [e for e in lst if not e[5] and len(e[3]) >= 6 and e[3] in text and sum_ok(e)]
+        if len(cands) > 1:
+            cands = [e for e in cands if near(e, bd)]
+        if not cands:
+            toks = {A.nrm(x) for x in _TOKS.findall(raw)}
+            toks = {k for k in toks if len(k) >= 6}
+            cands = [e for e in lst if not e[5] and len(e[3]) >= 6 and sum_ok(e) and near(e, bd)
+                     and any(e[3].startswith(k) for k in toks)]
+        if not cands:
+            cands = [e for e in by_sum.get((ent, round(amt, 2)), []) if not e[5] and near(e, bd)
+                     and len(e[1]["rows"]) >= 2]
+        if len(cands) != 1:
+            continue
+        e = cands[0]
+        allocs = _struct_allocs(st, info, e[1], ent, docmap, pomap, make(ent), terms, bd)
+        if allocs and st.assign(t, allocs):
+            e[5] = True
+
+
+def _struct_allocs(st, info, a, ent, docmap, pomap, resolve, terms, bd):
+    from . import advice_big as A
+    allocs, seen = [], set()
+    for doc, gross, ded, reason, paid in a["rows"]:
+        ids = docmap.get((ent, A.nrm(doc)), [])
+        if len(ids) != 1:
+            ids = pomap.get((ent, A.nrm(doc)), []) if not ids else ids
+        if len(ids) != 1:
+            iid = resolve(doc)
+            ids = [iid] if iid else []
+        if len(ids) != 1:
+            return None
+        iid = ids[0]
+        if iid in seen:
+            return None
+        seen.add(iid)
+        r = info.get(iid)
+        openamt = st.open.get(iid, 0.0)
+        if r is None or openamt <= 0.005:
+            return None
+        tol = max(TOL_ABS, TOL_REL * openamt)
+        if r["item_type"] == "ARC" or paid < 0:
+            if abs(abs(paid) - openamt) > tol:
+                return None
+            allocs.append((iid, openamt, ""))
+            continue
+        if abs(ded) < 0.005:
+            if abs(paid - openamt) <= tol:
+                allocs.append((iid, openamt, ""))
+            elif paid < openamt:
+                allocs.append((iid, paid, "PARTIAL"))
+            else:
+                return None
+            continue
+        if paid > openamt + tol:
+            return None
+        if reason == "DISCOUNT" or reason.startswith("DTO") or reason.startswith("PRONTO"):
+            ok = False
+            pt = terms.get(r.get("payment_terms") or "")
+            tot = r.get("total_amount") or openamt
+            idate = _date(r.get("issue_date"))
+            if pt and pt[0] and idate is not None:
+                ok = bd <= idate + timedelta(days=pt[1] + 3) and abs(round(tot - tot * pt[0] / 100, 2) - paid) <= 0.011
+            allocs.append((iid, openamt, "SHORT_DISCOUNT") if ok else (iid, paid, "PARTIAL"))
+        else:
+            allocs.append((iid, paid, "SHORT_DISPUTE"))
     return allocs

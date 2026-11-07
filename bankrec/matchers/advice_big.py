@@ -1,0 +1,218 @@
+"""Structured parsing of customer remittance advices (POLICIES §3 SHORT_DISPUTE / §5.4).
+
+Every layout (csv, xlsx, e-mail txt, pdf) is turned into
+    {'ref': str, 'date': date|None, 'total': float|None, 'rows': [(doc, gross, deduction, reason, paid)]}
+The bank line is linked to the advice through the payment reference (normalised alphanumerics) or, failing that, a
+unique advice of the same entity whose total equals the cash. Each document is mapped to an item by its printed
+number (exact, then the noisy RefIndex).
+"""
+from __future__ import annotations
+
+import datetime as dt
+import re
+
+_NUM = re.compile(r"^-?[\d.,]*\d$")
+_DATE = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$|^\d{4}-\d{2}-\d{2}$")
+_ALNUM = re.compile(r"[^A-Z0-9]")
+
+
+def nrm(s) -> str:
+    return _ALNUM.sub("", str(s or "").upper())
+
+
+def num(s):
+    s = str(s or "").strip().replace(" ", "")
+    if not s or not _NUM.match(s):
+        return None
+    if re.search(r",\d{1,2}$", s):  # 1.234,56
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        s = s.replace(",", "")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def pdate(s):
+    s = str(s or "").strip()[:10]
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y"):
+        try:
+            return dt.datetime.strptime(s, fmt).date()
+        except ValueError:
+            pass
+    return None
+
+
+def _row(doc, gross, ded, reason, paid):
+    g, d, p = num(gross), num(ded), num(paid)
+    if p is None and g is not None:
+        p = round(g + (d or 0.0), 2)
+    if g is None:
+        g = p
+    if p is None or not doc:
+        return None
+    return (str(doc).strip(), g, d or 0.0, (reason or "").strip().upper(), p)
+
+
+def parse_csv(text):
+    raw = [ln for ln in text.splitlines() if ln.strip()]
+    sep = ";" if raw and raw[0].count(";") > raw[0].count(",") else ("\t" if raw and "\t" in raw[0] else ",")
+    lines = [ln.split(sep) for ln in raw]
+    out = {"ref": "", "date": None, "total": None, "rows": []}
+    if not lines:
+        return out
+    h = lines[0]
+    kv = {h[i].strip().lower(): h[i + 1].strip() for i in range(0, len(h) - 1, 2)}
+    out["ref"] = kv.get("payment_ref", "")
+    out["date"] = pdate(kv.get("payment_date"))
+    cols = None
+    for ln in lines[1:]:
+        low = [c.strip().lower() for c in ln]
+        if "document" in low and "paid" in low:
+            cols = {c: i for i, c in enumerate(low)}
+            continue
+        if cols is None:
+            continue
+        get = lambda k: ln[cols[k]] if k in cols and cols[k] < len(ln) else ""  # noqa: E731
+        doc = get("document").strip()
+        if doc.upper() == "TOTAL":
+            out["total"] = num(get("paid"))
+            continue
+        r = _row(doc, get("gross"), get("discount_or_deduction") or get("deduction"), get("reason"), get("paid"))
+        if r:
+            out["rows"].append(r)
+    return out
+
+
+def parse_xlsx_rows(rows):
+    out = {"ref": "", "date": None, "total": None, "rows": []}
+    cols = None
+    for ln in rows:
+        ln = ["" if v is None else str(v).strip() for v in ln]
+        low = [c.lower() for c in ln]
+        if cols is None:
+            if "document" in low and "paid" in low:
+                cols = {c: i for i, c in enumerate(low)}
+                continue
+            for i, c in enumerate(low):
+                if ("advice" in c or "ref" in c or "aviso" in c) and i + 1 < len(ln) and ln[i + 1] and not out["ref"]:
+                    out["ref"] = ln[i + 1]
+                    if i + 2 < len(ln):
+                        out["date"] = pdate(ln[i + 2])
+            continue
+        get = lambda k: ln[cols[k]] if k in cols and cols[k] < len(ln) else ""  # noqa: E731
+        doc = get("document")
+        if not doc:
+            continue
+        if doc.upper() == "TOTAL":
+            out["total"] = num(get("paid"))
+            continue
+        r = _row(doc, get("gross"), get("deduction") or get("discount_or_deduction"), get("reason"), get("paid"))
+        if r:
+            out["rows"].append(r)
+    return out
+
+
+_TXT_ROW = re.compile(r"^\s+(\S+)\s+(\d{1,2}/\d{1,2}/\d{2,4})\s+(-?[\d.,]+)(?:\s+(-?[\d.,]+)\s+(.*?))?\s*$")
+_TXT_AMT = re.compile(r"(?:payment of|importe de|montant de|pagamento de|Betrag von|bedrag van)\s+(-?[\d.,]+)", re.I)
+_TXT_DATE = re.compile(r"(?:\bon|fecha|du|em|am|op)\s+(\d{1,2}/\d{1,2}/\d{4})")
+
+
+def parse_txt(text):
+    out = {"ref": "", "date": None, "total": None, "rows": []}
+    for ln in text.splitlines():
+        if ln.lower().startswith("subject:"):
+            toks = ln.split()
+            out["ref"] = toks[-1] if toks else ""
+            continue
+        m = _TXT_ROW.match(ln)
+        if m:
+            doc, _d, gross, ded, reason = m.groups()
+            r = _row(doc, gross, ded, reason, None)
+            if r:
+                out["rows"].append(r)
+            continue
+        if out["total"] is None:
+            m = _TXT_AMT.search(ln)
+            if m:
+                out["total"] = num(m.group(1))
+                m2 = _TXT_DATE.search(ln)
+                if m2:
+                    out["date"] = pdate(m2.group(1))
+    return out
+
+
+_DED = re.compile(r"^(-?[\d.,]+)\s+(\S.*)$")
+
+
+def parse_pdf_text(text):
+    out = {"ref": "", "date": None, "total": None, "rows": []}
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    i = 0
+    hdr_end = None
+    while i < len(lines):
+        ln = lines[i].lower()
+        if (ln.startswith("payment ref") or ln in ("ref.", "ref", "réf.", "référence", "referência", "referenz",
+                                                    "zahlungsreferenz", "referentie", "riferimento")) \
+                and i + 1 < len(lines) and not out["ref"]:
+            out["ref"] = lines[i + 1]
+        elif ln in ("date", "fecha", "data", "datum") and out["date"] is None and i + 1 < len(lines) and pdate(lines[i + 1]):
+            out["date"] = pdate(lines[i + 1])
+        elif ln in ("amount", "importe", "montant", "valor", "betrag", "bedrag", "importo") and i + 1 < len(lines):
+            out["total"] = num(lines[i + 1].split()[0])
+        elif ln in ("paid", "pagado", "payé", "pago", "bezahlt", "betaald", "pagato"):
+            hdr_end = i + 1
+            break
+        i += 1
+    if hdr_end is None:
+        return out
+    i = hdr_end
+    while i < len(lines):
+        doc = lines[i]
+        if (len(doc) > 25 or " " in doc) or i + 2 >= len(lines) or not _DATE.match(lines[i + 1]):
+            i += 1
+            continue
+        gross = num(lines[i + 2])
+        if gross is None:
+            i += 1
+            continue
+        j = i + 3
+        ded, reason = None, ""
+        if j < len(lines):
+            m = _DED.match(lines[j])
+            if m and num(m.group(1)) is not None:
+                ded, reason = m.group(1), m.group(2)
+                j += 1
+        paid = lines[j] if j < len(lines) and num(lines[j]) is not None else None
+        if paid is None:
+            i += 1
+            continue
+        r = _row(doc, lines[i + 2], ded, reason, paid)
+        if r:
+            out["rows"].append(r)
+        i = j + 1
+    return out
+
+
+def parse_file(path: str) -> dict:
+    ext = path.rsplit(".", 1)[-1].lower()
+    if ext == "xlsx":
+        import openpyxl
+        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        rows = []
+        for ws in wb.worksheets:
+            rows.extend(ws.iter_rows(values_only=True))
+        wb.close()
+        rows = [[(f"{v:.2f}" if isinstance(v, float) else (v.strftime("%Y-%m-%d") if hasattr(v, "strftime") else v))
+                 for v in r] for r in rows]
+        return parse_xlsx_rows(rows)
+    if ext == "pdf":
+        import pypdf
+        r = pypdf.PdfReader(path)
+        return parse_pdf_text("\n".join((p.extract_text() or "") for p in r.pages))
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        text = fh.read()
+    if ext == "csv":
+        return parse_csv(text)
+    return parse_txt(text)
