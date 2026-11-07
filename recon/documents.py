@@ -12,7 +12,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 import csv
 import hashlib
@@ -448,6 +448,27 @@ class DocumentMatcher:
             candidates = [x for x in candidates if x.get('issue_date') == line.document_date]
         return candidates
 
+    def _br_ret_withholding(self, line, item, balance):
+        """Disambiguate Brazil's RET advice code with policy and master evidence.
+
+        RET alone also describes non-tax retention. Require an AR invoice owned
+        by a Brazilian customer and a full, unpaid invoice whose net cash equals
+        a policy tax rate. Never clear an unexplained or already-part-paid gap.
+        """
+        if (norm(line.reason) != 'RET' or item.get('entity') != 'BR01'
+                or item.get('side') != 'AR' or item.get('kind') != 'invoice'
+                or not item.get('item_id', '').startswith('ARI-')):
+            return False
+        customer = getattr(self.ctx, 'customers', {}).get(item.get('party_id'), {})
+        if customer.get('country') != 'BR':
+            return False
+        total = money(item.get('total_amount', '0'))
+        if total <= 0 or balance != total or line.gross != total or line.paid <= 0:
+            return False
+        return any(abs(line.paid - (total * (1 - rate)).quantize(
+            CENT, rounding=ROUND_HALF_UP)) <= CENT
+            for rate in (Decimal('0.0125'), Decimal('0.015'), Decimal('0.10')))
+
     def _rows(self, txn, advice, strong_ref):
         if advice.entity and txn.get('entity') != advice.entity:
             return None
@@ -513,6 +534,8 @@ class DocumentMatcher:
                     exc = 'SHORT_DISCOUNT' if accepted else 'PARTIAL'
                     if accepted:
                         amount = balance
+                elif self._br_ret_withholding(line, item, balance):
+                    exc, amount = 'SHORT_WITHHOLDING', balance
                 elif any(x in reason for x in ('WITHHOLD','RETENCIONFISCAL','RETENTIONTAX')):
                     exc, amount = 'SHORT_WITHHOLDING', balance
                 else:
