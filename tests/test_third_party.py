@@ -66,6 +66,10 @@ class HomonymMonthTests(unittest.TestCase):
         rows = reconcile_homonym_month(self.receipt('SERVICE SEPTEMBER 2024'), self.ctx())
         self.assertEqual([r['item_id'] for r in rows], ['ARI-9'])
 
+    def test_year_only_in_remittance_after_a_cut_text(self):
+        txn = dict(self.receipt('SERVICE JULY 2024'), text='DIRECT CREDIT AVA MILLER SERVICE JULY ')
+        self.assertEqual([r['item_id'] for r in reconcile_homonym_month(txn, self.ctx())], ['ARI-7'])
+
     def test_no_month_abstains(self):
         self.assertIsNone(reconcile_homonym_month(self.receipt('PAYMENT'), self.ctx()))
 

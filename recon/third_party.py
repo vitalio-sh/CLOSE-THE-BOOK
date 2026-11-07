@@ -67,16 +67,23 @@ def reconcile_homonym_month(txn, ctx):
     following month) and exactly one open invoice of those same-named customers has exactly
     the amount for that month, that invoice is paid.  Last resort only.
     """
-    from .matching import (_index, _party_entity_ok, _stated_service_month, _invoice_service_month,
+    from .matching import (_index, _party_entity_ok, _SERVICE_RE, _service_month_word, _invoice_service_month,
                            party_candidates, text_of, words)
     amount = Decimal(str(txn.get('amount') or 0))
     if amount <= 0:
         return None
     raw = text_of(txn)
-    stated = _stated_service_month(raw, txn.get('booking_date'))
-    if not stated or not stated[1]:
+    # Every month mention with an explicit year ("SERVICE SEPTEMBER 2024"); the bank text
+    # often repeats the remittance cut before the year ("SERVICE SEPTEMBER |").
+    dated = set()
+    for match in _SERVICE_RE.finditer(words(raw)):
+        month = _service_month_word(match[1])
+        if month and match[2]:
+            year = int(match[2]) if len(match[2]) == 4 else 2000 + int(match[2])
+            dated.add(f'{year:04d}-{month:02d}')
+    if len(dated) != 1:
         return None
-    wanted = stated[0]
+    wanted = dated.pop()
     _, _, _, _, parties = _index(ctx)
     shorts = getattr(ctx, '_matching_shorts', None) or {}
     owner, day = txn.get('entity'), txn['booking_date']
@@ -87,6 +94,17 @@ def reconcile_homonym_month(txn, ctx):
             key = ''.join(tokens[i:i + size])
             if 6 <= len(key) <= 9 and key in shorts:
                 pids |= {pid for pid in shorts[key] if _party_entity_ok(parties.get(pid, {}), owner)}
+    # Every customer whose master name is exactly the stated payer name (more homonyms than
+    # party resolution keeps).
+    names = getattr(ctx, '_exact_customer_names', None)
+    if names is None:
+        names = {}
+        for pid, party in (getattr(ctx, 'customers', {}) or {}).items():
+            names.setdefault(norm(party.get('name')), set()).add(pid)
+        ctx._exact_customer_names = names
+    explicit = norm(txn.get('counterparty_name'))
+    if len(explicit) >= 6:
+        pids |= {pid for pid in names.get(explicit, ()) if _party_entity_ok(parties.get(pid, {}), owner)}
     candidates = []
     for pid in pids:
         for iid in ctx.by_party.get(pid, ()):
