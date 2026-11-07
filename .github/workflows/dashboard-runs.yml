@@ -1,0 +1,68 @@
+name: Publish dashboard run summaries
+
+on:
+  push:
+    branches: [dashboard/runs]
+    paths:
+      - 'runs/**/*.json'
+      - '.github/workflows/dashboard-runs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dashboard-run-summaries
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/dashboard/runs'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dashboard/runs
+          persist-credentials: false
+      - name: Publish immutable summaries to the team dashboard
+        env:
+          DASHBOARD_PUBLISH_TOKEN: ${{ secrets.DASHBOARD_PUBLISH_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import urllib.error
+          import urllib.request
+
+          token = os.environ.get('DASHBOARD_PUBLISH_TOKEN')
+          if not token:
+              raise SystemExit('Repository secret DASHBOARD_PUBLISH_TOKEN has not been configured')
+          endpoint = 'https://valtermia-team10-reconciliation.peakedalbatross1.chatgpt.site/api/runs'
+          # Replay all manifests: endpoint writes are idempotent. This also recovers
+          # failed/queued jobs without depending on a possibly shallow Git diff.
+          published = 0
+          for path in sorted(Path('runs').glob('*/*.json')):
+              if path.is_symlink() or path.stat().st_size > 65536:
+                  raise SystemExit('Invalid summary file: ' + str(path))
+              body = path.read_bytes()
+              run = json.loads(body)
+              if run.get('schema_version') != 1 or run.get('validation', {}).get('ok') is not True:
+                  raise SystemExit('Unvalidated summary: ' + str(path))
+              request = urllib.request.Request(endpoint, data=body, headers={
+                  'Authorization': 'Bearer ' + token,
+                  'Content-Type': 'application/json',
+                  'User-Agent': 'ValtermiaDashboardPublisher/1.0',
+              })
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      result = json.load(response)
+                      if response.status not in (200, 201):
+                          raise SystemExit('Unexpected dashboard response')
+              except urllib.error.HTTPError as error:
+                  raise SystemExit('Dashboard rejected ' + str(path) + ': HTTP ' + str(error.code)) from None
+              print('Published', run['run_id'])
+              published += 1
+          print('Dashboard summaries checked:', published)
+          PY
