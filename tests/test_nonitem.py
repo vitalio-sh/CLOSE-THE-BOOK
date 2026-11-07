@@ -48,6 +48,11 @@ class ReversalTests(unittest.TestCase):
         reversal = txn('C', '50.00', 'ANULACION OPERACION INDEBIDA N 2024100301 SEG. SOCIAL COTIZ.', date='2024-10-04')
         self.assertEqual(reversal_originals([early, quoted, reversal]), {'B': 'C'})
 
+    def test_no_pair_for_unquoted_undated_opposite_line(self):
+        line = txn('A', '-50.00', 'RECIBO', date='2024-10-01')
+        reversal = txn('C', '50.00', 'ANULACION OPERACION INDEBIDA N 20241003 SEG. SOCIAL COTIZ.', date='2024-10-04')
+        self.assertEqual(reversal_originals([line, reversal]), {})
+
     def test_no_pair_without_opposite_amount(self):
         line = txn('A', '-50.00', 'RECIBO')
         reversal = txn('C', '49.00', 'ANULACION OPERACION INDEBIDA N 20241002 RECIBO')

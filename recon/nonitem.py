@@ -58,9 +58,9 @@ def reversal_originals(txns, max_days=31):
     """Map original bank_txn_id -> reversing bank_txn_id.
 
     Candidates: same account, exactly the opposite amount, booked on or before the
-    reversal (within ``max_days``).  Prefer the one whose text is quoted in the reversal,
-    then the one whose date is encoded after "N ", then the latest.  Each original is
-    used at most once.
+    reversal (within ``max_days``), and either quoted in the reversal text or booked on the
+    date encoded after "N ".  Prefer quoted, then dated, then the latest.  An unquoted,
+    undated opposite line is never paired.  Each original is used at most once.
     """
     by_key = defaultdict(list)
     reversals = []
@@ -86,7 +86,11 @@ def reversal_originals(txns, max_days=31):
             dated = bool(coded) and t['booking_date'].replace('-', '').startswith(coded.group(1)[:8])
             return quoted, dated, t['booking_date'], t['bank_txn_id']
 
-        best = max(candidates, key=rank)
+        ranked = [(rank(t), t) for t in candidates]
+        ranked = [(key, t) for key, t in ranked if key[0] or key[1]]
+        if not ranked:
+            continue
+        best = max(ranked, key=lambda kt: kt[0])[1]
         used.add(best['bank_txn_id'])
         pairs[best['bank_txn_id']] = rev['bank_txn_id']
     return pairs
