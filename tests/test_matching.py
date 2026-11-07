@@ -170,12 +170,26 @@ class MatchingTests(unittest.TestCase):
         r=reconcile(txn('612.42','PAGO FV25-00001'),c)[0]
         self.assertEqual((r['amount'],r['exception']),('607.42','OVERPAYMENT'))
     def test_bank_charge_last_available_fx_rate(self):
-        a=invoice(amount='10000');a['currency']='USD';c=context([a]);c.customers['C1']['country']='US'
-        c.fx_rates={'2025-01-14':{'USD':D(2)},'2025-01-16':{'USD':D(1)}}
-        t=txn('9900','SWIFT TRANSFER FV25-00001');t['currency']='USD'
+        # Bounds rule for a currency without a fee history (no fixed schedule).
+        a=invoice(amount='10000');a['currency']='GBP';c=context([a]);c.customers['C1']['country']='US'
+        c.fx_rates={'2025-01-14':{'GBP':D(2)},'2025-01-16':{'GBP':D(1)}}
+        t=txn('9900','SWIFT TRANSFER FV25-00001');t['currency']='GBP'
         self.assertEqual(reconcile(t,c)[0]['exception'],'SHORT_BANK_CHARGES')
-        c.fx_rates={'2025-01-16':{'USD':D(2)}}
+        c.fx_rates={'2025-01-16':{'GBP':D(2)}}
         self.assertEqual(reconcile(t,c)[0]['exception'],'PARTIAL')
+    def test_bank_charge_fixed_fee_schedule(self):
+        # TRAIN: fees are 10/15/20/25/35/45 EUR, converted at a fixed rate and truncated.
+        a=invoice(amount='10000');a['currency']='USD';c=context([a]);c.customers['C1']['country']='US'
+        c.fx_rates={'2025-01-14':{'USD':D('1.1')}}
+        t=txn('9970.38','SWIFT TRANSFER FV25-00001');t['currency']='USD'
+        r=reconcile(t,c)[0];self.assertEqual((r['amount'],r['exception']),('10000.00','SHORT_BANK_CHARGES'))
+        t=txn('9970.00','SWIFT TRANSFER FV25-00001');t['currency']='USD'
+        self.assertEqual(reconcile(t,c)[0]['exception'],'PARTIAL')
+        # A small off-schedule shortfall on a cross-border line is not a bank fee.
+        b=invoice(amount='156.07');b.update(currency='CAD',entity='US01');c=context([b]);c.customers['C1']['country']='CA'
+        c.fx_rates={'2025-01-14':{'CAD':D('1.48')}}
+        t=txn('152.95','WIRE IN /ORG/ALICE LTD /OBI/INVOICE FV25-00001',bank_code='PMNT/RCDT/XBCT');t.update(currency='CAD',entity='US01')
+        self.assertNotEqual(reconcile(t,c)[0]['exception'],'SHORT_BANK_CHARGES')
     def test_no_card_settlement_fee(self):
         self.assertIsNone(classify(txn('100','LIQUIDACION REMESA DE COMERCIOS'),context([])))
     def test_four_invoice_unique_subset(self):

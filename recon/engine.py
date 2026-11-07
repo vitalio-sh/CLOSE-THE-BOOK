@@ -35,6 +35,9 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         # Receipts net of credit notes (POLICIES 2, 5.9) that no ordinary rule explained.
         from .credit_groups import reconcile as credit_reconcile
         handlers.append(('credit_groups', lambda txn: credit_reconcile(txn, ctx)))
+        # Unreferenced cross-border receipts short by a fixed intermediary fee (POLICIES §3).
+        from .residual_fees import ResidualFees
+        handlers.append(('residual_fees', ResidualFees(ctx).reconcile))
         from . import refnoise
         handlers.append(('refnoise', lambda txn: refnoise.reconcile(txn, ctx)))
         # Last resort: uniquely anchored printed fragments of a payer's documents (partial).

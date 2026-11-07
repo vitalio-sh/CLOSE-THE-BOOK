@@ -218,10 +218,7 @@ def _exception(item, cash, txn, ctx, fx=False):
     # must carry a cross-border marker and the payer must be foreign.
     sepa={'AD','AL','AT','BE','BG','CH','CY','CZ','DE','DK','EE','ES','FI','FR','GB','GI','GR','HR','HU','IE','IS','IT','LI','LT','LU','LV','MC','MD','ME','MK','MT','NL','NO','PL','PT','RO','RS','SE','SI','SK','SM','VA'}
     country=customer.get('country','').upper()
-    bank_text=words(' | '.join(str(txn.get(k) or '') for k in ('text','ref1','ref2','remittance_info')))
-    transfer=bool(re.search(r'\b(?:SWIFT|TRANSFER EN DIV|TRANSFERENCIA INTERNACIONAL|INTERNATIONAL TRANSFER|WIRE TRANSFER|GASTOS (?:SHA|BEN)|CHGS)\b',bank_text))
-    # ISO 20022 bank transaction code PMNT/RCDT/XBCT = cross-border credit transfer.
-    transfer=transfer or 'XBCT' in str(txn.get('bank_code') or '').upper()
+    transfer=cross_border_transfer(txn)
     # TRAIN history: foreign SEPA-member payers (CH, GB, PL, MT...) that pay by an
     # international transfer also lose the intermediary fee, so a payer whose country
     # differs from the receiving entity's country qualifies like a non-SEPA payer.
@@ -236,7 +233,13 @@ def _exception(item, cash, txn, ctx, fx=False):
             rates=getattr(ctx,'fx_rates',{})
             dates=[day for day,values in rates.items() if day<=txn.get('booking_date','') and currency in values]
             if dates:rate=dec(rates[max(dates)][currency])
-        if rate and rate>0 and 0<short and short/rate<=D(60):
+        lattice=sbc_fee_lattice(currency)
+        if lattice:
+            # TRAIN (every year, 1,090 of 1,090 golden cases): the intermediary fee is
+            # one of a fixed set, so any other shortfall is a discount or a partial.
+            if short in lattice:
+                return 'SHORT_BANK_CHARGES',opened
+        elif rate and rate>0 and 0<short and short/rate<=D(60):
             # A fixed fee can exceed 2 % of a small invoice (TRAIN: up to ~5 %), but a
             # shortfall that is an exact percentage share of the total is a late discount,
             # a retention or a partial payment, never a bank fee. The original non-SEPA
@@ -245,6 +248,29 @@ def _exception(item, cash, txn, ctx, fx=False):
                     (short<=total*D('0.05') and not _percent_share(short,total)):
                 return 'SHORT_BANK_CHARGES',opened
     return 'PARTIAL',cash
+
+
+_XB_TEXT = re.compile(r'\b(?:SWIFT|TRANSFER EN DIV|TRANSFERENCIA INTERNACIONAL|INTERNATIONAL TRANSFER|WIRE TRANSFER|GASTOS (?:SHA|BEN)|CHGS)\b')
+
+
+def cross_border_transfer(txn):
+    """The bank line documents a cross-border credit transfer (text marker or ISO code XBCT)."""
+    bank_text=words(' | '.join(str(txn.get(k) or '') for k in ('text','ref1','ref2','remittance_info')))
+    # ISO 20022 bank transaction code PMNT/RCDT/XBCT = cross-border credit transfer.
+    return bool(_XB_TEXT.search(bank_text)) or 'XBCT' in str(txn.get('bank_code') or '').upper()
+
+
+# POLICIES §3 SHORT_BANK_CHARGES: intermediary fees. TRAIN history (2021-2025, no
+# exception) shows a fixed EUR fee schedule, charged in the receipt currency at a fixed
+# conversion and truncated to the cent. Currencies without history keep the bounds rule.
+_SBC_FEES_EUR = (10, 15, 20, 25, 35, 45)
+_SBC_CONVERSION = {'EUR': D('1'), 'USD': D('1.185'), 'CAD': D('1.48'), 'AUD': D('1.58')}
+_SBC_LATTICE = {currency: frozenset((D(fee) * factor).quantize(CENT, rounding=ROUND_DOWN) for fee in _SBC_FEES_EUR)
+                for currency, factor in _SBC_CONVERSION.items()}
+
+
+def sbc_fee_lattice(currency):
+    return _SBC_LATTICE.get(str(currency or '').upper())
 
 
 _SHARE_PCTS = tuple(D(x) for x in ('1', '1.25', '1.5', '2', '2.5', '3', '4', '5', '10', '15', '20'))
