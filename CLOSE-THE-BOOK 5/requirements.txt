@@ -1,0 +1,6 @@
+# Python 3.13 (tested). System dependency: poppler-utils (`pdftotext`, tested 24.02) for PDF advices/invoices.
+pandas==3.0.5
+openpyxl==3.1.5      # XLSX remittance advices
+tabulate==0.10.0     # only for tools/analyze.py (markdown tables)
+PyYAML==6.0.3        # only to validate .claude/ frontmatter
+# optional: anthropic (only with --llm, not used in any submitted run)
