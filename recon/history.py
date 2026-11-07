@@ -161,6 +161,14 @@ RETURN_TEXT = re.compile(r'(?:RETURN(?:ED)?|DEVOLUCION TRANSFERENCIA|RUECKUEBERW
 MASKED_CARD = re.compile(r'\*{2,}\s*(\d{4})\b')
 
 
+FACTORY_ENTITIES = {'ES00': {'ES01', 'ES02', 'PT01'}}
+
+
+def _same_payer(file_entity, txn_entity):
+    """A run filed under file_entity can be paid from txn_entity's account (POLICIES 5.2)."""
+    return file_entity == txn_entity or file_entity in FACTORY_ENTITIES.get(txn_entity, ())
+
+
 def _reversal_references(ctx, phase_dir, first_date, refs, txns):
     """Documents behind a returned cheque, a card chargeback or a returned supplier transfer.
 
@@ -212,7 +220,9 @@ def _reversal_references(ctx, phase_dir, first_date, refs, txns):
                         if (entity, norm(row.get('merchant_id', '')), card) in card_keys:
                             token = norm(row.get('order_number', ''))
                     elif row.get('run_type') == 'transfers':
-                        quoted = entity in refs.get(norm(row.get('end_to_end_id', '')), ())
+                        # POLICIES 5.2 payment factory: ES00's account pays (and gets back the
+                        # rejected transfers of) ES01/ES02/PT01 runs filed under their entity.
+                        quoted = any(_same_payer(entity, e) for e in refs.get(norm(row.get('end_to_end_id', '')), ()))
                         if not quoted:
                             try:
                                 cash = Decimal(row.get('transfer_amount') or '0')
@@ -220,7 +230,7 @@ def _reversal_references(ctx, phase_dir, first_date, refs, txns):
                                 cash = None
                             name = norm(row.get('beneficiary', ''))
                             quoted = len(name) >= 6 and any(
-                                e == entity and name in text for e, text in returns_by_amount.get(cash, ()))
+                                _same_payer(entity, e) and name in text for e, text in returns_by_amount.get(cash, ()))
                         if quoted:
                             token = norm(row.get('document_number', ''))
                     if len(token) >= 3 and any(c.isdigit() for c in token) and entity not in refs[token]:

@@ -90,4 +90,16 @@ class HistoryTests(unittest.TestCase):
             self.assertIn('ARI-2025-1',c.items);self.assertIn('ARI-2025-2',c.items)
             self.assertNotIn('ARI-2025-3',c.items)  # cheque never returned
             self.assertEqual(r['reversal_reference_tokens'],2)
+    def test_factory_return_restores_subsidiary_run_documents(self):
+        # POLICIES 5.2: ES00's account pays PT01's run; the rejected transfer comes back to ES00.
+        with tempfile.TemporaryDirectory() as d:
+            c=self.context(d)
+            with gzip.open(c.history_dirs[0]/'ap_invoices.csv.gz','wt',newline='') as f:
+                w=csv.DictWriter(f,fieldnames=['item_id','entity','supplier_id','supplier_invoice_number','issue_date','total_amount'])
+                w.writeheader();w.writerows([dict(item_id='API-1',entity='PT01',supplier_id='S1',supplier_invoice_number='F24/02987',issue_date='2024-09-20',total_amount='1414.62')])
+            self.batch(c,'payment_runs','PT01_202412_0.csv',[dict(run_id='PR010024122624',run_type='transfers',execution_date='2024-12-26',debtor_account_id='ES00-PENA-EUR',end_to_end_id='PR010024122624-0131',beneficiary='Filters Alvorada Lda.',currency='EUR',transfer_amount='1414.62',document_number='F24/02987',document_amount='1414.62')])
+            txns=[dict(text='DEVOLUCION TRANSFERENCIA MD07 | FILTERS ALVORADA LDA. | PR010024122624-0131',amount='1414.62',account_id='ES00-PENA-EUR',booking_date='2025-01-03',entity='ES00')]
+            enrich_referenced_closed(c,txns)
+            self.assertIn('API-1',c.items)
+            self.assertEqual(c.items['API-1']['open_amount'],Decimal(0))
 if __name__=='__main__':unittest.main()
