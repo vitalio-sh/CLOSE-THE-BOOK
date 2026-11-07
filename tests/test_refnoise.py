@@ -68,19 +68,6 @@ class RefNoiseTests(unittest.TestCase):
         tokens = refnoise.reference_tokens({'text': 'FACTURA FV24-0103585 0103691 0 | 103042 0103385'})
         self.assertIn('0103042', tokens)
 
-    def test_three_set_in_large_pool_needs_sparse_four_sets(self):
-        import random
-        rnd = random.Random(2)
-        values = [rnd.randint(5000, 150000) for _ in range(30)]
-        target = values[3] + values[11] + values[22]
-        stop = refnoise.SMALL_DENSITY * (2 * refnoise.WINDOW + 1)
-        found, density = refnoise.small_sets_and_density(values, target, stop=stop)
-        self.assertEqual(found, [tuple(sorted((3, 11, 22), key=values.__getitem__))])
-        self.assertGreater(density, refnoise.SMALL_DENSITY)
-        # A single invoice that equals the cash is not penalised by four-sets.
-        found, density = refnoise.small_sets_and_density(values, values[5], stop=stop)
-        self.assertEqual(found, [(5,)])
-
     def test_fragment_list_names_one_invoice_per_token(self):
         # POLICIES 5.5: each paid invoice is quoted by a fragment (head 'RE2401', middle
         # '240105', tail '105621'); the list is repeated in the same field.

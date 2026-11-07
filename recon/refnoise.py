@@ -22,7 +22,6 @@ SMALL_DENSITY = 0.02
 MAX_SECOND_TIER = 3
 PREFER_QUOTED = True
 CHARGES_GUARD = False
-FOUR_GUARD = True
 ASSIGN = True
 AMOUNT_ONLY_K = 99         # max set size without any reference anchor
 
@@ -342,13 +341,6 @@ def small_sets_and_density(values, target, kmax=SMALL_K, window=WINDOW, stop=Non
             if stop is not None and near > stop:
                 dense = True
                 break
-    if kmax >= 3 and not dense and found and max(map(len, found)) == 3 and FOUR_GUARD:
-        # A pool this large also holds sets of four or more invoices; an exact three-invoice
-        # set is evidence only if four-invoice sets near the target are rare as well. Ordered
-        # pairs of pair sums count each four-set six times (overlapping pairs only add caution).
-        pairs = sorted(s for a in range(n) for b in range(a + 1, n) if (s := sv[a] + sv[b]) <= target + window)
-        near += sum(bisect_right(pairs, target + window - s) - bisect_left(pairs, target - window - s)
-                    for s in pairs) / 6
     if dense:
         if not found and kmax >= 3:
             last = {}
