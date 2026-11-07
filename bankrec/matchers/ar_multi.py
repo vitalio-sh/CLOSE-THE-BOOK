@@ -28,7 +28,8 @@ RATIOS = (0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7)
 INST_N = (2, 3, 4, 6)
 MAX_DP_ITEMS = 26
 DP_CAP = 6000
-_D6 = re.compile(r"(?<![0-9])(\d{6})(?![0-9])")
+_D6 = re.compile(r"(?<!\d)(\d{6})(?!\d)")
+_PAYREF = re.compile(r"PAY-\d{4}-\d+")
 
 
 def _instalment(txt: str):
@@ -204,11 +205,26 @@ def _line(cx, aux, st, r):
 
     # --- R: references (our keys + last 6 digits) -> customer
     toks = set(t_ for t_ in tokens(txt) if len(t_) >= 5)
-    toks |= set(_D6.findall(txt))
+    d6 = set(_D6.findall(_PAYREF.sub(" ", txt.upper())))
+    fam = set(cids)
+    for c in cids[:1]:
+        g = cx.cust.get(c, {}).get("group_id")
+        if g:
+            fam |= cx.group[g]
     ref = []
-    for k in toks:
-        hit = {i for i in cx.keymap.get(k, ()) if cx.info[i]["entity"] == ent}
-        hit |= aux.suffix.get((ent, k), set())
+    for k in toks | d6:
+        hit = (
+            {i for i in cx.keymap.get(k, ()) if cx.info[i]["entity"] == ent}
+            if k in toks
+            else set()
+        )
+        if k in d6:
+            # last-6-digit quotes are weak: only among the identified payer's family
+            hit |= {
+                i
+                for i in aux.suffix.get((ent, k), ())
+                if not fam or cx.info[i]["party_id"] in fam
+            }
         for i in hit:
             if (
                 i not in ref

@@ -41,3 +41,32 @@ Use `--only <matcher...>` to run a subset while developing. Sample runs in ~15 s
   "fully cleared" exceptions → full open amount; `RETURNED` → re-opened amount.
 - Golden segments (`golden_allocations.segment`) name the case type; use `eval.py --seg <segment>` to see failures.
 - Python via `.venv/bin/python` (polars, pypdf, openpyxl, rapidfuzz). No network calls in the pipeline.
+
+## Fast iteration loop (use this, not full dev)
+March window = representative of full dev (70.37 vs 69.88) and runs in ~110 s:
+```
+.venv/bin/python scripts/run.py --phase dev --start 2025-03-01 --end 2025-03-31 --out out/<you>/m.csv.gz
+.venv/bin/python scripts/eval.py out/<you>/m.csv.gz --phase dev --start 2025-03-01 --end 2025-03-31 --seg <segment>
+```
+Baseline (2025-03): score 70.37, F1 0.718 (precision 0.98, **recall 0.57**), line acc 0.888, exception F1 0.392.
+Losses are recall (multi-item cases not allocated) and missing exceptions, not wrong claims. Target ≥ 90.
+Full dev (~22 min, `receipts` 830 s) only before the 17:00 freeze.
+
+## Case → rule → trap (from hackathon.usetalky.com/ejemplos; POLICIES.md is the authority)
+- ar_ref_noise: no invoice number in text; payer name + exact amount identify the single open item. Trap: leaving it unclaimed.
+- ar_same_amount_fifo: several equal open items → oldest first. Trap: random pick / split.
+- ar_1toN_remittance: remittance advice lists the invoices, one row each. Trap: subset-sum guessing.
+- ar_1toN_credit_note: payment = invoices minus pending credit note; the credit note is its own row. Trap: PARTIAL on the invoice.
+- ar_1toN_text: several numbers in the text (no prefix, truncated, continued in next 38-char record) sum to the cash.
+- ar_instalment (PDF: several due dates), ar_retention / ar_advance_deduction (PDF %, PARTIAL for amount collected),
+  ar_replaced_invoice (PDF: pay goes to the NEW invoice though text cites the old one).
+- ar_partial: amount = collected, PARTIAL. ar_short_discount: item fully cleared + SHORT_DISCOUNT. ar_short_bank_charges: fully cleared +
+  SHORT_BANK_CHARGES. ar_short_withholding: exception ONLY on the affected item row. ar_short_dispute: that row = amount really paid + SHORT_DISPUTE.
+- ar_overpayment: item at its amount, excess OVERPAYMENT. ar_duplicate_payment: DUPLICATE_PAYMENT against the same (already paid) item.
+- ar_fx: amount in INVOICE currency, FX_DIFFERENCE. ar_third_party_{parent,agency,confirming}: payer is not the customer.
+- ar_dd_returned / ar_cheque_returned: negative line vs the original invoice, RETURNED. unidentified*: UNIDENTIFIED, never force by amount alone.
+
+## Ownership (parallel agents; each writes only its own files and out/<name>/)
+- fixer-noise: receipts.py (ar_ref_noise, same_amount, third_party) · fixer-multi: ar_multi.py + remittance.py (1toN*, n_to_m)
+- fixer-short: shorts.py (short_*, dispute_settlement, fx, overpayment, duplicate) · fixer-pdf: pdfs.py (instalment, retention, advance, replaced)
+- fixer-zero: returns.py (customer_refund/advance, cheque_returned, ap_duplicate_*, card_chargeback, credit_note_paid_out)

@@ -1,4 +1,4 @@
-# Handover: estado del trabajo (2026-11-07, 12:40 Madrid)
+# Handover: estado del trabajo (2026-11-07, 14:50 Madrid)
 
 Léelo antes de tocar nada. Las reglas del reto y los comandos están en `CLAUDE.md`; aquí está **el estado actual y lo
 que falta**.
@@ -23,14 +23,37 @@ Congelar el código **a las 17:00**. Lo que no esté probado en dev a esa hora n
 | dev + `payments.py` | 42,02 | agente C (ap_direct_debit 94,5 %, ap_supplier_refund 99,5 %) |
 | sample con `receipts.py` a medias + `docref.py` | 64,94 | acierto por línea 0,83 (antes 44,45) |
 | **dev con todo junto (receipts optimizado + docref)** | **53,93** | 13:30. F1 0,581, acierto línea 0,656, exc. F1 0,260. receipts n=70.870 acc 0,920; docref acc 0,998. Total 461 s (receipts 227 s) con la máquina cargada (load ~13) |
+| **dev tras los 4 agentes en paralelo (commit f7fec83 "a")** | **69,88** | 14:12. F1 0,718 (precisión 0,985, recall 0,565), acierto línea 0,875, exc. F1 0,388. **Runtime ~22 min** (receipts 830 s, ar_multi 251 s): hay que bajarlo. `ar_multi.py` tiene un cambio sin commit (refs de 6 dígitos solo en la familia del pagador), sin medir en dev completo |
 | LIVE leaderboard "Team 10" | 82,14 | **es de otro pipeline (ChatGPT, otro compañero)**, no de este código |
 
 Dev es nuestro simulador de LIVE (tiene golden). **No se itera contra el leaderboard.**
 
-## Qué ha cambiado hoy en `bankrec/matchers/`
+## Estado 14:50 (lo más reciente: empieza aquí)
 
-Orden de ejecución (`__init__.py`): direct_debits, card_settlements, cheque_deposits, payment_runs, remittance,
-receipts, payments, nonitem, docref. **La primera línea que se reclama gana.**
+- Último dev completo: **69,88** (log `out/C_deveval.log`, run `out/C_devrun.log`), con el commit `f7fec83` ("a").
+  Por matcher (líneas): payment_runs 53.919, receipts 86.795, ar_multi 7.183, payments 8.629, nonitem 13.719,
+  remittance 1.641, direct_debits 4.964, cheques 1.950, cards 1.252, docref 3.
+- Orden actual (`__init__.py`): direct_debits, card_settlements, cheque_deposits, payment_runs, remittance, receipts,
+  ar_multi, payments, nonitem, docref.
+- Trabajo hecho por 4 agentes `segment-fixer` en paralelo (A `receipts.py`, B `ar_multi.py` nuevo, C `batches.py`,
+  D `payments.py`). Sus scripts de análisis están en `out/A_*`, `out/B/`, `out/C_*`, `out/D/` (desechables).
+- D: `ap_run_transfers` + `ap_paid_by_holding` (índice por proveedor) + `ap_partial` + `ap_fx` en `payments.py`;
+  aislado en dev: precisión de pares 0,9998 sobre ~25.900 líneas (`out/D/iso.log`).
+- **Sin commit**: `bankrec/matchers/ar_multi.py` (B: referencias de 6 dígitos solo dentro de la familia del pagador,
+  ignora `PAY-nnnn-n`) y `CLAUDE.md`. No medido en dev completo; `out/B/dev_eval.log` da 69,80 (14:13).
+
+### Pendiente, por prioridad (nueva sesión)
+
+1. **Velocidad**: dev completo ~22 min (receipts 830 s, ar_multi 251 s, direct_debits 95 s). Perfilar con
+   `cProfile` (script de ejemplo en el historial: `run(ph, ["receipts"])` con `signal.alarm`). Objetivo < 8 min.
+2. **Recall** (0,565) es la palanca: la precisión ya es 0,985. Ver segmentos con más fallos en `out/C_deveval.log`.
+3. Decidir si el cambio sin commit de `ar_multi.py` se queda (medir en dev completo) y hacer commit (pedir permiso).
+4. LIVE v3: `.venv/bin/python scripts/run.py --phase live --out out/sub_live_v3.csv.gz` (VALID). Lo envía el usuario.
+5. Guion de FINAL (ver más abajo) probado con sample y dev antes de las 18:00.
+
+## Historial: qué cambió por la mañana en `bankrec/matchers/`
+
+**La primera línea que se reclama gana.**
 
 - `remittance.py` (nuevo, terminado): avisos de pago en pdf/csv/xlsx/txt, con pypdf a ~10 ms por PDF y texto en caché en
   `out/cache`. Reclama unas 1.600 líneas de dev sin regresiones. Queda abierto: unas 350 líneas tienen referencia
@@ -54,7 +77,7 @@ receipts, payments, nonitem, docref. **La primera línea que se reclama gana.**
   línea, búsqueda difusa de referencias solo si hay ≤ 3.000 candidatos (`FUZZY_MAX`).
 - Pendiente: bajar de 5 min (hoy 461 s) y generar LIVE v3.
 
-## Bloqueo anterior (resuelto en parte)
+## Bloqueo anterior (resuelto: receipts optimizado; luego los agentes lo volvieron a hacer lento)
 
 La versión nueva de `receipts.py` **es muy lenta en dev**. La etapa `receipts` pasaba de 84 segundos a más de 6 minutos
 sin terminar, y el pipeline completo no acaba. Sample sí funciona (25 s). Antes de mezclar más cambios:
@@ -72,7 +95,7 @@ sin terminar, y el pipeline completo no acaba. Sample sí funciona (25 s). Antes
 Si `receipts.py` no se arregla a tiempo: `git diff bankrec/matchers/receipts.py` y volver a la versión anterior
 (`git checkout -- bankrec/matchers/receipts.py`). Con `docref.py` ya se recupera buena parte de lo que fallaba.
 
-## Pendiente, por prioridad
+## Pendiente de la mañana (superado por "Estado 14:50")
 
 1. Arreglar la lentitud de `receipts.py`, hacer la medición de dev completa y generar LIVE v3 (ver arriba).
 2. Guion de FINAL: ejecutar `run.py --phase final`, validar y enviar con confirmación. `scripts/submit.py` ya exige
