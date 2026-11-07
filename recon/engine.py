@@ -32,6 +32,9 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         handlers.append(('matching', lambda txn: reconcile(txn, ctx)))
         from .financial_sequences import FinancialSequences
         handlers.append(('financial_sequences', FinancialSequences(ctx).reconcile))
+        # Receipts net of credit notes (POLICIES 2, 5.9) that no ordinary rule explained.
+        from .credit_groups import reconcile as credit_reconcile
+        handlers.append(('credit_groups', lambda txn: credit_reconcile(txn, ctx)))
         from . import refnoise
         handlers.append(('refnoise', lambda txn: refnoise.reconcile(txn, ctx)))
         # Last resort: uniquely anchored printed fragments of a payer's documents (partial).
