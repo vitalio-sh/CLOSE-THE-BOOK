@@ -44,6 +44,20 @@ class ClosedDuplicateTests(unittest.TestCase):
                          [('ARI-2024-1', '515.71', 'DUPLICATE_PAYMENT')])
         self.assertEqual(c.items['ARI-2024-1']['open_amount'], D(0))
 
+    def test_item_settled_earlier_in_phase_paid_again(self):
+        settled = dict(item_id='ARI-2024-7', document_number='FV24-7', party_id='C1', side='AR', kind='invoice',
+                       open_amount=D('0'), total_amount=D('515.71'), currency='EUR', entity='ES01',
+                       issue_date='2024-07-26', payment_method='transfer')
+        rows = ClosedDuplicates(ctx_with([settled])).reconcile(txn())
+        self.assertEqual([(r['item_id'], r['amount'], r['exception']) for r in rows],
+                         [('ARI-2024-7', '515.71', 'DUPLICATE_PAYMENT')])
+        # Ambiguous with a closed historical candidate, collected by direct debit, or too old.
+        self.assertIsNone(ClosedDuplicates(ctx_with([settled], [closed()])).reconcile(txn()))
+        self.assertIsNone(ClosedDuplicates(ctx_with([dict(settled, payment_method='dd')])).reconcile(txn()))
+        self.assertIsNone(ClosedDuplicates(ctx_with([dict(settled, issue_date='2024-05-01')])).reconcile(txn()))
+        # Still partly open: not settled, so not a duplicate.
+        self.assertIsNone(ClosedDuplicates(ctx_with([dict(settled, open_amount=D('15.71'))])).reconcile(txn()))
+
     def test_guards(self):
         # Direct-debit receipt paid again by transfer: re-payment after a return, not a duplicate.
         self.assertIsNone(ClosedDuplicates(ctx_with(closed=[closed(pm='dd')])).reconcile(txn()))

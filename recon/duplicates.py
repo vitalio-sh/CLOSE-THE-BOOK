@@ -29,9 +29,7 @@ class ClosedDuplicates:
 
     def reconcile(self, txn):
         ctx = self.ctx
-        closed = getattr(ctx, 'recent_closed', None)
-        if not closed:
-            return None
+        closed = getattr(ctx, 'recent_closed', None) or {}
         amount = dec(txn.get('amount'))
         cash = abs(amount)
         if cash <= 0:
@@ -72,6 +70,25 @@ class ClosedDuplicates:
                     continue
                 if 0 <= age <= RECENT_CLOSED_DAYS:
                     hits.append(record)
+            # Items of the payer already settled in full (in this phase or restored as
+            # historical closed): a second identical payment of one of them is a duplicate.
+            seen = {record['item_id'] for record in hits}
+            for iid in ctx.by_party.get(pid, ()):
+                item = ctx.items.get(iid)
+                if (not item or iid in seen or item.get('side') != side or item.get('kind') == 'credit'
+                        or item.get('currency') != currency or dec(item.get('open_amount')) != 0
+                        or dec(item.get('total_amount')) != cash):
+                    continue
+                entity = item.get('entity')
+                if entity and entity != owner and not (owner == 'ES00' and side == 'AP' and entity in ('ES01', 'ES02', 'PT01')):
+                    continue
+                try:
+                    age = (booking - date.fromisoformat(item['issue_date'])).days
+                except (KeyError, ValueError, TypeError):
+                    continue
+                if 0 <= age <= RECENT_CLOSED_DAYS:
+                    hits.append(item)
+                    seen.add(iid)
             if not hits:
                 continue
             if len(hits) != 1 or hits[0].get('payment_method') == 'dd':
