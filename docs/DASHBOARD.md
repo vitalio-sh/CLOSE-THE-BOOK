@@ -20,3 +20,9 @@ The server binds only to `127.0.0.1`. It serves the four dashboard assets and th
 Design sources and decisions are documented in [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md). The interface is in English for the international team.
 
 Verified in-browser: desktop and 390px mobile layout, search with zero results, outcome filtering, transaction detail, guided examples, process and export screens. The mobile document has no horizontal overflow; wider tables scroll within their container. Exporter and server regression tests cover stratification, currency separation, artifact hash mismatch and file access boundaries.
+
+## Published team view
+
+[Open the dashboard](https://valtermia-team10-reconciliation.peakedalbatross1.chatgpt.site). The owner approved public access without sign-in. This is a snapshot of the verified LIVE release, containing whole-run summaries and 200 examples; the complete candidate CSV is only downloadable through the local server. No automatic refresh or competition submission is configured.
+
+The registered Site identity and publication metadata are in `dashboard/site.json`. Its separate checkout is `outputs/hosted-dashboard`, with `.openai/hosting.json` retained there. Refresh `dashboard/data.json`, then run `python3 scripts/package_dashboard_site.py`; use the Sites source workflow and publish a new version of the same project. Do not create a replacement Site.
