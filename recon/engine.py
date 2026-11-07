@@ -27,6 +27,8 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         handlers.append(('category', lambda txn: classify(txn, ctx)))
         from .return_groups import reconcile_return_group
         handlers.append(('return_groups', lambda txn: reconcile_return_group(txn, ctx)))
+        from .schedules import Schedules
+        handlers.append(('schedules', Schedules(ctx).reconcile))
         handlers.append(('matching', lambda txn: reconcile(txn, ctx)))
         from .financial_sequences import FinancialSequences
         handlers.append(('financial_sequences', FinancialSequences(ctx).reconcile))
