@@ -54,6 +54,9 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         # Last resort: unique payer group with one TRAIN partial share (ar_n_to_m).
         from .matching import party_partial_subset
         handlers.append(('party_partial', lambda txn: party_partial_subset(txn, ctx)))
+        # Terms discount taken after the window: unique open invoice, PARTIAL at cash (POLICIES §3).
+        from . import late_discount
+        handlers.append(('late_discount', lambda txn: late_discount.reconcile(txn, ctx)))
     return handlers, document_stats
 
 
