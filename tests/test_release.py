@@ -24,11 +24,15 @@ def fixture(root):
     write(root/'masters/categories.csv', ['category'], [{'category': 'UNIDENTIFIED'}])
     write(root/'masters/payment_terms.csv', ['code', 'days'], [{'code': 'T30', 'days': '30'}])
     write(root/'masters/customers.csv', ['customer_id', 'name'], [{'customer_id': 'C1', 'name': 'Base'}])
-    write(root/'sample/bank_transactions.csv.gz', ['bank_txn_id', 'booking_date', 'account_id'],
-          [{'bank_txn_id': 'T1', 'booking_date': '2025-01-01', 'account_id': 'A1'}])
+    write(root/'sample/bank_transactions.csv.gz', ['bank_txn_id', 'booking_date', 'account_id', 'amount'],
+          [{'bank_txn_id': 'T1', 'booking_date': '2025-01-01', 'account_id': 'A1', 'amount': '100'}])
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_misspelled_module_cannot_publish_all_unidentified(self):
+        with self.assertRaisesRegex(ValueError, 'Unknown reconciliation modules'):
+            main(['--data', '/nonexistent-input', '--out', '/unused-output', '--modules', 'matcing'])
+
     def run_fixture(self, root, out):
         with contextlib.redirect_stdout(io.StringIO()):
             return main(['--data', str(root), '--phase', 'sample', '--modules', '', '--out', str(out)])
@@ -122,6 +126,27 @@ class ReleaseTests(unittest.TestCase):
                 publish_bundle(candidate, out)
             for suffix in ('', '.audit.jsonl', '.report.json'):
                 self.assertEqual(Path(str(out)+suffix).read_text(), 'old'+suffix)
+
+    def test_input_mutation_during_inference_preserves_previous_release(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture(root)
+            out = root / 'output.csv.gz'
+            self.run_fixture(root, out)
+            old = {s: Path(str(out)+s).read_bytes() for s in ('', '.audit.jsonl', '.report.json')}
+            from recon.engine import execute
+            def mutate_after_inference(*args, **kwargs):
+                result = execute(*args, **kwargs)
+                # Keep ID coverage valid: only provenance can detect this change.
+                write(root/'sample/bank_transactions.csv.gz', ['bank_txn_id', 'booking_date', 'account_id', 'amount'],
+                      [{'bank_txn_id': 'T1', 'booking_date': '2025-01-02', 'account_id': 'A1', 'amount': '100'}])
+                return result
+            with patch('recon.run.execute', side_effect=mutate_after_inference), self.assertRaises(SystemExit):
+                self.run_fixture(root, out)
+            for suffix, content in old.items():
+                self.assertEqual(Path(str(out)+suffix).read_bytes(), content)
+            report = json.loads(Path(str(out)+'.failed.report.json').read_text())
+            self.assertEqual(report['checked_inputs_changed'], ['sample/bank_transactions.csv.gz'])
 
 
 if __name__ == '__main__':

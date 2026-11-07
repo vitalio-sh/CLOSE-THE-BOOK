@@ -88,6 +88,11 @@ def promote(pointer, run_dir):
             or release.get('sha256') != hashes['submission.csv.gz']
             or release.get('audit_sha256') != hashes['submission.csv.gz.audit.jsonl']):
         raise ValueError('Release report does not validate this artifact bundle')
+    readiness = release.get('pdf_readiness')
+    if readiness and readiness.get('config', {}).get('strict'):
+        sys.path.insert(0, str(ROOT))
+        from recon.pdf_runtime import verify_snapshot
+        verify_snapshot(readiness)
     pointer.parent.mkdir(parents=True, exist_ok=True)
     temporary = pointer.with_name(pointer.name + '.' + uuid.uuid4().hex + '.tmp')
     temporary.write_text(json.dumps({'run': str(run_dir), 'manifest_sha256': sha256(report_path),
@@ -103,23 +108,34 @@ def main(argv=None):
     parser.add_argument('--out-dir', required=True, help='Must not already exist')
     parser.add_argument('--modules', default='batches,documents,matching')
     parser.add_argument('--pdf-facts', action='store_true')
+    parser.add_argument('--hash-pdf-inputs', action='store_true', help='Hash PDF evidence for a PDF-disabled ablation baseline')
     parser.add_argument('--pdf-max-documents', type=int, default=100)
     parser.add_argument('--pdf-budget-seconds', type=float, default=30)
     parser.add_argument('--promote', help='Optional local JSON pointer to this verified run')
+    sys.path.insert(0, str(ROOT))
+    from recon import pdf_runtime
+    pdf_runtime.add_options(parser, base=False)
     args = parser.parse_args(argv)
+    pdf_runtime.check_options(args)
+    if args.pdf_facts:
+        args.pdf_cache_dir = str(Path(args.pdf_cache_dir or ROOT/'outputs/pdf_facts_cache').resolve())
     started = time.monotonic()
     run_dir = Path(args.out_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=False)
     data = Path(args.data).absolute()
     snapshot = run_dir / 'source'
     code = freeze_code(Path(args.code_root).resolve(), snapshot)
-    inputs = input_manifest(data, args.phase, args.pdf_facts)
+    inputs = input_manifest(data, args.phase, args.pdf_facts or args.hash_pdf_inputs)
     output = run_dir / 'submission.csv.gz'
     command = [sys.executable, '-m', 'recon.run', '--data', str(data), '--phase', args.phase,
                '--out', str(output), '--modules', args.modules]
     if args.pdf_facts:
         command += ['--pdf-facts', '--pdf-max-documents', str(args.pdf_max_documents),
-                    '--pdf-budget-seconds', str(args.pdf_budget_seconds)]
+                    '--pdf-budget-seconds', str(args.pdf_budget_seconds),
+                    '--pdf-cache-dir', args.pdf_cache_dir,
+                    '--pdf-max-party-documents', str(args.pdf_max_party_documents)]
+        if args.pdf_prewarm: command.append('--pdf-prewarm')
+        if args.require_pdf_complete: command.append('--require-pdf-complete')
     report = {'status': 'running', 'phase': args.phase, 'source_hashes': code,
               'python_version': sys.version, 'platform': platform.platform(),
               'input_manifest': inputs, 'command': command,
@@ -134,7 +150,7 @@ def main(argv=None):
         result = subprocess.run(command, cwd=snapshot, stdout=log, stderr=subprocess.STDOUT,
                                 env={**os.environ, 'DASHBOARD_PUBLISH_ENABLED': 'false'})
     report['returncode'] = result.returncode
-    report['inputs_changed'] = inputs != input_manifest(data, args.phase, args.pdf_facts)
+    report['inputs_changed'] = inputs != input_manifest(data, args.phase, args.pdf_facts or args.hash_pdf_inputs)
     report['seconds_end_to_end'] = round(time.monotonic() - started, 3)
     report['status'] = 'failed'
     if result.returncode == 0 and not report['inputs_changed']:

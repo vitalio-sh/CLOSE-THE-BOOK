@@ -72,6 +72,7 @@ def publish_bundle(candidate, destination):
 
 
 def main(argv=None):
+    from . import pdf_runtime
     p = argparse.ArgumentParser()
     p.add_argument('--data', default='data/workspace')
     p.add_argument('--phase', choices=['sample', 'train', 'live', 'final'], default='sample')
@@ -80,7 +81,9 @@ def main(argv=None):
     p.add_argument('--pdf-facts', action='store_true', help='Enable budgeted optional invoice-PDF facts')
     p.add_argument('--pdf-max-documents', type=int, default=100)
     p.add_argument('--pdf-budget-seconds', type=float, default=30)
+    pdf_runtime.add_options(p, base=False)
     a = p.parse_args(argv)
+    pdf_runtime.check_options(a)
     start = time.monotonic()
     started_at = datetime.now(timezone.utc).isoformat()
     run_id = str(uuid4())
@@ -109,9 +112,7 @@ def main(argv=None):
     history_report = enrich_referenced_closed(ctx, txns)
     stage('historical_references')
     print('Historical references: ' + json.dumps(history_report), flush=True)
-    if a.pdf_facts:
-        from .pdf_facts import PdfFacts
-        ctx.pdf_facts = PdfFacts(ctx, max_documents=a.pdf_max_documents, max_seconds=a.pdf_budget_seconds)
+    pdf_session = pdf_runtime.configure(ctx, a, Path(a.out).parent / (Path(a.out).name + '.pdf'))
     handlers, document_stats = build_handlers(ctx, enabled)
     stage('initialize_matchers')
     if document_stats is not None:
@@ -131,6 +132,7 @@ def main(argv=None):
             counts, rejected = execute(ctx, txns, handlers, w, audit, progress)
         stage('inference_and_output')
         generation_seconds = round(time.monotonic() - start, 3)
+        pdf_readiness = pdf_session.finish() if pdf_session else None
         validation = validate(candidate, ctx)
         stage('independent_validation')
         official = official_structure(candidate, ctx)
@@ -143,6 +145,7 @@ def main(argv=None):
             'phase': a.phase, 'started_at': started_at, 'run_id': run_id, 'enabled_modules': enabled, 'input_preflight': input_preflight, 'master_coverage': ctx.master_coverage, 'opening_coverage': ctx.opening_coverage,
             'document_parsing': document_stats, 'historical_references': history_report,
             'pdf_facts': getattr(getattr(ctx, 'pdf_facts', None), 'stats', None),
+            'pdf_readiness': pdf_readiness,
             'modules': dict(counts), 'rejected_proposals': dict(rejected), 'source_hashes': initial_hashes,
             'seconds': generation_seconds, 'validation': validation,
             'official_structure': official,

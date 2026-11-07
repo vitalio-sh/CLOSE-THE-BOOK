@@ -1,0 +1,19 @@
+{
+  "task": "T3a-on-R2",
+  "purpose": "Enable existing invoice PDF facts with strict deterministic prewarm; no new financial matching helper",
+  "flags": [
+    "--pdf-facts",
+    "--require-pdf-complete",
+    "--pdf-prewarm",
+    "--pdf-max-documents",
+    "200000",
+    "--pdf-max-party-documents",
+    "200000",
+    "--pdf-budget-seconds",
+    "1800",
+    "--pdf-cache-dir",
+    "/Users/neo/CodeProejcts/CLOSE-THE-BOOK/outputs/review_coordination/evaluation_lane/shared_pdf_cache"
+  ],
+  "baseline": "Accepted R2 source, same PDF-inclusive inputs with inference disabled",
+  "validation_status": "pending"
+}

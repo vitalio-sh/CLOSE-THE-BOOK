@@ -61,7 +61,7 @@ class PdfFactTests(unittest.TestCase):
     def test_active_time_budget_and_remaining_timeout(self):
         with TemporaryDirectory() as d:
             root=Path(d);p=root/'pdfs';p.mkdir()
-            for name in ('old','new'):(p/(name+'.pdf')).write_bytes(b'fake')
+            for name in ('old','new'):(p/(name+'.pdf')).write_bytes(name.encode())
             (p/'index.csv').write_text('file,document_type,document_number,entity,party_id,document_date\nold.pdf,invoice,FV25-001,ES01,C1,2025-05-01\nnew.pdf,invoice,FV25-002,ES01,C1,2025-06-01\n')
             now=[100.0]
             def process(*args,**kwargs):
@@ -85,5 +85,37 @@ class PdfFactTests(unittest.TestCase):
                 self.assertEqual(f.get('old'),{})  # No cache read after expiry.
                 self.assertEqual(f.stats['time_budget_skips'],1)
                 self.assertEqual(run.call_count,2)
+
+    def test_cache_content_version_corruption_and_write_failure(self):
+        import os
+        with TemporaryDirectory() as d:
+            root=Path(d);p=root/'pdfs';p.mkdir()
+            pdf=p/'new.pdf';pdf.write_bytes(b'first')
+            (p/'index.csv').write_text('file,document_type,document_number,entity,party_id,document_date\nnew.pdf,invoice,FV25-002,ES01,C1,2025-06-01\n')
+            ctx=self.context(root);cache=root/'cache'
+            with patch('recon.pdf_facts.shutil.which',return_value='/bin/pdftotext'), patch('recon.pdf_facts.subprocess.run',return_value=SimpleNamespace(stdout='month of May 2025')) as run:
+                first=PdfFacts(ctx,cache_dir=cache).get('new')
+                warm=PdfFacts(ctx,cache_dir=cache)
+                self.assertEqual(warm.get('new'),first)
+                self.assertEqual(warm.stats['cache_hits'],1)
+                entry=next(cache.glob('*.json'));entry.write_text('{broken')
+                repaired=PdfFacts(ctx,cache_dir=cache)
+                self.assertEqual(repaired.get('new'),first)
+                self.assertEqual(repaired.stats['cache_corruptions'],1)
+                self.assertEqual(run.call_count,2)
+                old_stat=pdf.stat();pdf.write_bytes(b'other')
+                os.utime(pdf,ns=(old_stat.st_atime_ns,old_stat.st_mtime_ns))
+                changed=PdfFacts(ctx,cache_dir=cache)
+                self.assertEqual(changed.get('new'),first)
+                self.assertEqual(changed.stats['cache_hits'],0)
+                with patch('recon.pdf_facts.VERSION',999):
+                    versioned=PdfFacts(ctx,cache_dir=cache)
+                    self.assertEqual(versioned.get('new'),first)
+                    self.assertEqual(versioned.stats['cache_hits'],0)
+                with patch('recon.pdf_facts.os.replace',side_effect=OSError('disk full')):
+                    unwritable=PdfFacts(ctx,cache_dir=root/'blocked')
+                    self.assertEqual(unwritable.get('new'),first)
+                    self.assertEqual(unwritable.stats['cache_write_errors'],1)
+                    self.assertEqual(list((root/'blocked').iterdir()),[])
 
 if __name__=='__main__':unittest.main()
