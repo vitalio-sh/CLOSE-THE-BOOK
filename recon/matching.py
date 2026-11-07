@@ -1418,7 +1418,8 @@ def fx_invoice_set(txn, ctx):
     (orig_amount/orig_currency) settles a set of the payer's open invoices in that currency
     whose open amounts add up to the instructed amount exactly (POLICIES 3 FX_DIFFERENCE:
     the payer pays the invoice amounts in the invoice currency; the bank converts). Every
-    invoice row carries FX_DIFFERENCE at its full open amount.
+    invoice row carries FX_DIFFERENCE at its full open amount. For payers in MX/BR/MA the
+    instructed amount may also be net of tax withheld per invoice (1.25 %, 1.5 % or 10 %).
 
     The payer must be identified, and the set must be the only exact one across every payer
     candidate. A payer with more than 30 candidate invoices is searched among those issued
@@ -1438,12 +1439,13 @@ def fx_invoice_set(txn, ctx):
         limit = (date.fromisoformat(txn['booking_date']) - timedelta(days=_REST_WINDOW_DAYS)).isoformat()
     except (KeyError, TypeError, ValueError):
         return None
+    customers = getattr(ctx, 'customers', {})
     found = []
     for pid in parties:
         pool = [ctx.items[i] for i in ctx.by_party.get(pid, ()) if i in ctx.items]
         pool = [i for i in pool if i.get('kind') != 'credit' and i.get('side') == 'AR'
                 and i.get('currency') == ccy and i.get('entity') == txn.get('entity')
-                and _eligible(i, txn) and D(0) < dec(i.get('open_amount')) <= target]
+                and _eligible(i, txn) and dec(i.get('open_amount')) > 0]
         if len(pool) > _FX_SET_MAX_ITEMS:
             pool = [i for i in pool if i.get('issue_date', '') >= limit]
         if len(pool) > _FX_SET_MAX_ITEMS:
@@ -1451,13 +1453,30 @@ def fx_invoice_set(txn, ctx):
         if not pool:
             continue
         pool.sort(key=lambda i: i['item_id'])
-        sets = positive_subsets([int(dec(i['open_amount']) * 100) for i in pool], int(target * 100),
-                                maximum_items=_FX_SET_MAX_ITEMS)
-        if sets is None:
-            return None
-        found += [[pool[k] for k in ids] for ids in sets]
-        if len(found) > 1:
-            return None
+        # Customers in Mexico, Brazil and Morocco may also withhold tax at source on each
+        # invoice total (POLICIES 3 SHORT_WITHHOLDING, replaced by FX_DIFFERENCE on FX lines).
+        rates = [D(0)]
+        if customers.get(pid, {}).get('country') in ('MX', 'BR', 'MA'):
+            rates += [D('0.0125'), D('0.015'), D('0.10')]
+        for rate in rates:
+            members, values = [], []
+            for item in pool:
+                opened, total = dec(item['open_amount']), dec(item.get('total_amount') or 0)
+                if rate:
+                    if opened != total:
+                        continue
+                    opened = total - (total * rate).quantize(CENT, rounding=ROUND_HALF_UP)
+                if D(0) < opened <= target:
+                    members.append(item)
+                    values.append(int(opened * 100))
+            if not members:
+                continue
+            sets = positive_subsets(values, int(target * 100), maximum_items=_FX_SET_MAX_ITEMS)
+            if sets is None:
+                return None
+            found += [[members[k] for k in ids] for ids in sets]
+            if len(found) > 1:
+                return None
     if len(found) != 1:
         return None
     return [row(txn, i['item_id'], i['open_amount'], 'FX_DIFFERENCE')

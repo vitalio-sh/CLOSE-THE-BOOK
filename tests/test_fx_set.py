@@ -29,6 +29,17 @@ class FxInvoiceSetTests(unittest.TestCase):
         self.assertIsNone(fx_invoice_set(receipt('3345.67'), context(items)))
         self.assertIsNone(fx_invoice_set(receipt('3345.65'), context(usd_book())))
 
+    def test_instructed_amount_net_of_withholding_for_mexican_payer(self):
+        from decimal import Decimal as D, ROUND_HALF_UP
+        c = context(usd_book())
+        c.customers['C1']['country'] = 'MX'
+        net = sum(x - (x * D('0.10')).quantize(D('0.01'), rounding=ROUND_HALF_UP) for x in (D('2345.67'), D('410.10')))
+        rows = fx_invoice_set(receipt(str(net)), c)
+        self.assertEqual({(r['item_id'], r['amount'], r['exception']) for r in rows},
+                         {('U2', '2345.67', 'FX_DIFFERENCE'), ('U4', '410.10', 'FX_DIFFERENCE')})
+        c.customers['C1']['country'] = 'ES'
+        self.assertIsNone(fx_invoice_set(receipt(str(net)), c))
+
     def test_requires_instructed_amount_in_other_currency(self):
         t = txn('3345.67', 'Alice Water Works')
         self.assertIsNone(fx_invoice_set(t, context(usd_book())))
