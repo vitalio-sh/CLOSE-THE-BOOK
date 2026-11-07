@@ -54,6 +54,16 @@ class CreditGroupTests(unittest.TestCase):
         rows = reconcile(txn('300', 'Alice Water Works PAYMENT'), context(items))
         self.assertEqual(set(ids(rows)), {'A', 'Z', 'ZC', 'B'})
 
+    def test_zero_net_pair_is_no_credit_evidence_for_listed_invoices(self):
+        # Noisy invoice references (a one-character typo) mark an explicit list: the
+        # zero-net pair inside the span cannot turn it into a credit-note group.
+        items = [invoice('A', 'FV24-0100001', '100'), invoice('Z', 'FV24-0100002', '40'),
+                 credit('ZC', 'AB24-0100002', '40', 'FV24-0100002'), invoice('B', 'FV24-0100003', '200'),
+                 invoice('E', 'FV24-0100004', '999')]
+        for n, item in enumerate(items):
+            item['issue_date'] = f'2025-01-0{n + 1}'
+        self.assertIsNone(reconcile(txn('300', 'Alice Water Works FV24-0100081 FV24-0100093'), context(items)))
+
     def test_gapped_run_skips_an_invoice_paid_elsewhere(self):
         from recon.credit_groups import _runs
         units = [('A', '100'), ('B', '260'), ('X', '777'), ('E', '300'), ('G', '50')]

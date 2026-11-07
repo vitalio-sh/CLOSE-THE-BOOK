@@ -133,6 +133,7 @@ def candidates(txn, ctx, horizon_days=None, quoted=None, runs=True, zeros=True):
         horizon = (date.fromisoformat(txn['booking_date']) - timedelta(days=horizon_days)).isoformat()
     cash = _cents(abs(D(txn['amount'])))
     parties, refs = _evidence(txn, ctx)
+    tokens = _tokens(txn)
     out = []
     for rank, pid in enumerate(parties):
         invoices, credits, related = _book(ctx, txn, pid)
@@ -144,6 +145,9 @@ def candidates(txn, ctx, horizon_days=None, quoted=None, runs=True, zeros=True):
             rel = related.get(_normed(ctx, inv, 'document_number'), ())
             units.append((inv, list(rel), _cents(inv['open_amount']) - sum(_cents(c['open_amount']) for c in rel)))
         by_doc = {_normed(ctx, u[0], 'document_number'): u for u in units}
+        # A zero-net pair may be a group's only credit evidence only on a receipt that
+        # mentions none of the payer's documents (explicit lists never carry the pair).
+        zero_only = zeros and not refs and not _mentions(tokens, by_doc)
         q_inv = [u for u in units if u[0]['item_id'] in refs]
         q_cn = [c for c in credits if c['item_id'] in refs]
         if quoted is not None:
@@ -172,7 +176,7 @@ def candidates(txn, ctx, horizon_days=None, quoted=None, runs=True, zeros=True):
         # A fully credited invoice (zero net) inside a run travels with it; a negative unit
         # splits the book. gap_run: the same with at most GAP_UNITS skipped inner units.
         if runs and len(units) <= GAP_BOOK:
-            for gaps, run in _runs(units, cash, GAP_UNITS):
+            for gaps, run in _runs(units, cash, GAP_UNITS, zero_only):
                 out.append(('run_net' if not gaps else 'gap_run', rank, _ids(run)))
         # unit_subset: quoted units are anchors; the remaining positive units form a bounded
         # exact subset with a unique solution.
@@ -189,9 +193,10 @@ def candidates(txn, ctx, horizon_days=None, quoted=None, runs=True, zeros=True):
             out.append(('unit_subset_multi', rank, ()))
         elif sols:
             chosen = anchors + [rest[k] for k in sols[0]]
+            real = any(u[1] for u in chosen)
             chosen = _with_inner_zeros(units, chosen) if zeros else chosen
             # Without a quoted anchor, a large amount-only combination is too weak.
-            if any(u[1] for u in chosen) and (anchors or len(chosen) <= FREE_UNITS):
+            if (real or (zero_only and any(u[1] for u in chosen))) and (anchors or len(chosen) <= FREE_UNITS):
                 out.append(('unit_subset', rank, _ids(chosen)))
         # anchored_rest: quoted anchors and a remainder of at most REMAINDER_UNITS further units,
         # searched over a book too large for the full subset search.
@@ -201,8 +206,9 @@ def candidates(txn, ctx, horizon_days=None, quoted=None, runs=True, zeros=True):
                 out.append(('anchored_rest_multi', rank, ()))
             elif found:
                 chosen = anchors + [rest[k] for k in found[0]]
+                real = any(u[1] for u in chosen)
                 chosen = _with_inner_zeros(units, chosen) if zeros else chosen
-                if any(u[1] for u in chosen):
+                if real or (zero_only and any(u[1] for u in chosen)):
                     out.append(('anchored_rest', rank, _ids(chosen)))
     return out
 
@@ -223,7 +229,26 @@ def _with_inner_zeros(units, chosen):
     return chosen + extra
 
 
-def _runs(units, cash, max_gaps):
+def _tokens(txn):
+    """Reference-like tokens of a receipt: at least five characters, four of them digits."""
+    out = set()
+    for token in re.findall(r'[A-Za-z0-9][A-Za-z0-9/._-]{3,}', M.text_of(txn)):
+        n = M.norm(token)
+        if len(n) >= 5 and sum(ch.isdigit() for ch in n) >= 4:
+            out.add(n)
+    return out
+
+
+def _mentions(tokens, by_doc):
+    """Some token is a payer document number, its tail, or a one-character typo of it."""
+    for number in by_doc:
+        for token in tokens:
+            if token == number or (len(token) >= 5 and number.endswith(token)) or _near(token, number):
+                return True
+    return False
+
+
+def _runs(units, cash, max_gaps, zero_only=True):
     """Issue-date runs of positive units with at most `max_gaps` skipped inner units.
 
     Zero-net units inside the span travel with the run; a negative unit splits the book.
@@ -269,7 +294,7 @@ def _runs(units, cash, max_gaps):
                     run = [seq[k] for k in range(pos[a], pos[b] + 1)
                            if seq[k][2] == 0 or k not in {pos[j] for j in skip}]
                     run = [u for u in run if u[2] > 0 or u[1]]
-                    if not any(u[1] for u in run):
+                    if not any(u[1] for u in run if u[2] > 0) and not (zero_only and any(u[1] for u in run)):
                         continue
                     key = _ids(run)
                     found.setdefault(key, (len(skip), run))
