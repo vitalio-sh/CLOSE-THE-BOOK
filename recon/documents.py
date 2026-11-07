@@ -249,6 +249,41 @@ def document_workers(ctx):
     except (TypeError, ValueError):
         return 8
 
+def _earliest_phase_booking(phase_dir):
+    """Return the earliest booking_date in the phase's bank transactions, or None."""
+    import gzip
+    for suffix in ('.csv.gz', '.csv'):
+        path = Path(phase_dir) / ('bank_transactions' + suffix)
+        if path.exists():
+            opener = gzip.open if suffix.endswith('.gz') else open
+            earliest = None
+            with opener(path, 'rt', encoding='utf-8-sig', newline='') as f:
+                for row in csv.DictReader(f):
+                    d = row.get('booking_date', '')
+                    if d and (earliest is None or d < earliest):
+                        earliest = d
+            return earliest
+    return None
+
+
+def _historical_advice_entries(history_dirs, cutoff_start, cutoff_end):
+    """Yield (root, meta_row) for advices with received_date in [cutoff_start, cutoff_end).
+
+    cutoff_start is inclusive, cutoff_end (the first booking date) is exclusive.
+    Absent or non-directory history dirs and missing index files are skipped.
+    """
+    for hdir in history_dirs:
+        root = Path(hdir) / 'remittance_advices'
+        index = root / 'index.csv'
+        if not index.exists():
+            continue
+        with index.open(encoding='utf-8-sig') as f:
+            for meta in csv.DictReader(f):
+                rd = meta.get('received_date', '')
+                if rd and cutoff_start <= rd < cutoff_end:
+                    yield root, meta
+
+
 class DocumentMatcher:
     """Complete-group matching with exact advice reference or payer+cash evidence."""
     def __init__(self, ctx):
@@ -285,17 +320,40 @@ class DocumentMatcher:
                       'short_reference_ambiguous_rows': 0, 'workers': workers, 'max_in_flight': workers * 2,
                       'cache_enabled': cache_dir is not None, 'cache_version': ADVICE_CACHE_VERSION,
                       'cache_hits': 0, 'cache_misses': 0, 'cache_corruptions': 0, 'cache_write_errors': 0}
-        if not index.exists():
-            return
-        with index.open(encoding='utf-8-sig') as f:
-            metadata = list(csv.DictReader(f))
+        metadata = []
+        if index.exists():
+            with index.open(encoding='utf-8-sig') as f:
+                metadata = [(root, meta) for meta in csv.DictReader(f)]
+        earliest = _earliest_phase_booking(ctx.phase_dir)
+        historical = []
+        if earliest:
+            from datetime import timedelta
+            cutoff_start = (date.fromisoformat(earliest) - timedelta(days=31)).isoformat()
+            historical = list(_historical_advice_entries(
+                getattr(ctx, 'history_dirs', ()), cutoff_start, earliest))
+        # The same physical source may be reachable through repeated/symlinked
+        # history dirs. Do not index it twice and manufacture an ambiguous match.
+        def source_key(entry):
+            folder, meta = entry
+            return ((folder / meta['file']).resolve(), tuple(sorted(meta.items())))
+        seen = {source_key(entry) for entry in metadata}
+        self.stats['historical_files_total'] = 0
+        historical_paths = set()
+        for entry in historical:
+            key = source_key(entry)
+            if key not in seen:
+                metadata.append(entry)
+                seen.add(key)
+                self.stats['historical_files_total'] += 1
+                historical_paths.add(key[0])
         self.stats['files_total'] = len(metadata)
-        self.stats['skipped_pdfs'] = sum(Path(m['file']).suffix == '.pdf' for m in metadata) if not tool else 0
+        self.stats['skipped_pdfs'] = sum(Path(m['file']).suffix == '.pdf' for _, m in metadata) if not tool else 0
         if self.stats['skipped_pdfs']:
             self.stats['warnings'].append(f"pdftotext unavailable: {self.stats['skipped_pdfs']} PDF remittance advices were skipped")
-        def parse(meta):
+        def parse(entry):
+            source_root, meta = entry
             try:
-                advice, status, write_failed = cached_parse_advice(root / meta['file'], meta, tool, cache_dir, backend)
+                advice, status, write_failed = cached_parse_advice(source_root / meta['file'], meta, tool, cache_dir, backend)
                 return advice, status, write_failed, None
             except (ValueError, KeyError, OSError, InvalidOperation, ET.ParseError, subprocess.SubprocessError, zipfile.BadZipFile) as exc:
                 return None, 'error', False, (meta['file'], str(exc))
@@ -303,6 +361,8 @@ class DocumentMatcher:
             # executor.map eagerly submits inputs; bounded windows cap pending work.
             for start in range(0, len(metadata), workers * 2):
                 yield from pool.map(parse, metadata[start:start + workers * 2])
+        seen_evidence = set()
+        self.stats['duplicate_historical_advices'] = 0
         with ThreadPoolExecutor(max_workers=workers) as pool:
             for advice, status, write_failed, error in results(pool):
                 if error:
@@ -313,6 +373,14 @@ class DocumentMatcher:
                     self.stats['cache_write_errors'] += 1
                 if advice is None:
                     continue
+                # SAMPLE can contain a copy of a prior-phase advice. Identical
+                # parsed facts are one piece of evidence, not competing matches.
+                # Preserve genuinely different advice (including deductions).
+                evidence = json.dumps(_advice_payload(advice), sort_keys=True)
+                if Path(advice.source).resolve() in historical_paths and evidence in seen_evidence:
+                    self.stats['duplicate_historical_advices'] += 1
+                    continue
+                seen_evidence.add(evidence)
                 self.advice_count += 1
                 if advice.short_refs:
                     self._changed_advices.append(advice)
@@ -334,7 +402,7 @@ class DocumentMatcher:
                 self.by_amount[advice.total].append(advice)
         self.stats['parsed'] = self.advice_count
         self.stats['parse_errors'] = len(self.errors)
-        self.stats['unsupported_or_empty'] = len(metadata) - self.advice_count - len(self.errors) - self.stats['skipped_pdfs']
+        self.stats['unsupported_or_empty'] = len(metadata) - self.advice_count - len(self.errors) - self.stats['skipped_pdfs'] - self.stats['duplicate_historical_advices']
         # The changed advice layout can omit invoice prefixes. Index only aliases
         # actually required by documents, then still require entity+exact gross.
         if self._missing_numbers:
