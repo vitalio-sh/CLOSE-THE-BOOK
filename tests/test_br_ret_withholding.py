@@ -44,7 +44,9 @@ class BrazilRetTests(unittest.TestCase):
         self.assertEqual((row['amount'], row['exception']), ('95.00', 'SHORT_DISPUTE'))
 
     def test_stated_other_deductions_are_not_tax(self):
-        for reason in ('PRICE DIFF', 'RET GARANTIA', 'RETENTION', '', 'RET TAX UNKNOWN'):
+        # A blank reason is no longer "not tax": on full TRAIN history a blank-reason advice deduction at an
+        # exact MX/BR/MA withholding rate is SHORT_WITHHOLDING in golden every time (remit lane, POLICIES §3).
+        for reason in ('PRICE DIFF', 'RET GARANTIA', 'RETENTION', 'RET TAX UNKNOWN'):
             with self.subTest(reason=reason):
                 row = self.rows(reason=reason)[0]
                 self.assertEqual(row['amount'], '90.00')
