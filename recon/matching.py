@@ -1410,6 +1410,60 @@ _REST_WINDOW_DAYS = 180
 _NM_MAX_ITEMS = 20
 
 
+_FX_SET_MAX_ITEMS = 30
+
+
+def fx_invoice_set(txn, ctx):
+    """Last resort: a receipt whose statement prints the instructed amount in another currency
+    (orig_amount/orig_currency) settles a set of the payer's open invoices in that currency
+    whose open amounts add up to the instructed amount exactly (POLICIES 3 FX_DIFFERENCE:
+    the payer pays the invoice amounts in the invoice currency; the bank converts). Every
+    invoice row carries FX_DIFFERENCE at its full open amount.
+
+    The payer must be identified, and the set must be the only exact one across every payer
+    candidate. A payer with more than 30 candidate invoices is searched among those issued
+    in the last 180 days; a larger pool abstains (never a free subset search).
+    """
+    cash = dec(txn.get('amount'))
+    ccy, orig = txn.get('orig_currency') or '', txn.get('orig_amount')
+    if cash <= 0 or not ccy or ccy == txn.get('currency') or not orig or classify(txn, ctx):
+        return None
+    target = dec(orig)
+    if target <= 0 or re.search(_RETURN_RE, words(text_of(txn))):
+        return None
+    parties = party_candidates(txn, ctx)
+    if not parties:
+        return None
+    try:
+        limit = (date.fromisoformat(txn['booking_date']) - timedelta(days=_REST_WINDOW_DAYS)).isoformat()
+    except (KeyError, TypeError, ValueError):
+        return None
+    found = []
+    for pid in parties:
+        pool = [ctx.items[i] for i in ctx.by_party.get(pid, ()) if i in ctx.items]
+        pool = [i for i in pool if i.get('kind') != 'credit' and i.get('side') == 'AR'
+                and i.get('currency') == ccy and i.get('entity') == txn.get('entity')
+                and _eligible(i, txn) and D(0) < dec(i.get('open_amount')) <= target]
+        if len(pool) > _FX_SET_MAX_ITEMS:
+            pool = [i for i in pool if i.get('issue_date', '') >= limit]
+        if len(pool) > _FX_SET_MAX_ITEMS:
+            return None
+        if not pool:
+            continue
+        pool.sort(key=lambda i: i['item_id'])
+        sets = positive_subsets([int(dec(i['open_amount']) * 100) for i in pool], int(target * 100),
+                                maximum_items=_FX_SET_MAX_ITEMS)
+        if sets is None:
+            return None
+        found += [[pool[k] for k in ids] for ids in sets]
+        if len(found) > 1:
+            return None
+    if len(found) != 1:
+        return None
+    return [row(txn, i['item_id'], i['open_amount'], 'FX_DIFFERENCE')
+            for i in sorted(found[0], key=lambda i: i['item_id'])]
+
+
 def party_partial_subset(txn, ctx):
     """Last resort: a receipt of an identified payer that pays several open invoices, one of
     them at a TRAIN partial share (40/50/60 % of its total, PARTIAL with the applied amount)

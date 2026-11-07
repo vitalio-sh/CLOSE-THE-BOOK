@@ -84,6 +84,9 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         # Last: same-named payers told apart by the single exact open amount (POLICIES 5.5, 5.6).
         from . import namesakes
         handlers.append(('namesakes', lambda txn: namesakes.reconcile(txn, ctx)))
+        # FX receipts whose instructed amount is exactly a unique set of the payer's invoices.
+        from .matching import fx_invoice_set
+        handlers.append(('fx_set', lambda txn: fx_invoice_set(txn, ctx)))
     return handlers, document_stats
 
 
