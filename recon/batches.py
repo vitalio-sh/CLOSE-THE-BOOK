@@ -629,7 +629,10 @@ class BatchMatcher:
         if self._dd_by_amount is None:
             self._dd_by_amount = defaultdict(list)
             for iid, item in self.ctx.items.items():
-                if item.get('side') == 'AP' and 'C' not in iid[:3] and item.get('payment_method') == 'dd':
+                # Opening-snapshot items carry no payment method: the supplier master's applies.
+                method = item.get('payment_method') or getattr(self.ctx, 'suppliers', {}).get(
+                    item.get('party_id'), {}).get('payment_method')
+                if item.get('side') == 'AP' and 'C' not in iid[:3] and method == 'dd':
                     for value in {money(item.get('total_amount')), money(item.get('open_amount'))}:
                         self._dd_by_amount[(item.get('currency'), value)].append(iid)
         cash = abs(amount)

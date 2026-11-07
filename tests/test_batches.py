@@ -439,6 +439,11 @@ class BatchTests(unittest.TestCase):
         self.assertIsNone(BatchMatcher(self.ctx).reconcile(txn))
         self.ctx.items['API-1']['payment_method']='dd'; txn['entity']='FR01'
         self.assertIsNone(BatchMatcher(self.ctx).reconcile(txn))
+        # An opening-snapshot invoice has no payment method; the supplier master's 'dd' applies.
+        txn['entity']='ES00'
+        for iid in ('API-1','API-2'): self.ctx.items[iid].pop('payment_method')
+        self.ctx.suppliers['S1']['payment_method']='dd'; self.ctx.suppliers['S2']['payment_method']='transfer'
+        self.assertEqual([r['item_id'] for r in BatchMatcher(self.ctx).reconcile(txn)],['API-1'])
 
     def test_unique_subset_three_four_and_budget(self):
         from recon.batches import unique_small_subset
