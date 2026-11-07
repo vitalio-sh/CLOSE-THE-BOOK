@@ -188,6 +188,10 @@ def match(ph, st) -> None:
         _match_structured(ph, st, ra_rows)
     except Exception as e:  # never let the structured pass kill the legacy one
         print(f"  remittance structured pass failed: {e!r}")
+    try:
+        _match_text_refs(ph, st)
+    except Exception as e:
+        print(f"  remittance text-refs pass failed: {e!r}")
     make = _entity_resolver(ph)
     # reference digits -> advices (header refs), entity from the index row
     by_ref = {}
@@ -372,6 +376,9 @@ def _match_structured(ph, st, ra_rows):
         amt = row["amount"] or 0
         if amt <= 0 or st.claimed(t):
             continue
+        fxl = _fx_target(row)
+        if fxl:
+            amt = fxl[1]  # the advice is in the invoice currency: compare with the instructed amount
         ent = row.get("entity") or ""
         lst = by_ent.get(ent)
         if not lst:
@@ -397,6 +404,8 @@ def _match_structured(ph, st, ra_rows):
             continue
         e = cands[0]
         allocs = _struct_allocs(st, info, e[1], ent, docmap, pomap, make(ent), terms, bd)
+        if allocs:
+            allocs = _fx_allocs(info, allocs, row, fxl)
         if allocs and st.assign(t, allocs):
             e[5] = True
 
@@ -448,3 +457,83 @@ def _struct_allocs(st, info, a, ent, docmap, pomap, resolve, terms, bd):
         else:
             allocs.append((iid, paid, "SHORT_DISPUTE"))
     return allocs
+
+
+def _match_text_refs(ph, st):
+    """Several (truncated / suffix-only) document numbers in the bank text whose open amounts, net of related pending
+    credit notes, add up to the cash exactly and uniquely (POLICIES §5.5). Customer anchored on a full number."""
+    from . import advice_big as A
+    info = item_info(ph)
+    dig = lambda s: re.sub(r"\D", "", str(s or ""))  # noqa: E731
+    bydig, bycust = {}, {}
+    for iid, r in info.items():
+        if r.get("item_type") not in ("ARI", "ARC"):
+            continue
+        d = dig(r.get("document_number"))
+        if len(d) >= 5:
+            bydig.setdefault((r["entity"], d), []).append(iid)
+        bycust.setdefault((r["entity"], r.get("party_id")), []).append(iid)
+    for row in bank_rows(ph):
+        t = row["bank_txn_id"]
+        amt = row["amount"] or 0
+        if amt <= 0 or st.claimed(t):
+            continue
+        ent = row.get("entity") or ""
+        raw = " | ".join(str(row.get(c) or "") for c in ("text", "remittance_info"))
+        toks = A.text_tokens(raw)
+        if len(toks) < 2:
+            continue
+        custs = set()
+        for k in toks:
+            for i in bydig.get((ent, k), []):
+                custs.add(info[i].get("party_id"))
+        if len(custs) != 1:
+            continue
+        cust = next(iter(custs))
+        bd = str(row.get("booking_date") or "")[:10]
+        cur = row.get("currency")
+        fxl = _fx_target(row)
+        if fxl:
+            cur, amt = fxl
+        pool = {}
+        for i in bycust.get((ent, cust), []):
+            r = info[i]
+            op = st.open.get(i, 0.0)
+            if op <= 0.005 or str(r.get("issue_date") or "")[:10] > bd or (cur and r.get("currency") != cur):
+                continue
+            pool[i] = (dig(r.get("document_number")), op, r["item_type"] == "ARC", dig(r.get("related_document")))
+        sol = A.solve_text(toks, pool, amt)
+        if not sol or len(sol) < 2:
+            continue
+        allocs = _fx_allocs(info, [(i, pool[i][1], "") for i in sol], row, fxl)
+        if allocs:
+            st.assign(t, allocs)
+
+
+def _fx_target(row):
+    """(invoice currency, instructed amount) when the bank line shows a foreign original amount, else None."""
+    oc, oa = row.get("orig_currency"), row.get("orig_amount")
+    if not oc or oc == row.get("currency"):
+        return None
+    try:
+        oa = float(str(oa).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    return (oc, oa) if oa > 0 else None
+
+
+def _fx_allocs(info, allocs, row, fxl):
+    """POLICIES §3 FX_DIFFERENCE: every fully cleared invoice row of a line in another currency carries it
+    (replacing '', SHORT_DISCOUNT...); PARTIAL / SHORT_DISPUTE keep their code; credit notes stay empty."""
+    cur = row.get("currency")
+    out = []
+    for iid, a, exc in allocs:
+        r = info.get(iid) or {}
+        if fxl and r.get("currency") != fxl[0]:
+            return None
+        if not fxl and r.get("currency") and cur and r.get("currency") != cur:
+            return None
+        if r.get("currency") != cur and r.get("item_type") == "ARI" and exc not in ("PARTIAL", "SHORT_DISPUTE"):
+            exc = "FX_DIFFERENCE"
+        out.append((iid, a, exc))
+    return out

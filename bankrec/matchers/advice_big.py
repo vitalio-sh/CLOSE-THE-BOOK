@@ -216,3 +216,102 @@ def parse_file(path: str) -> dict:
     if ext == "csv":
         return parse_csv(text)
     return parse_txt(text)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Several document numbers in the bank text (POLICIES §5.5: no prefix, last digits only, truncated at 16/35/38 chars,
+# continued in the next record) whose open amounts, minus the pending credit notes, add up to the cash exactly.
+# ----------------------------------------------------------------------------------------------------------------------
+_DIG = re.compile(r"\d{3,}")
+
+
+def text_tokens(raw: str) -> list:
+    """Digit runs of the bank text, plus the join of a run cut by a record boundary ('0329 | 708')."""
+    out = _DIG.findall(raw or "")
+    for m in re.finditer(r"(\d{2,})\s*\|\s*(\d{2,})", raw or ""):
+        out.append(m.group(1) + m.group(2))
+    return out
+
+
+def solve_text(tokens, pool, amount, max_combos=4096):
+    """pool: {item_id: (digits_of_doc, open_amount, is_credit_note, related_digits)}.
+
+    Returns a list of item_ids (unique exact solution) or None.
+    Every token either names one item exactly (full number or a distinctive suffix) or is ambiguous (prefix of a
+    truncated number / short suffix): ambiguous tokens choose at most one of their candidates. Pending credit notes
+    related to a chosen invoice may be netted. Exactly one combination must reach the cash (±0.01).
+    """
+    if not tokens or not pool:
+        return None
+    toks = list(dict.fromkeys(t for t in tokens if len(t) >= 3))
+    sure, amb = set(), []
+    for t in toks:
+        exact = [i for i, v in pool.items() if v[0] == t]
+        if len(exact) == 1:
+            sure.add(exact[0])
+            continue
+        suf = [i for i, v in pool.items() if len(t) >= 5 and v[0].endswith(t)]
+        if len(suf) == 1:
+            sure.add(suf[0])
+            continue
+        pre = [i for i, v in pool.items() if len(t) >= 4 and v[0].startswith(t) and len(v[0]) > len(t)]
+        c = set(suf) | set(pre)
+        if c:
+            amb.append(sorted(c))
+    if not sure and not amb:
+        return None
+    amb = [[i for i in a if i not in sure] for a in amb]
+    amb = [a for a in amb if a]
+    # merge identical ambiguity groups (the same prefix quoted twice = two different documents)
+    n_combo = 1
+    for a in amb:
+        n_combo *= (len(a) + 1)
+        if n_combo > max_combos:
+            return None
+    cents = round(amount * 100)
+    val = {i: (-1 if v[2] else 1) * round(v[1] * 100) for i, v in pool.items()}
+    sols = []
+    for pick in _product(amb):
+        chosen = set(sure)
+        ok = True
+        for p in pick:
+            if p is None:
+                continue
+            if p in chosen:
+                ok = False
+                break
+            chosen.add(p)
+        if not ok:
+            continue
+        s = sum(val[i] for i in chosen)
+        # pending credit notes related to chosen invoices (optional netting, all-or-nothing per subset)
+        rel = [i for i, v in pool.items() if v[2] and i not in chosen and v[3] and
+               any(pool[c][0] == v[3] for c in chosen if not pool[c][2])]
+        found = None
+        for k in range(len(rel) + 1):
+            if k > 3:
+                break
+            for sub in _combos(rel, k):
+                if abs(s + sum(val[i] for i in sub) - cents) <= 1:
+                    found = chosen | set(sub)
+                    break
+            if found:
+                break
+        if found:
+            sols.append(frozenset(found))
+            if len(set(sols)) > 1:
+                return None
+    sols = set(sols)
+    if len(sols) != 1:
+        return None
+    return sorted(next(iter(sols)))
+
+
+def _product(groups):
+    import itertools
+    return itertools.product(*[[None] + g for g in groups])
+
+
+def _combos(lst, k):
+    import itertools
+    return itertools.combinations(lst, k)

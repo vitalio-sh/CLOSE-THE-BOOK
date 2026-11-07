@@ -528,6 +528,8 @@ def payment_runs(ph, st):
                 elif rtype == "aggregated":
                     if abs(sum(transfer_amt(k) for k in e2es) - amt) < 0.02:
                         keys = list(e2es)
+                    else:  # FX: transfers in another currency, converted by the bank (spread <= 3 %, POLICIES §3)
+                        keys = _agg_fx(ph, e2es, transfer_amt, row, amt)
                 else:  # confirming: one debit per maturity date (max due date of the transfer, next business day)
                     groups = defaultdict(list)
                     for k in e2es:
@@ -555,3 +557,31 @@ def payment_runs(ph, st):
                     break
         if keys:
             finish(t, row, keys)
+
+
+def _agg_fx(ph, e2es, transfer_amt, row, amt):
+    """Aggregated run mixing currencies: same-currency transfers at face value + foreign ones converted at the
+    reference rate of the booking date; accept when the gap is within 3 % of the converted foreign part."""
+    try:
+        from .payments import _fx_rates, _rate
+    except Exception:
+        return None
+    cur = row.get("currency")
+    day = str(row.get("booking_date") or "")[:10]
+    fx = _fx_rates(ph)
+    same, conv = 0.0, 0.0
+    for k, docs in e2es.items():
+        c = docs[0]["currency"]
+        a = transfer_amt(k)
+        if c == cur:
+            same += a
+        else:
+            rf, rt = _rate(fx, c, day), _rate(fx, cur, day)
+            if not rf or not rt:
+                return None
+            conv += a / rf * rt
+    if conv <= 0:
+        return None
+    if abs(same + conv - amt) <= 0.03 * conv + 0.02:
+        return list(e2es)
+    return None
