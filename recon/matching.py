@@ -138,6 +138,8 @@ def _exception(item, cash, txn, ctx, fx=False):
     country=customer.get('country','').upper()
     bank_text=words(' | '.join(str(txn.get(k) or '') for k in ('text','ref1','ref2','remittance_info')))
     transfer=bool(re.search(r'\b(?:SWIFT|TRANSFER EN DIV|TRANSFERENCIA INTERNACIONAL|INTERNATIONAL TRANSFER|WIRE TRANSFER|GASTOS (?:SHA|BEN)|CHGS)\b',bank_text))
+    # ISO 20022 bank transaction code PMNT/RCDT/XBCT = cross-border credit transfer.
+    transfer=transfer or 'XBCT' in str(txn.get('bank_code') or '').upper()
     if (not fx and item.get('side')=='AR' and item.get('kind')!='credit'
             and country and country not in sepa and transfer):
         short=opened-cash
