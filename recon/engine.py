@@ -1,5 +1,6 @@
 """Single ordered inference path shared by release generation and evaluation."""
 from collections import Counter
+from decimal import Decimal
 import json
 
 from .validate import FIELDS
@@ -43,7 +44,13 @@ def execute(ctx, txns, handlers, writer, audit, progress=None):
                 source = name
                 break
         if not rows:
-            rows = [dict(zip(FIELDS, [txn['bank_txn_id'], '', '', 'UNIDENTIFIED', 'UNIDENTIFIED']))]
+            # POLICIES §3: UNIDENTIFIED exception means "a receipt for which
+            # no open item exists".  Clear the exception when the payer was
+            # identified (party_candidates non-empty) or the line is outgoing
+            # (negative cash), keeping only the UNIDENTIFIED category.
+            from .matching import party_candidates
+            exc = '' if Decimal(txn['amount']) < 0 or party_candidates(txn, ctx) else 'UNIDENTIFIED'
+            rows = [dict(zip(FIELDS, [txn['bank_txn_id'], '', '', 'UNIDENTIFIED', exc]))]
         rows = [{key: str(row.get(key, '') or '') for key in FIELDS} for row in rows]
         writer.writerows(rows)
         ctx.apply(txn, rows)
