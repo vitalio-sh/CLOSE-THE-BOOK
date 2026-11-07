@@ -1120,19 +1120,31 @@ def _unwrapped(text):
     return out
 
 
+def _field_fragments(raw):
+    raw = _unwrapped(raw)
+    # SWIFT-style tags and the instructed amount / exchange rate are not references.
+    raw = re.sub(r'/OCMT/[A-Z]{3}[0-9.,]+|/EXCH/[0-9.,]+', ' ', raw, flags=re.I)
+    raw = re.sub(r'/(?:ORDP|REMI|EREF|REF|RFB|OBI|ORG|MOTIF|CHGS|BENM)/', ' ', raw, flags=re.I)
+    tokens = []
+    for match in re.finditer(r'[A-Za-z0-9][A-Za-z0-9/._-]*', raw):
+        token = norm(match[0])
+        if len(token) >= 5 and sum(c.isdigit() for c in token) >= 4:
+            tokens.append(token)
+    return tokens
+
+
 def _fragment_tokens(txn):
     """Printed reference fragments: alphanumeric tokens with at least 4 digits, >= 5 chars."""
     tokens = []
     for key in ('text', 'ref1', 'ref2', 'remittance_info'):
-        raw = _unwrapped(txn.get(key))
-        # SWIFT-style tags and the instructed amount / exchange rate are not references.
-        raw = re.sub(r'/OCMT/[A-Z]{3}[0-9.,]+|/EXCH/[0-9.,]+', ' ', raw, flags=re.I)
-        raw = re.sub(r'/(?:ORDP|REMI|EREF|REF|RFB|OBI|ORG|MOTIF|CHGS|BENM)/', ' ', raw, flags=re.I)
-        for match in re.finditer(r'[A-Za-z0-9][A-Za-z0-9/._-]*', raw):
-            token = norm(match[0])
-            if len(token) >= 5 and sum(c.isdigit() for c in token) >= 4:
-                tokens.append(token)
+        tokens += _field_fragments(txn.get(key))
     return list(dict.fromkeys(tokens))
+
+
+def _printed_list(txn):
+    """The longest single printed list (one field), keeping repeated fragments: one per document."""
+    return max((_field_fragments(txn.get(key)) for key in ('text', 'ref1', 'ref2', 'remittance_info')),
+               key=len)
 
 
 def _anchor_fill(txn, anchors, candidates, currency, cash):
@@ -1209,6 +1221,23 @@ def fragment_partial(txn, ctx, min_anchors=1, min_fragments=2):
             anchors[iid] = ctx.items[iid]
     if matched < min_fragments or len(anchors) < min_anchors:
         return None
+    # Each printed fragment stands for a different document: a fragment whose other
+    # candidates are all anchored already names the one that is left.
+    sets = [{item['item_id'] for number, item in pool if len(number) >= len(token) and token in number}
+            for token in _printed_list(txn)]
+    progress = True
+    while progress:
+        progress = False
+        for hits in sets:
+            rest = hits - set(anchors)
+            if len(hits) > 1 and len(rest) == 1:
+                iid = next(iter(rest))
+                if pdf_facts is not None:
+                    iid = pdf_facts.resolve(iid)
+                    if iid not in pool_ids or iid in anchors:
+                        continue
+                anchors[iid] = ctx.items[iid]
+                progress = True
     if len({i['party_id'] for i in anchors.values()}) != 1:
         return None
     signed = sum((dec(i['open_amount']) * (-1 if i.get('kind') == 'credit' else 1) for i in anchors.values()), D(0))

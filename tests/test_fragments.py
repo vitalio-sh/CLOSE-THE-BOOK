@@ -32,6 +32,17 @@ class FragmentPartialTests(unittest.TestCase):
         rows = fragment_partial(txn('5000', 'Alice Water Works INV 400012 10624000 106240'), context(book()))
         self.assertEqual([r['item_id'] for r in rows], ['I12'])
 
+    def test_fragment_left_after_anchors_is_anchored(self):
+        items = book()
+        # '1062400012' and '1062400013' are printed in full; '106240001' fits I10..I19,
+        # '10624000' also I1..I9; with I10..I19 all quoted except I11, '106240001' names I11.
+        quoted = ' '.join(f'106240001{n}' for n in range(0, 10) if n != 1)
+        rows = fragment_partial(txn('5000', f'Alice Water Works INV {quoted} 106240001'), context(items))
+        self.assertIn('I11', {r['item_id'] for r in rows})
+        # The same list without the ambiguous fragment does not name I11.
+        rows = fragment_partial(txn('5000', f'Alice Water Works INV {quoted}'), context(items))
+        self.assertNotIn('I11', {r['item_id'] for r in rows})
+
     def test_cancelled_number_resolves_to_replacement(self):
         from types import SimpleNamespace
         items = book()
