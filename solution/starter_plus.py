@@ -13,6 +13,12 @@ Standard library only. Rules, in order, for every bank line:
     The item is that customer's invoice with the returned amount: preferably one collected under that mandate in a
     batch of the phase before the return (the latest), otherwise the oldest such invoice. Row: amount = returned
     amount, exception RETURNED; the invoice is re-opened (it can be re-presented or paid by transfer later).
+0c. Payment run (POLICIES 5.3): a debit whose end_to_end_id (field or text) is a transfer of a payment_runs/ file
+    clears the documents of that transfer; a debit carrying a run_id with exactly the run total clears the whole run.
+    Each row -> supplier invoice / credit note by document number, of the supplier owning the beneficiary IBAN
+    (suppliers.csv); if the beneficiary is not the supplier (factor, confirming bank), a unique document number.
+    Amount = document amount (positive). Exception: PARTIAL if less than the item's open balance; FX_DIFFERENCE for
+    invoices in a currency other than the bank line's; credit notes none.
 1. One-to-one (unchanged from the starter): a token of the bank text is one of our document numbers and the document
    total equals the bank amount.
 2. One-to-many (new): the bank text cites several document numbers (also written without prefix / leading zeros,
@@ -240,6 +246,38 @@ def main():
             for r in csv.DictReader(fh):
                 dd_batches[norm(r["batch_id"])].append(r)
 
+    # payment-run files of the phase: end_to_end_id -> rows, run_id -> rows; supplier by IBAN
+    run_by_e2e, run_by_id = defaultdict(list), defaultdict(list)
+    for p in sorted(glob.glob(os.path.join(a.data, a.phase, "payment_runs", "*.csv"))):
+        with open(p, encoding="utf-8", newline="") as fh:
+            for r in csv.DictReader(fh):
+                run_by_e2e[norm(r["end_to_end_id"])].append(r)
+                run_by_id[norm(r["run_id"])].append(r)
+    sup_by_iban = defaultdict(set)
+    sup_path = os.path.join(a.data, "masters", "suppliers.csv")
+    if os.path.exists(sup_path):
+        with open(sup_path, encoding="utf-8", newline="") as fh:
+            for r in csv.DictReader(fh):
+                for acc in (r["iban"], r.get("account_number", "")):
+                    if acc:
+                        sup_by_iban[norm(acc)].add(r["supplier_id"])
+
+    def run_total(rows):
+        return sum({r["end_to_end_id"]: cents(r["transfer_amount"]) for r in rows}.values())
+
+    def resolve_run_row(r):
+        """Supplier invoice / credit note paid by one row of a payment-run file."""
+        kind = "APC" if r["document_type"] == "CREDIT_NOTE" else "API"
+        doc_amt = abs(cents(r["document_amount"]))
+        cands = [iid for iid in by_number.get(norm(r["document_number"]), ())
+                 if info[iid]["kind"] == kind and info[iid]["currency"] == r["currency"]]
+        own = [iid for iid in cands if info[iid]["cust"] in sup_by_iban.get(norm(r["beneficiary_iban"]), ())]
+        pool = own or cands                           # beneficiary not the supplier: factor / confirming bank
+        if len(pool) > 1:
+            pool = [iid for iid in pool if items[iid] == doc_amt]
+        return pool[0] if len(pool) == 1 else None
+
+    balance = {}                                      # item -> open balance in cents (payment runs)
     used = set()
     returned = set()
     dd_collected = defaultdict(list)                  # mandate -> [(collection date, item)] collected by our batches
@@ -264,7 +302,7 @@ def main():
     txns = list(rcsv(os.path.join(a.data, a.phase, "bank_transactions.csv.gz")))
     result = {}                                       # bank_txn_id -> list of output rows
     pending = []                                      # receipts left for the payer + amount rule
-    n_match = n_multi = n_multi_items = n_payer = n_batch = n_batch_items = n_returned = 0
+    n_match = n_multi = n_multi_items = n_payer = n_batch = n_batch_items = n_returned = n_run = n_run_items = 0
     for t in txns:
         amt = cents(t["amount"])
         text = " ".join([t["text"], t["ref1"], t["ref2"], t["remittance_info"]]).upper()
@@ -305,6 +343,41 @@ def main():
                     returned.add(iid)
                     n_returned += 1
                     result[t["bank_txn_id"]] = [[t["bank_txn_id"], iid, f"{-amt / 100:.2f}", "", "RETURNED"]]
+                    continue
+
+        # 0c) payment run: one transfer (end_to_end_id) or a whole run with exactly its total
+        if amt < 0:
+            run = None
+            for x in [norm(t["end_to_end_id"])] + tokens:
+                if x in run_by_e2e:
+                    rows_ = run_by_e2e[x]
+                    if rows_[0]["currency"] != t["currency"] or cents(rows_[0]["transfer_amount"]) == -amt:
+                        run = rows_
+                        break
+                if x in run_by_id and run_total(run_by_id[x]) == -amt:
+                    run = run_by_id[x]
+                    break
+            if run:
+                out = []
+                for r in run:
+                    iid = resolve_run_row(r)
+                    if not iid or iid in {o[1] for o in out}:
+                        continue
+                    paid = abs(cents(r["document_amount"]))
+                    open_amt = balance.get(iid, items[iid] if open_at_start is None else open_at_start.get(iid, items[iid]))
+                    exc = ""
+                    if info[iid]["kind"] == "API":
+                        if paid < open_amt - max(1, open_amt // 200):
+                            exc = "PARTIAL"
+                        elif r["currency"] != t["currency"]:
+                            exc = "FX_DIFFERENCE"
+                    balance[iid] = max(0, open_amt - paid)
+                    used.add(iid)
+                    out.append([t["bank_txn_id"], iid, f"{paid / 100:.2f}", "", exc])
+                if out:
+                    result[t["bank_txn_id"]] = out
+                    n_run += 1
+                    n_run_items += len(out)
                     continue
 
         # 1) one-to-one, exactly as the starter
@@ -399,7 +472,7 @@ def main():
         w = csv.writer(fh, lineterminator="\n")
         w.writerow(["bank_txn_id", "item_id", "amount", "category", "exception"])
         w.writerows(rows)
-    print(f"{len(rows)} rows ({n_batch} DD batches with {n_batch_items} items, {n_returned} returned, {n_match} one-to-one,{n_multi} one-to-many lines with {n_multi_items} items, "
+    print(f"{len(rows)} rows ({n_batch} DD batches with {n_batch_items} items, {n_returned} returned, {n_run} payment-run lines with {n_run_items} items, {n_match} one-to-one,{n_multi} one-to-many lines with {n_multi_items} items, "
           f"{n_payer} payer+amount) -> {a.out}")
 
 
