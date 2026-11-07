@@ -1,7 +1,7 @@
 # Team 10 — Close the Books
 
 **Team:** Vitalii (lead and integrator), Luke Mininno, Ivan (eltriki-X), Marina.
-**Repository:** https://github.com/vitalio-sh/CLOSE-THE-BOOK. Final solution: `review/team-integ-r11` (6c29aaa) [DA CONFERMARE: the final branch/commit merged to `main`].
+**Repository:** https://github.com/vitalio-sh/CLOSE-THE-BOOK. Final solution: `review/team-integ-r14` (8b00ac7) [DA CONFERMARE: the final branch/commit merged to `main`].
 
 ## Problem
 Grupo Valtermia has 17 companies, 12 currencies and 13 banks. Each bank line must be matched to the open invoices and credit notes it settles, with the settled amounts. A line that settles nothing must get a category, and every exception must be flagged (PARTIAL, RETURNED, FX_DIFFERENCE, DUPLICATE_PAYMENT…).
@@ -33,7 +33,8 @@ Two principles hold across all steps:
 - **Multi-agent development.** Vitalii ran a Claude orchestrator that coordinates several agents. Each teammate's work was integrated in rounds (r6 → r11). Every round is checked on held-out data before it is accepted.
 - **Fair holdout** (`make_holdout.py`). It cuts TRAIN at 2025-03-31 and turns April–June 2025 into a LIVE-shaped phase, with opening balances and PDFs for that window. Any solution runs on it unchanged, and the official scorer reports per-segment results.
 - **Adversarial validation** before integration. Example: returned direct debits by reason code. r6 got 1,796 of 1,835 right (97.9%), and the errors were concentrated in MD06 refund requests: 27 wrong picks and 25 false DUPLICATE_PAYMENT later on. Unit tests encode the policy (9 tests); they exposed a precedence bug, which is now fixed.
-- **Entity-first payer resolution** (Marina): customers are searched within the company that received the cash before anything else. [DA CONFERMARE: short description of the idea]
+- **Independent temporal check** on March 2025, a month never used for tuning (opening balances from the golden, so not an official score): r9 93.51 → r11 94.20. That is +0.69, the same gain as the official LIVE difference from r9 to r11.
+- **Entity-first payer identification** (idea: Marina Moncayola). When a bank line's text matches several customers, the solver ranks only those that belong to the company owning the bank account. For ES00 payments it also ranks customers of ES01, ES02 and PT01, the companies whose payments ES00 makes as payment factory. This way a same-named customer abroad can't outrank the real local payer. Measured: +0.05 (October) and +0.03 (January), with 23 + 10 fixes and 1 regression; included in every release since r11.
 - **Categories from TRAIN history** (Ivan): cash pool, FX deal, bank reversal, taxes and similar lines are classified from TRAIN history.
 
 ## Results
