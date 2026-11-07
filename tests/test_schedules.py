@@ -128,6 +128,19 @@ class AdvanceAndRetentionTests(unittest.TestCase):
         r = m.reconcile(txn('1676.57', 'DIRECT CREDIT ALICE WATER WORKS'))
         self.assertEqual((r[0]['item_id'], r[0]['amount'], r[0]['exception']), ('I1', '1676.57', 'PARTIAL'))
 
+    def test_advance_on_snapshot_open_at_net_due_is_still_partial(self):
+        # POLICIES §3: the payment of an invoice whose PDF deducts an advance is PARTIAL,
+        # also when the opening snapshot already carries the invoice at its net due.
+        facts = {'I1': {'advance_proforma': 'PF24-0300010', 'advance_amount': '718.53', 'net_due': '1676.57'}}
+        a = invoice(amount='2395.10')
+        a['open_amount'] = D('1676.57')
+        c, m = matcher([a], facts)
+        r = m.reconcile(txn('1676.57', 'DIRECT CREDIT ALICE WATER WORKS'))
+        self.assertEqual((r[0]['item_id'], r[0]['amount'], r[0]['exception']), ('I1', '1676.57', 'PARTIAL'))
+        a['open_amount'] = D('1000.00')
+        c, m = matcher([a], facts)
+        self.assertIsNone(m.reconcile(txn('1676.57', 'DIRECT CREDIT ALICE WATER WORKS')))
+
     def test_space_grouped_advance_clause_verified_from_text(self):
         flat = 'LESS ADVANCE RECEIVED AGAINST PROFORMA PF24-0100016: 1 629,09 EUR. NET AMOUNT DUE 3 801,23 EUR.'
         self.assertEqual(grouped_amount(ADVANCE_RE.search(flat)[1]), D('1629.09'))

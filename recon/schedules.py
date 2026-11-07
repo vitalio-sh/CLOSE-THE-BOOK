@@ -162,8 +162,8 @@ class Schedules:
             return cash, label
         # POLICIES §3: the payment of an invoice whose PDF deducts a proforma advance,
         # and the first payment of an invoice with a guarantee retention, are PARTIAL.
-        if opened != total:
-            return None
+        # The advance case holds whatever the open balance says: an opening snapshot can
+        # already carry the invoice at its net due, and paying that net is still PARTIAL.
         advance = dec(facts.get('advance_amount')) if facts.get('advance_amount') else None
         if advance is None and any(abs(cash - total + (total * p).quantize(CENT, rounding=ROUND_DOWN)) <= CENT
                                    for p in ADVANCE_SHARES):
@@ -173,8 +173,11 @@ class Schedules:
         if advance is not None:
             net = total - advance
             printed = facts.get('net_due')
-            if (not printed or abs(dec(printed) - net) <= CENT) and abs(cash - net) <= CENT:
+            if (not printed or abs(dec(printed) - net) <= CENT) and abs(cash - net) <= CENT and \
+                    (opened == total or abs(opened - net) <= CENT):
                 return cash, 'PARTIAL'
+        if opened != total:
+            return None
         if facts.get('retention_pct'):
             pct = dec(facts['retention_pct'])
             if D(5) <= pct <= D(10):
