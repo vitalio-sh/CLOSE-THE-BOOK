@@ -36,6 +36,14 @@ class CreditGroupTests(unittest.TestCase):
         rows = reconcile(txn('250', 'Alice Water Works PAYMENT'), context(items))
         self.assertEqual(set(ids(rows)), {'A', 'B', 'C'})
 
+    def test_run_stays_within_the_one_year_horizon(self):
+        # A contiguous run of documents issued years before the receipt is a coincidence.
+        items = [invoice('A', 'F1', '100'), invoice('B', 'F2', '200'), credit('C', 'AB1', '50', 'F2'),
+                 invoice('E', 'F3', '999')]
+        for n, item in enumerate(items):
+            item['issue_date'] = f'2021-01-0{n + 1}'
+        self.assertIsNone(reconcile(txn('250', 'Alice Water Works PAYMENT'), context(items)))
+
     def test_run_never_carries_fully_credited_invoice(self):
         # Zero-net veto: an invoice fully offset by its credit is not swept into a run.
         items = [invoice('OLD', 'F0', '40'), credit('Z', 'AB0', '40', 'F0'), invoice('A', 'F1', '100'),

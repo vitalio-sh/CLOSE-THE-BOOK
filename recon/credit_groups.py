@@ -176,7 +176,9 @@ def candidates(txn, ctx, horizon_days=None, quoted=None, runs=True, zeros=True):
         # A fully credited invoice (zero net) inside a run travels with it; a negative unit
         # splits the book. gap_run: the same with at most GAP_UNITS skipped inner units.
         if runs and len(units) <= GAP_BOOK:
-            for gaps, run in _runs(units, cash, GAP_UNITS, zero_only):
+            # Runs keep the subset horizon: a span reaching documents years old is a coincidence.
+            recent = [u for u in units if horizon is None or u[0].get('issue_date', '') >= horizon]
+            for gaps, run in _runs(recent, cash, GAP_UNITS, zero_only):
                 out.append(('run_net' if not gaps else 'gap_run', rank, _ids(run)))
         # unit_subset: quoted units are anchors; the remaining positive units form a bounded
         # exact subset with a unique solution.
