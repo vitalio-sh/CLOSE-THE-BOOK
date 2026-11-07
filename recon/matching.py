@@ -300,10 +300,14 @@ def reconcile(txn,ctx):
     # Search document numbers and truncated suffixes only inside identified parties.
     refs=set(ids)
     numeric_tokens=set(re.findall(r'\b\d{5,}\b',raw))
+    # Bank texts cut references at 16/35/38 characters: 'INVOICE INV24-0151' for INV24-0151xx.
+    truncated_tokens={t for t in (norm(x) for x in re.findall(r'[A-Za-z0-9][A-Za-z0-9/._-]{3,}',raw))
+                      if len(t)>=7 and any(c.isdigit() for c in t)}
     for iid in scoped:
         item=ctx.items[iid]
         n=norm(item.get('document_number'))
         if len(n)>=5 and n in compact:refs.add(iid)
+        elif any(len(n)>len(t)>=max(7,len(n)*0.6) and n.startswith(t) for t in truncated_tokens):refs.add(iid)
         elif any(len(v)>=5 and n.endswith(v) for v in numeric_tokens):refs.add(iid)
         elif item.get('customer_po') and len(norm(item['customer_po']))>=6 and norm(item['customer_po']) in compact:refs.add(iid)
     pdf_facts=getattr(ctx,'pdf_facts',None)
@@ -363,6 +367,9 @@ def reconcile(txn,ctx):
                     pairs.append((inv,credit))
         if len(pairs)==1:
             return [row(txn,i['item_id'],i['open_amount']) for i in pairs[0]]
+    gap_rows = _gap_fill(txn, open_refs, candidates_of(scoped, txn, ctx))
+    if gap_rows is not None:
+        return gap_rows
     if len(valid_refs)==1:
         item=valid_refs[0];cash,fx=_cash(item,txn)
         if cash is not None:
@@ -578,3 +585,37 @@ def _known_payer_ladder(txn, ctx, parties, candidates):
         if best:
             return [row(txn, best[1]['item_id'], best[1]['open_amount'], 'OVERPAYMENT')]
     return None
+
+
+def candidates_of(scoped, txn, ctx):
+    return [ctx.items[i] for i in scoped if _eligible(ctx.items[i], txn)]
+
+
+def _gap_fill(txn, open_refs, candidates):
+    """Quoted invoices of one payer plus the oldest other open items that make up the rest.
+
+    Bank texts truncate reference lists: the cash covers the quoted invoices and more of
+    the same payer's open items. The remainder must be one exact oldest open item or a
+    FIFO-shaped exact set (see _ordered_sets).
+    """
+    invoices = [i for i in open_refs if i.get('kind') != 'credit']
+    if not invoices or len({i['party_id'] for i in open_refs}) != 1:
+        return None
+    if any(i.get('currency') != txn.get('currency') for i in open_refs):
+        return None
+    cash = abs(dec(txn['amount']))
+    gap = cash - sum((dec(i['open_amount']) * (-1 if i.get('kind') == 'credit' else 1) for i in open_refs), D(0))
+    if gap <= CENT:
+        return None
+    quoted = {i['item_id'] for i in open_refs}
+    party = open_refs[0]['party_id']
+    rest = sorted((i for i in candidates if i['party_id'] == party and i['item_id'] not in quoted
+                   and dec(i.get('open_amount')) > 0 and i.get('currency') == txn.get('currency')
+                   and i.get('entity') == txn.get('entity')),
+                  key=lambda i: (i.get('issue_date', ''), i['item_id']))
+    fill = [i for i in rest if i.get('kind') != 'credit' and abs(dec(i['open_amount']) - gap) <= CENT][:1]
+    if not fill:
+        fill = _ordered_sets(rest, int(gap * 100), txn.get('booking_date', '')) or []
+    if not fill:
+        return None
+    return [row(txn, i['item_id'], i['open_amount']) for i in sorted(open_refs + fill, key=lambda i: i['item_id'])]

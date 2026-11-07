@@ -66,6 +66,14 @@ class MatchingTests(unittest.TestCase):
         items=[invoice('A','F1','60'),invoice('B','F2','10'),invoice('C','F3','40'),invoice('D','F4','30')]
         for n,i in enumerate(items):i['issue_date']=f'2025-01-0{n+1}'
         self.assertIsNone(reconcile(txn('100','Alice Water Works PAYMENT'),context(items)))
+    def test_truncated_reference_prefix(self):
+        items=[invoice('A','INV24-015107','100'),invoice('B','INV24-099999','100')]
+        rows=reconcile(txn('100','Alice Water Works INVOICE INV24-0151'),context(items))
+        self.assertEqual([r['item_id'] for r in rows],['A'])
+    def test_gap_fill_after_quoted_invoice(self):
+        items=[invoice('A','FV25-00001','60'),invoice('B','FV25-00002','40'),invoice('C','FV25-00003','25')]
+        rows=reconcile(txn('100','Alice Water Works FV25-00001'),context(items))
+        self.assertEqual({r['item_id'] for r in rows},{'A','B'})
     def test_signature_overpayment_single(self):
         items=[invoice('A','F1','480'),invoice('B','F2','700')]
         rows=reconcile(txn('500','Alice Water Works PAYMENT'),context(items))
