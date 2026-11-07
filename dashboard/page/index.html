@@ -1,0 +1,390 @@
+<style>
+  #dash-root { font-family: var(--font-anthropic-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif); color: var(--color-fg); }
+  #dash-root * { box-sizing: border-box; }
+  .wrap { max-width: 1280px; margin: 0 auto; }
+  .muted { color: var(--color-fg-muted); }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 22px; }
+  .tab { border: 1px solid var(--color-border-line); background: var(--color-panel); color: var(--color-fg); padding: 9px 14px; border-radius: 8px; font: inherit; font-size: 14px; cursor: pointer; }
+  .tab[aria-selected="true"] { background: var(--color-fg); color: var(--color-bg); border-color: var(--color-fg); }
+  .crumb { font-size: 13px; color: var(--color-fg-muted); }
+  h1 { font-size: 30px; margin: 4px 0 6px; font-weight: 700; letter-spacing: -0.01em; }
+  h2 { font-size: 22px; margin: 0 0 6px; font-weight: 700; }
+  h3 { font-size: 15px; margin: 0 0 4px; font-weight: 700; }
+  .lede { color: var(--color-fg-muted); margin: 0 0 22px; font-size: 15px; }
+  .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--color-border-line); border-bottom: 1px solid var(--color-border-line); margin-bottom: 26px; }
+  .kpi { padding: 16px 20px; min-width: 0; }
+  .kpi + .kpi { border-left: 1px solid var(--color-border-line); }
+  .kpi .label { color: var(--color-fg-muted); font-size: 14px; }
+  .kpi .value { font-size: 36px; font-weight: 700; margin: 4px 0 2px; font-variant-numeric: tabular-nums; }
+  .kpi .hint { color: var(--color-fg-muted); font-size: 13px; }
+  .kpi.linked .value { color: var(--color-ok); }
+  .kpi.unid .value { color: var(--color-warn); }
+  .explorer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border: 1px solid var(--color-border-line); border-radius: 10px; overflow: hidden; }
+  .list-pane { border-right: 1px solid var(--color-border-line); display: flex; flex-direction: column; min-width: 0; }
+  .toolbar { display: flex; gap: 10px; padding: 14px; border-bottom: 1px solid var(--color-border-line); }
+  .search, .filter { border: 1px solid var(--color-border-line); border-radius: 6px; padding: 9px 11px; font: inherit; font-size: 14px; background: var(--color-bg); color: var(--color-fg); }
+  .search { flex: 1; min-width: 0; }
+  .count { padding: 10px 14px; color: var(--color-fg-muted); font-size: 13px; border-bottom: 1px solid var(--color-border-line); }
+  .grid-row, .row-head { display: grid; grid-template-columns: minmax(0, 1fr) 110px 130px; gap: 10px; align-items: center; padding: 12px 14px; }
+  .row-head { color: var(--color-fg-muted); font-size: 12px; border-bottom: 1px solid var(--color-border-line); }
+  .rows { overflow: auto; max-height: 560px; }
+  .row { border-bottom: 1px solid var(--color-border-line); cursor: pointer; }
+  .row:hover { background: var(--color-panel); }
+  .row.selected { background: var(--color-panel); box-shadow: inset 3px 0 0 var(--color-fg); }
+  .party { font-weight: 600; font-size: 14px; }
+  .sub { color: var(--color-fg-muted); font-size: 12px; margin-top: 2px; }
+  .id { font-size: 12px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; font-size: 14px; }
+  .num small { display: block; color: var(--color-fg-muted); font-size: 11px; }
+  .pill { display: inline-block; padding: 3px 9px; border-radius: 5px; font-size: 12px; white-space: nowrap; border: 1px solid var(--color-border-line); }
+  .pill.linked { color: var(--color-ok); }
+  .pill.exception { color: var(--color-warn); }
+  .pill.category { color: var(--color-fg); }
+  .pill.unidentified { color: var(--color-bad); }
+  .detail { padding: 20px 22px; min-width: 0; overflow: auto; }
+  .detail-head { display: flex; justify-content: space-between; align-items: center; color: var(--color-fg-muted); font-size: 13px; }
+  .detail h3 { font-size: 24px; margin: 12px 0 6px; }
+  .big { font-size: 36px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .big span { font-size: 16px; color: var(--color-fg-muted); margin-left: 6px; font-weight: 500; }
+  .when { color: var(--color-fg-muted); font-size: 13px; margin-top: 4px; }
+  .callout { border-left: 3px solid var(--color-fg); background: var(--color-panel); border-radius: 6px; padding: 12px 14px; margin: 18px 0; font-size: 14px; }
+  .callout strong { display: block; margin-bottom: 3px; }
+  .callout.warn { border-color: var(--color-warn); }
+  .callout.grey { border-color: var(--color-fg-muted); }
+  h4 { font-size: 14px; margin: 18px 0 8px; }
+  table.kv { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.kv td { padding: 6px 0; vertical-align: top; }
+  table.kv td:first-child { color: var(--color-fg-muted); width: 36%; }
+  .mono { font-variant-numeric: tabular-nums; word-break: break-all; }
+  .raw { background: var(--color-panel); border-radius: 6px; padding: 10px 12px; font-size: 13px; margin-top: 10px; word-break: break-word; }
+  .alloc { border: 1px solid var(--color-border-line); border-radius: 8px; padding: 10px 12px; margin-top: 8px; display: flex; justify-content: space-between; gap: 10px; }
+  .alloc .amt { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .alloc .state { color: var(--color-fg-muted); font-size: 12px; font-weight: 400; margin-top: 2px; }
+  .btn { border: 1px solid var(--color-border-line); background: var(--color-panel); color: var(--color-fg); padding: 9px 14px; border-radius: 6px; font: inherit; font-size: 14px; cursor: pointer; white-space: nowrap; }
+  .btn.primary { background: var(--color-fg); color: var(--color-bg); border-color: var(--color-fg); }
+  .section-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 14px; }
+  .section-head p { margin: 0; color: var(--color-fg-muted); font-size: 14px; }
+  .steps { display: grid; gap: 14px; }
+  .step { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; }
+  .step .n { width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--color-border-line); display: grid; place-items: center; font-size: 13px; }
+  .step ul { margin: 6px 0 0; padding-left: 18px; color: var(--color-fg-muted); font-size: 14px; }
+  .split { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); gap: 24px; align-items: start; }
+  .panel { background: var(--color-panel); border-radius: 10px; padding: 18px; }
+  .bar { display: grid; grid-template-columns: 150px minmax(0, 1fr) 90px; gap: 10px; align-items: center; margin: 10px 0; font-size: 14px; }
+  .bar .track { height: 8px; border-radius: 4px; background: var(--color-border-line); overflow: hidden; }
+  .bar .fill { height: 100%; background: var(--color-fg); border-radius: 4px; }
+  .bar .v { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar .note { grid-column: 2 / 4; color: var(--color-fg-muted); font-size: 12px; margin-top: -6px; }
+  .tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .tbl th, .tbl td { padding: 9px 10px; border-bottom: 1px solid var(--color-border-line); text-align: right; font-variant-numeric: tabular-nums; }
+  .tbl th:first-child, .tbl td:first-child { text-align: left; }
+  .tbl th { color: var(--color-fg-muted); font-weight: 500; font-size: 12px; }
+  .scroll { overflow-x: auto; }
+  .check { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--color-border-line); }
+  .check:last-child { border-bottom: 0; }
+  .badge { font-size: 12px; padding: 3px 9px; border-radius: 5px; border: 1px solid var(--color-border-line); white-space: nowrap; }
+  .badge.passed { color: var(--color-ok); }
+  .badge.pending, .badge.not-run, .badge.computed { color: var(--color-warn); }
+  .badge.not-checked, .badge.not-measured { color: var(--color-fg-muted); }
+  .badge.failed { color: var(--color-bad); }
+  .note-box { border-left: 3px solid var(--color-warn); background: var(--color-panel); padding: 12px 14px; border-radius: 6px; font-size: 14px; margin-top: 14px; }
+  .empty { padding: 36px 16px; color: var(--color-fg-muted); text-align: center; font-size: 14px; }
+  .hidden { display: none !important; }
+  @media (max-width: 900px) {
+    .explorer, .split { grid-template-columns: minmax(0, 1fr); }
+    .list-pane { border-right: 0; border-bottom: 1px solid var(--color-border-line); }
+    .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .kpi:nth-child(3) { border-left: 0; }
+    .kpi:nth-child(n+3) { border-top: 1px solid var(--color-border-line); }
+    .bar { grid-template-columns: 110px minmax(0, 1fr) 80px; }
+  }
+  @media (max-width: 520px) {
+    .grid-row, .row-head { grid-template-columns: minmax(0, 1fr) 90px; }
+    .grid-row .pill-cell, .row-head .pill-head { display: none; }
+    .kpi .value { font-size: 28px; }
+    h1 { font-size: 24px; }
+  }
+</style>
+
+<div class="wrap">
+  <div class="crumb">Finance operations / <span id="crumb-phase">LIVE dataset</span> · Team 10 workspace</div>
+  <h1 id="title">Reconciliation desk</h1>
+  <p class="lede" id="lede">Follow a bank movement through to its proposed accounting treatment.</p>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-tab="desk" aria-selected="true">Reconciliation desk</button>
+    <button class="tab" role="tab" data-tab="how" aria-selected="false">How it works</button>
+    <button class="tab" role="tab" data-tab="checks" aria-selected="false">Submission checks</button>
+  </div>
+
+  <section class="kpis" data-source="kpis" id="kpis">
+    <div class="kpi"><div class="label">Bank transactions</div><div class="value" data-k="bank_transactions">–</div><div class="hint" id="k-period">01 Jul 2025 – 31 Dec 2025</div></div>
+    <div class="kpi linked"><div class="label">Invoice linked</div><div class="value" data-k="invoice_linked">–</div><div class="hint">Includes proposals with exceptions</div></div>
+    <div class="kpi"><div class="label">Category only</div><div class="value" data-k="category_only">–</div><div class="hint">No invoice allocation</div></div>
+    <div class="kpi unid"><div class="label">Unidentified</div><div class="value" data-k="unidentified">–</div><div class="hint">Requires further investigation</div></div>
+  </section>
+
+  <!-- VIEW: reconciliation desk -->
+  <section id="view-desk">
+    <div class="section-head">
+      <div>
+        <h2>Transaction explorer</h2>
+        <p id="explorer-note">–</p>
+      </div>
+      <button class="btn" id="next-case">Show the next case</button>
+    </div>
+    <div class="explorer" data-source="examples">
+      <div class="list-pane">
+        <div class="toolbar">
+          <input class="search" id="search" type="search" placeholder="Search party, invoice or reference…">
+          <select class="filter" id="filter" aria-label="Outcome">
+            <option value="all">All outcomes</option>
+            <option value="linked">Invoice linked</option>
+            <option value="exception">Exception</option>
+            <option value="category">Category only</option>
+            <option value="unidentified">Unidentified</option>
+          </select>
+        </div>
+        <div class="count" id="count">–</div>
+        <div class="row-head"><div>Bank transaction / counterparty</div><div class="num">Bank amount</div><div class="pill-head">Outcome</div></div>
+        <div class="rows" id="rows"></div>
+      </div>
+      <div class="detail" id="detail"></div>
+    </div>
+  </section>
+
+  <!-- VIEW: how it works -->
+  <section id="view-how" class="hidden">
+    <div class="split">
+      <div>
+        <h2>From bank movement to submission row</h2>
+        <p class="muted" style="margin:0 0 16px;font-size:14px">Each operation follows the same ordered checks. The first valid proposal is applied.</p>
+        <div class="steps">
+          <div class="step"><div class="n">1</div><div><h3>Read the source records</h3>
+            <div class="muted" style="font-size:14px">Bank movements, open balances, invoice registers, payment batches and remittance advice are loaded.</div>
+            <ul><li>Opening balances carry forward what remains unpaid.</li><li>A later-dated invoice cannot be used for an earlier payment.</li></ul></div></div>
+          <div class="step"><div class="n">2</div><div><h3>Try the matching methods in order</h3>
+            <div class="muted" style="font-size:14px">The first valid proposal wins: payment batches, remittance advice, accounting categories, then invoice matching.</div>
+            <ul><li>Batch and advice records can explain one payment covering many invoices.</li><li>Invoice matching considers references, counterparties, amounts and policy rules.</li></ul></div></div>
+          <div class="step"><div class="n">3</div><div><h3>Check the proposal</h3>
+            <div class="muted" style="font-size:14px">Before applying a proposal, the engine checks item identity, dates, duplicate rows and the available balance.</div>
+            <ul><li>A rejected proposal lets the next method try.</li><li>If every method fails, the transaction stays unidentified.</li></ul></div></div>
+          <div class="step"><div class="n">4</div><div><h3>Update balances in date order</h3>
+            <div class="muted" style="font-size:14px">Allocations reduce open balances. A returned payment reopens the applied amount; a duplicate payment does not reduce it again.</div></div></div>
+          <div class="step"><div class="n">5</div><div><h3>Validate and write the file</h3>
+            <div class="muted" style="font-size:14px">One CSV row is written per transaction–item allocation, or a category row when there is no invoice link.</div>
+            <ul><li>Format checks run before the file is published.</li><li>The file hash identifies the exact output under review.</li></ul></div></div>
+        </div>
+      </div>
+      <div class="panel" data-source="methods" id="methods-panel">
+        <h3>Which method produced the result?</h3>
+        <div class="muted" style="font-size:13px;margin-bottom:6px">Counts of bank lines by the method that claimed them. These are method counts, not correctness measurements.</div>
+        <div id="methods"></div>
+        <div class="callout grey" style="margin-top:14px"><strong>Where Claude fits</strong>Claude Code reviewed the implementation. The matching is deterministic rules; no LLM decides each payment.</div>
+      </div>
+    </div>
+
+    <div style="margin-top:30px">
+      <h2>Cash movements by currency</h2>
+      <p class="muted" style="margin:0 0 12px;font-size:14px">Full dataset totals. Each currency stands alone; inflows and outflows are bank cash amounts.</p>
+      <div class="scroll" data-source="currencies">
+        <table class="tbl" id="currencies"></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- VIEW: submission checks -->
+  <section id="view-checks" class="hidden">
+    <div class="split">
+      <div>
+        <h2>Submission readiness</h2>
+        <p class="muted" style="margin:0 0 14px;font-size:14px">Format checks confirm that a file can be evaluated. They do not prove that the matches are correct.</p>
+        <div class="panel" style="padding:0" data-source="checks" id="checks"></div>
+        <div class="note-box"><strong>LIVE accuracy: not measured</strong><br>No hidden LIVE labels are available locally. Coverage and valid formatting are not a competition score.</div>
+      </div>
+      <div class="panel" data-source="submission">
+        <h3>Candidate submission</h3>
+        <div id="submission"></div>
+        <div class="muted" style="font-size:13px;margin-top:12px">Summary and examples only. The full file stays in the team's local workspace. Nothing here submits a result.</div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+(function () {
+  var LABEL = { linked: "Invoice linked", exception: "Exception", category: "Category only", unidentified: "Unidentified" };
+  var NOTE = {
+    linked: "Matched to open invoices by reference and amount.",
+    exception: "Matched to invoices, but at least one allocation carries an exception.",
+    category: "No invoice settled. Classified with a category.",
+    unidentified: "No matching evidence. Needs investigation."
+  };
+  var CALLOUT = { linked: "", exception: "warn", category: "grey", unidentified: "grey" };
+  var state = { tab: "desk", filter: "all", q: "", sel: null, pool: [] };
+
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function n(x) { return Number(x).toLocaleString("en-US"); }
+  function m(x) { return Number(x).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function $(id) { return document.getElementById(id); }
+  function rows(id) { var r = dash.data(id); return r && r.status === "ok" ? (r.data || []) : null; }
+  function parseAlloc(s) { try { return JSON.parse(s || "[]"); } catch (e) { return []; } }
+
+  function renderKpis(k) {
+    if (!k) return;
+    var kv = {};
+    k.forEach(function (r) { kv[r.metric] = r.value; });
+    document.querySelectorAll("[data-k]").forEach(function (el) {
+      var key = el.getAttribute("data-k");
+      el.textContent = kv[key] != null ? n(kv[key]) : "–";
+    });
+  }
+
+  function renderList(ex) {
+    var q = state.q.trim().toLowerCase();
+    var list = ex.filter(function (e) {
+      if (state.filter !== "all" && e.outcome !== state.filter) return false;
+      if (!q) return true;
+      var hay = [e.party, e.text, e.ref1, e.ref2, e.id].join(" ") + " " + parseAlloc(e.allocations_json).map(function (a) { return a.item_id + " " + a.document_number + " " + a.party_name; }).join(" ");
+      return hay.toLowerCase().indexOf(q) !== -1;
+    });
+    state.pool = list;
+    $("count").textContent = list.length + " of " + ex.length + " examples";
+    if (!list.length) { $("rows").innerHTML = '<div class="empty">No transactions match this search.</div>'; return; }
+    $("rows").innerHTML = list.map(function (e) {
+      return '<div class="row grid-row' + (e.id === state.sel ? " selected" : "") + '" data-id="' + esc(e.id) + '">' +
+        '<div><div class="party">' + esc(e.party || "(no counterparty)") + '</div>' +
+        '<div class="sub">' + esc(e.booking_date) + ' · ' + esc(e.entity) + '</div>' +
+        '<div class="id">' + esc(e.id) + '</div></div>' +
+        '<div class="num">' + m(e.amount) + '<small>' + esc(e.currency) + '</small></div>' +
+        '<div class="pill-cell"><span class="pill ' + esc(e.outcome) + '">' + LABEL[e.outcome] + '</span></div></div>';
+    }).join("");
+  }
+
+  function renderDetail(ex, entities) {
+    var e = ex.filter(function (x) { return x.id === state.sel; })[0];
+    if (!e) { $("detail").innerHTML = '<div class="empty">Select a transaction.</div>'; return; }
+    var allocs = parseAlloc(e.allocations_json);
+    var allocHtml = allocs.length ? allocs.map(function (a) {
+      var applied = a.exception ? String(a.exception).replace(/_/g, " ").toLowerCase() : "applied";
+      return '<div class="alloc"><div><div style="font-weight:600">' + esc(a.document_number || a.item_id) + '</div>' +
+        '<div class="sub">' + esc(a.item_id) + (a.party_name ? ' · ' + esc(a.party_name) : '') + '</div></div>' +
+        '<div class="amt">' + m(a.amount) + ' ' + esc(a.currency) +
+        '<div class="state">' + esc(applied) + (a.total != null ? ' · Total ' + m(a.total) : '') + '</div></div></div>';
+    }).join("") : (e.category ? '<div class="alloc"><div><div style="font-weight:600">' + esc(e.category) + '</div><div class="sub">Category · no invoice allocation</div></div></div>' : '<div class="empty" style="padding:14px">No allocation proposed.</div>');
+    var ent = entities[e.entity] || e.entity;
+    $("detail").innerHTML =
+      '<div class="detail-head"><span>Selected transaction</span><span class="pill ' + esc(e.outcome) + '">' + LABEL[e.outcome] + '</span></div>' +
+      '<h3>' + esc(e.party || "(no counterparty)") + '</h3>' +
+      '<div class="big">' + m(e.amount) + '<span>' + esc(e.currency) + '</span></div>' +
+      '<div class="when">' + esc(e.booking_date) + ' · ' + (Number(e.amount) >= 0 ? "Money in" : "Money out") + ' · ' + esc(e.entity) + '</div>' +
+      '<div class="callout ' + CALLOUT[e.outcome] + '"><strong>' + LABEL[e.outcome] + '</strong>' + esc(NOTE[e.outcome]) + '</div>' +
+      '<h4>Bank evidence</h4>' +
+      '<table class="kv">' +
+      '<tr><td>Transaction ID</td><td class="mono">' + esc(e.id) + '</td></tr>' +
+      '<tr><td>Legal entity</td><td>' + esc(ent) + '</td></tr>' +
+      '<tr><td>Account</td><td class="mono">' + esc(e.account) + '</td></tr>' +
+      '<tr><td>Ref1</td><td class="mono">' + esc(e.ref1 || "—") + '</td></tr>' +
+      '<tr><td>Ref2</td><td class="mono">' + esc(e.ref2 || "—") + '</td></tr>' +
+      '</table>' +
+      '<div class="raw">' + esc(e.text || "—") + '</div>' +
+      '<h4>Proposed allocations (' + allocs.length + ')</h4>' + allocHtml;
+  }
+
+  function renderDesk() {
+    var ex = rows("examples");
+    if (!ex) { $("rows").innerHTML = '<div class="empty">Loading examples…</div>'; return; }
+    var entities = {};
+    (rows("entities") || []).forEach(function (r) { entities[r.entity] = r.legal_name; });
+    $("explorer-note").textContent = ex.length + " representative examples from the full LIVE run. Search covers these examples.";
+    if (!state.sel && ex.length) state.sel = ex[0].id;
+    renderList(ex);
+    renderDetail(ex, entities);
+  }
+
+  function renderHow() {
+    var m0 = rows("methods");
+    if (m0) {
+      var total = m0.reduce(function (s, r) { return s + Number(r.lines); }, 0) || 1;
+      $("methods").innerHTML = m0.map(function (r) {
+        var v = Number(r.lines), pct = (v / total * 100).toFixed(1);
+        return '<div class="bar"><div>' + esc(r.method) + '</div><div class="track"><div class="fill" style="width:' + pct + '%"></div></div><div class="v">' + n(v) + '</div></div>';
+      }).join("");
+    }
+    var c = rows("currencies");
+    if (c) {
+      $("currencies").innerHTML = '<thead><tr><th>Currency</th><th>Transactions</th><th>Money in</th><th>Money out</th><th>Net movement</th></tr></thead><tbody>' +
+        c.map(function (r) {
+          return '<tr><td>' + esc(r.currency) + '</td><td>' + n(r.transactions) + '</td><td>' + m(r.money_in) + '</td><td>' + m(r.money_out) + '</td><td>' + m(r.net) + '</td></tr>';
+        }).join("") + '</tbody>';
+    }
+  }
+
+  function badgeClass(s) { return String(s).toLowerCase().replace(/\s+/g, "-"); }
+
+  function renderChecks() {
+    var ch = rows("checks");
+    if (ch) {
+      $("checks").innerHTML = ch.map(function (r) {
+        return '<div class="check"><div><div style="font-weight:600;font-size:14px">' + esc(r.check) + '</div>' +
+          '<div class="muted" style="font-size:13px;margin-top:2px">' + esc(r.detail) + '</div></div>' +
+          '<span class="badge ' + badgeClass(r.status) + '">' + esc(r.status) + '</span></div>';
+      }).join("");
+    }
+    var s = rows("submission");
+    if (s) {
+      $("submission").innerHTML = '<table class="kv" style="margin-top:6px">' + s.map(function (r) {
+        var cls = r.field === "SHA-256" ? ' class="mono"' : "";
+        return '<tr><td>' + esc(r.field) + '</td><td' + cls + '>' + esc(r.value) + '</td></tr>';
+      }).join("") + '</table>';
+    }
+  }
+
+  function setTab(t) {
+    state.tab = t;
+    document.querySelectorAll("[data-tab]").forEach(function (b) { b.setAttribute("aria-selected", String(b.getAttribute("data-tab") === t)); });
+    $("view-desk").classList.toggle("hidden", t !== "desk");
+    $("view-how").classList.toggle("hidden", t !== "how");
+    $("view-checks").classList.toggle("hidden", t !== "checks");
+    $("title").textContent = t === "desk" ? "Reconciliation desk" : t === "how" ? "How it works" : "Submission checks";
+    $("lede").textContent = t === "desk" ? "Follow a bank movement through to its proposed accounting treatment."
+      : t === "how" ? "How each bank movement is matched, and where the counts come from."
+      : "Inspect the exact candidate file before uploading it to the competition.";
+    render();
+  }
+
+  function render() {
+    renderKpis(rows("kpis"));
+    if (state.tab === "desk") renderDesk();
+    if (state.tab === "how") renderHow();
+    if (state.tab === "checks") renderChecks();
+  }
+
+  document.querySelectorAll("[data-tab]").forEach(function (b) {
+    b.addEventListener("click", function () { setTab(b.getAttribute("data-tab")); });
+  });
+  $("rows").addEventListener("click", function (ev) {
+    var row = ev.target.closest(".row");
+    if (!row) return;
+    state.sel = row.getAttribute("data-id");
+    render();
+  });
+  $("search").addEventListener("input", function (ev) { state.q = ev.target.value; render(); });
+  $("filter").addEventListener("change", function (ev) { state.filter = ev.target.value; render(); });
+  $("next-case").addEventListener("click", function () {
+    var ex = rows("examples") || [];
+    var pool = ex.filter(function (e) { return e.outcome === "linked"; });
+    if (!pool.length) return;
+    var i = pool.findIndex(function (e) { return e.id === state.sel; });
+    state.sel = pool[(i + 1) % pool.length].id;
+    state.filter = "all"; state.q = ""; $("filter").value = "all"; $("search").value = "";
+    render();
+  });
+
+  dash.onData(function () {
+    var st = [dash.data("kpis").status, dash.data("examples").status];
+    if (st.indexOf("error") !== -1) { $("explorer-note").textContent = "Data did not load. Reload the dashboard."; }
+    render();
+  });
+})();
+</script>

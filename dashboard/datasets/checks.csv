@@ -1,0 +1,8 @@
+check,status,detail
+Every transaction represented,Passed,"203,083 of 203,083 transactions covered"
+Format validator (local),Passed,"582,182 rows checked by scripts/run.py (local validator, not the organizer's)"
+Organizer format validator,Not run,Official parser not run in this session
+File identity,Computed,SHA-256 39aec4215aaf1331… of this file (not checked against a platform record)
+Code stable during the run,Not checked,Not verified in this session
+LIVE accuracy,Not measured,No hidden LIVE labels are available locally
+Remittance advice parsing,Pending,"6,889 advice files in the index; remittance.py not yet registered"
