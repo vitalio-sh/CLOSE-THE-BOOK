@@ -42,6 +42,17 @@ class ResidualFeeTests(unittest.TestCase):
         t['entity'] = 'CA01'
         self.assertIsNone(ResidualFees(c).reconcile(t))
 
+    def test_short_payer_name(self):
+        a = invoice('I1', 'FV24-00001', '1429.05')
+        a['entity'] = 'ES02'
+        c = context([a])
+        c.customers['C1'].update(name='LQS Spa SA', country='MA', entity='ES02')
+        t = txn('1409.05', 'TRANSFER. EN DIV. | BJFHGHXX -LQS SPA SA | PAYMENT | GASTOS')
+        t['entity'] = 'ES02'
+        rows = ResidualFees(c).reconcile(t)
+        self.assertEqual([(r['item_id'], r['amount'], r['exception']) for r in rows],
+                         [('I1', '1429.05', 'SHORT_BANK_CHARGES')])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -7,7 +7,7 @@ by the fee reaches the UNIDENTIFIED fallback.
 
 Evidence, all observable at runtime:
 - the line is a cross-border credit transfer (text marker or ISO code XBCT);
-- the payer is identified (party_candidates);
+- the payer is identified (party_candidates, or refnoise's payer search for short names);
 - exactly one open AR invoice of those payers, same entity and currency, exceeds the
   cash by a fee of the fixed schedule (matching.sbc_fee_lattice; TRAIN: every golden
   case, and no other exception class, on cross-border lines).
@@ -28,7 +28,12 @@ class ResidualFees:
         lattice = sbc_fee_lattice(currency)
         if not lattice or not cross_border_transfer(txn):
             return None
+        # Short payer names (6-9 letters, e.g. 'LQS Spa SA') never reach the 10-letter
+        # prefix index of party_candidates; refnoise's payer search covers them.
         parties = party_candidates(txn, ctx)
+        if not parties:
+            from .refnoise import payer_candidates
+            parties = payer_candidates(txn, ctx)
         if not parties:
             return None
         entity = txn.get('entity')
