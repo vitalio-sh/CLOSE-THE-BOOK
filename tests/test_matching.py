@@ -82,6 +82,34 @@ class MatchingTests(unittest.TestCase):
         r=reconcile(txn('40','FV25-00001'),c)[0]
         self.assertEqual((r['amount'],r['exception']),('40.00','DUPLICATE_PAYMENT'))
         self.assertIsNone(reconcile(txn('99','FV25-00001'),c))
+    def test_category_words_do_not_match_names_or_substrings(self):
+        c=context([])
+        self.assertIsNone(classify(txn(text='TRANSFER TO FRAISSE SARL'),c))
+        self.assertIsNone(classify(txn(text='EXPRES ES91 PAYMENT'),c))
+        self.assertIsNone(classify(txn(text='PAYMENT',counterparty_name='BANK FEES SERVICES LTD'),c))
+        self.assertEqual(classify(txn('-10','FRAIS VIREMENT'),c)[0]['category'],'BANK_FEES')
+        self.assertEqual(classify(txn('-10','PRES.ES01-123456'),c)[0]['category'],'LOAN_REPAYMENT')
+    def test_generic_reembolso_does_not_preempt_credit(self):
+        a=invoice('APC-1','RFV25-00001');a.update(side='AP',kind='credit')
+        c=context([a]);t=txn('100','REEMBOLSO RFV25-00001')
+        self.assertIsNone(classify(t,c));self.assertEqual(reconcile(t,c)[0]['item_id'],'APC-1')
+    def test_bank_charge_requires_rail_country_and_both_limits(self):
+        c=context([invoice(amount='1000')]);c.customers['C1']['country']='US'
+        t=txn('985','SWIFT TRANSFER FV25-00001')
+        r=reconcile(t,c)[0];self.assertEqual((r['amount'],r['exception']),('1000.00','SHORT_BANK_CHARGES'))
+        self.assertEqual(reconcile(txn('970','SWIFT TRANSFER FV25-00001'),c)[0]['exception'],'PARTIAL')
+        self.assertEqual(reconcile(txn('985','PAGO FV25-00001'),c)[0]['exception'],'PARTIAL')
+        c.customers['C1']['country']='ES'
+        self.assertEqual(reconcile(t,c)[0]['exception'],'PARTIAL')
+        c=context([invoice(amount='10000')]);c.customers['C1']['country']='US'
+        self.assertEqual(reconcile(txn('9900','SWIFT TRANSFER FV25-00001'),c)[0]['exception'],'PARTIAL')
+    def test_bank_charge_last_available_fx_rate(self):
+        a=invoice(amount='10000');a['currency']='USD';c=context([a]);c.customers['C1']['country']='US'
+        c.fx_rates={'2025-01-14':{'USD':D(2)},'2025-01-16':{'USD':D(1)}}
+        t=txn('9900','SWIFT TRANSFER FV25-00001');t['currency']='USD'
+        self.assertEqual(reconcile(t,c)[0]['exception'],'SHORT_BANK_CHARGES')
+        c.fx_rates={'2025-01-16':{'USD':D(2)}}
+        self.assertEqual(reconcile(t,c)[0]['exception'],'PARTIAL')
     def test_no_card_settlement_fee(self):
         self.assertIsNone(classify(txn('100','LIQUIDACION REMESA DE COMERCIOS'),context([])))
 if __name__=='__main__':unittest.main()

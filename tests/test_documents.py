@@ -5,6 +5,8 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import zipfile
+from xml.sax.saxutils import escape
 
 from recon.documents import DocumentMatcher, Advice, Line, money, parse_advice, xlsx_rows
 from collections import defaultdict
@@ -103,5 +105,49 @@ class DocumentTests(unittest.TestCase):
             self.assertEqual(matcher.stats['parsed'],0)
             self.assertEqual(matcher.stats['parse_errors'],0)
             self.assertTrue(matcher.stats['warnings'])
+
+    def write_xlsx(self, path, rows):
+        data=[]
+        for n,row in enumerate(rows,1):
+            cells=''.join(f'<c r="{chr(65+i)}{n}" t="inlineStr"><is><t>{escape(str(v))}</t></is></c>' for i,v in enumerate(row))
+            data.append(f'<row r="{n}">{cells}</row>')
+        xml='<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'+''.join(data)+'</sheetData></worksheet>'
+        with zipfile.ZipFile(path,'w') as z:z.writestr('xl/worksheets/sheet1.xml',xml)
+
+    def test_drift_layout_scoped_short_references_and_ambiguity(self):
+        with TemporaryDirectory() as d:
+            root=Path(d);p=root/'remittance_advices';p.mkdir()
+            (p/'index.csv').write_text('file,entity,payer_name,received_date,format\na.xlsx,ES01,Example Customer,2025-06-03,xlsx\n')
+            self.write_xlsx(p/'a.xlsx',[
+                ['Example Customer'],['Payment advice','PAY1234567','2025-06-01'],
+                ['Voucher','Invoice','PO','Inv. date','Amount','Deduction','Net paid'],
+                ['VCHR123','123','PO1','2025-05-01','100','-20','80'],['TOTAL','','','','','','80']])
+            ctx=self.make_context(root)
+            ctx.items={'ARI-1':{'item_id':'ARI-1','entity':'ES01','party_id':'C1','document_number':'FV25-0000123','issue_date':'2025-05-01','total_amount':D(100),'open_amount':D(100),'currency':'EUR','kind':'invoice'}}
+            ctx.items['ARI-other']={**ctx.items['ARI-1'],'item_id':'ARI-other','party_id':'C2'}
+            ctx.by_number={'FV250000123':['ARI-1','ARI-other']}
+            ctx.customers={'C1':{'entity':'ES01','name':'Example Customer'}}
+            matcher=DocumentMatcher(ctx)
+            self.assertEqual(matcher.stats['changed_layout_files'],1)
+            self.assertEqual(matcher.stats['short_reference_unresolved_rows'],0)
+            txn={'bank_txn_id':'BT1','entity':'ES01','booking_date':'2025-06-01','amount':'80','currency':'EUR','text':'PAY1234567'}
+            result=matcher.reconcile(txn)
+            self.assertEqual(result[0]['item_id'],'ARI-1')
+            self.assertEqual(result[0]['amount'],'80.00')
+            self.assertEqual(result[0]['exception'],'PARTIAL') # No deduction reason supplied.
+            ctx.items['ARI-ambiguous']={**ctx.items['ARI-1'],'item_id':'ARI-ambiguous','document_number':'FV25-0100123'}
+            ctx.by_number['FV250100123']=['ARI-ambiguous']
+            ambiguous=DocumentMatcher(ctx)
+            self.assertEqual(ambiguous.stats['short_reference_ambiguous_rows'],1)
+            self.assertIsNone(ambiguous.reconcile(txn))
+            ctx.customers={}
+            unidentified=DocumentMatcher(ctx)
+            self.assertEqual(unidentified.stats['short_reference_unresolved_rows'],1)
+            self.assertIsNone(unidentified.reconcile(txn))
+
+    def test_empty_csv_is_skipped_without_crash(self):
+        with TemporaryDirectory() as d:
+            p=Path(d)/'empty.csv';p.write_text('')
+            self.assertIsNone(parse_advice(p,{}))
 
 if __name__=='__main__':unittest.main()

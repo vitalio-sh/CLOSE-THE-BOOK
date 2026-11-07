@@ -23,9 +23,9 @@ class Context:
     def __init__(self, data_root, phase):
         self.data_root = Path(data_root).resolve()
         self.phase_dir = self.data_root / phase
-        self.masters_dir = self.phase_dir / 'masters_final' if phase == 'final' else self.data_root / 'masters'
-        if not self.masters_dir.exists():
-            self.masters_dir = self.data_root / 'masters'
+        self.masters_dir = self.data_root / 'masters'
+        self.final_masters_dir = self.phase_dir / 'masters_final' if phase == 'final' else None
+        self.master_coverage = {}
         self.history_dirs = [self.data_root / p for p in ('train', 'live') if p != phase and (phase == 'final' or p == 'train')]
         if phase == 'train': self.history_dirs = []
         self.items = {}
@@ -33,12 +33,28 @@ class Context:
         self.by_party = defaultdict(list)
         self.history = defaultdict(list)
         for attr, filename, key in [('customers','customers','customer_id'),('suppliers','suppliers','supplier_id'),('accounts','bank_accounts','account_id'),('payment_terms','payment_terms','code')]:
-            setattr(self,attr,{r[key]:r for r in read_csv(self.masters_dir/(filename+'.csv'))})
-        self.categories = {r['category'] for r in read_csv(self.masters_dir/'categories.csv')}
+            setattr(self,attr,{r[key]:r for r in self.read_master(filename) if r.get(key)})
+        self.categories = {r['category'] for r in self.read_master('categories') if r.get('category')}
+        if not self.categories or not self.payment_terms:
+            raise ValueError('Required masters categories and payment_terms must both be nonempty; check master_coverage and data paths')
         self.fx_rates = defaultdict(dict)
-        for r in read_csv(self.masters_dir/'fx_rates.csv'):
+        for r in self.read_master('fx_rates'):
             self.fx_rates[r['date']][r['currency']] = D(r['units_per_eur'])
+        self.opening_coverage = {}
         self.load_items()
+
+    def read_master(self, name):
+        """FINAL can ship only changed files; fallback is per file, not per folder."""
+        path = self.masters_dir / (name + '.csv')
+        override = self.final_masters_dir / (name + '.csv') if self.final_masters_dir else None
+        source = 'base'
+        if override is not None and override.is_file():
+            path = override
+            source = 'final'
+        rows = list(read_csv(path))
+        self.master_coverage[name] = {'source': source, 'path': str(path),
+                                      'exists': path.is_file(), 'rows': len(rows)}
+        return rows
 
     def load_items(self):
         for r in read_csv(self.phase_dir/'open_items_at_start.csv.gz'):
@@ -52,6 +68,17 @@ class Context:
                     for r in read_csv(folder/(name+'.csv.gz')):
                         if r['item_id'] in opening_ids:
                             self.add_item(r)
+        opening_ar = [self.items[i] for i in opening_ids
+                      if self.items[i]['side'] == 'AR' and self.items[i]['kind'] == 'invoice']
+        with_terms = sum(bool(item.get('payment_terms')) for item in opening_ar)
+        known_terms = sum(item.get('payment_terms') in self.payment_terms for item in opening_ar)
+        self.opening_coverage = {
+            'items': len(opening_ids), 'ar_invoices': len(opening_ar),
+            'ar_with_payment_terms': with_terms, 'ar_with_known_payment_terms': known_terms,
+            'ar_payment_terms_fraction': with_terms / len(opening_ar) if opening_ar else None,
+            'ar_known_payment_terms_fraction': known_terms / len(opening_ar) if opening_ar else None,
+            'history_directories': {str(path): path.is_dir() for path in self.history_dirs},
+        }
         for name in ('ar_invoices','ap_invoices','credit_notes'):
             for r in read_csv(self.phase_dir/(name+'.csv.gz')):
                 self.add_item(r)

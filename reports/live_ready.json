@@ -1,0 +1,58 @@
+{
+  "phase": "live",
+  "document_parsing": {
+    "pdf_tool_available": true,
+    "files_total": 6889,
+    "parsed": 6711,
+    "skipped_pdfs": 0,
+    "parse_errors": 0,
+    "unsupported_or_empty": 178,
+    "warnings": []
+  },
+  "historical_references": {
+    "added_count": 151591,
+    "scanned_rows": 5644153,
+    "reference_tokens": 412668,
+    "seconds": 17.93,
+    "skipped_reason": null
+  },
+  "pdf_facts": null,
+  "modules": {
+    "batches": 60943,
+    "matching": 95226,
+    "unidentified": 26181,
+    "category": 14366,
+    "documents": 6367
+  },
+  "rejected_proposals": {
+    "batches": 6
+  },
+  "source_hashes": {
+    "__init__.py": "a523c28ee4d9ac6faeca15c47d9844631a6d178caf884d96e3878fd3ee373875",
+    "batches.py": "1301a20ae4676ab38cc0b20f890f9730e01bb6a8a4e128f9e3a37a9d8fb08580",
+    "context.py": "34c545faf58fff605439301459716e065c34c410e09fe19ba89a777820727ead",
+    "documents.py": "8f13dd99582d721b0527b7968c6e62eec26bf161a36e8df77f6a792f6eef927d",
+    "history.py": "92e3e2a6b9a823a0532af0fd29d6973d9808f95cd6cd4a77b27953924adc9fac",
+    "matching.py": "3fff0746d73db3448da30c22e41fe2f80bed8cffed373e8c1d3c26c8613b5b1f",
+    "pdf_facts.py": "7cef09dc342170d6c1c79c4e3a35845fbdd0395e7932ac5b95193db44ad9e845",
+    "run.py": "714f7c848fe9eed225dc7d7a65a0a7d23ff7cab7d1ddbb9f071351874eb5a714",
+    "validate.py": "69619cf19d4c4ec98277271255915acd42e21913aad39916b2a800f3f7afbfd8"
+  },
+  "source_changed_during_run": false,
+  "seconds": 204.76,
+  "validation": {
+    "ok": true,
+    "rows": 580698,
+    "transactions": 203083,
+    "covered": 203083,
+    "missing": 0,
+    "uncompressed_bytes": 25087748,
+    "errors": []
+  },
+  "official_structure": {
+    "ok": true,
+    "errors": [],
+    "note": "Format only; no hidden labels or accuracy estimate."
+  },
+  "sha256": "f1b729ffb4826f46ce3b2bdaea8d644e2811fd31ab4518d994c4656abf70618f"
+}

@@ -34,6 +34,7 @@ class Line:
     gross: Decimal
     paid: Decimal
     reason: str = ''
+    document_date: str = ''
 
 @dataclass
 class Advice:
@@ -45,6 +46,7 @@ class Advice:
     lines: list
     source: str
     payment_date: str = ''
+    short_refs: bool = False
 
     @property
     def total(self):
@@ -79,8 +81,11 @@ def parse_advice(path, meta, pdf_tool=None):
     path = Path(path)
     ref = currency = payment_date = ''
     lines = []
+    short_refs = False
     if path.suffix == '.csv':
         text = path.read_text(encoding='utf-8-sig')
+        if not text.strip():
+            return None
         rows = list(csv.reader(text.splitlines(), delimiter=';' if ';' in text.splitlines()[0] else ','))
         header = dict(zip(rows[0][::2], rows[0][1::2]))
         ref, currency, payment_date = header.get('payment_ref', ''), header.get('currency', ''), header.get('payment_date', '')
@@ -90,15 +95,22 @@ def parse_advice(path, meta, pdf_tool=None):
             lines.append(Line(row['document'], money(row['gross']), money(row['paid']), row.get('reason', '')))
     elif path.suffix == '.xlsx':
         rows = xlsx_rows(path)
-        header_idx = next((i for i, row in enumerate(rows) if row and norm(row[0]) == 'DOCUMENT'), None)
+        header_idx = next((i for i, row in enumerate(rows) if row and norm(row[0]) in ('DOCUMENT', 'VOUCHER')), None)
         if header_idx is None:
             return None
         for row in rows[:header_idx]:
             if row and norm(row[0]) in ('PAYMENTADVICE', 'AVISODEPAGO'):
                 ref = row[1] if len(row) > 1 else ''
                 payment_date = row[2] if len(row) > 2 else ''
+        headers = [norm(v) for v in rows[header_idx]]
+        short_refs = headers == ['VOUCHER','INVOICE','PO','INVDATE','AMOUNT','DEDUCTION','NETPAID']
         for row in rows[header_idx + 1:]:
-            if len(row) >= 6 and row[0] and norm(row[0]) != 'TOTAL':
+            if short_refs:
+                if len(row) >= 7 and row[0] and norm(row[0]) != 'TOTAL':
+                    # The drift template provides a deduction amount but no reason.
+                    # Preserve paid amount; never invent a dispute/discount reason.
+                    lines.append(Line(row[1], money(row[4]), money(row[6]), '', row[3]))
+            elif len(row) >= 6 and row[0] and norm(row[0]) != 'TOTAL':
                 lines.append(Line(row[0], money(row[2]), money(row[5]), row[4]))
     else:
         if path.suffix == '.pdf':
@@ -131,7 +143,7 @@ def parse_advice(path, meta, pdf_tool=None):
             lines.append(Line(number, gross, paid, reason))
     if not lines:
         return None
-    return Advice(ref, meta.get('entity', ''), meta.get('payer_name', ''), meta.get('received_date', ''), currency, lines, str(path), payment_date)
+    return Advice(ref, meta.get('entity', ''), meta.get('payer_name', ''), meta.get('received_date', ''), currency, lines, str(path), payment_date, short_refs)
 
 class DocumentMatcher:
     """Complete-group matching with exact advice reference or payer+cash evidence."""
@@ -144,10 +156,20 @@ class DocumentMatcher:
         index = root / 'index.csv'
         self.advice_count = 0
         self.document_aliases = defaultdict(list)
+        self.short_aliases = defaultdict(list)
+        self.payer_ids = defaultdict(set)
+        self._short_requests = defaultdict(set)
+        self._changed_advices = []
+        for pid, party in getattr(ctx, 'customers', {}).items():
+            for key in ('name', 'trade_name'):
+                if party.get(key):
+                    self.payer_ids[(party.get('entity'), norm(party[key]))].add(pid)
         self._missing_numbers = set()
         tool = shutil.which('pdftotext')
         self.stats = {'pdf_tool_available': bool(tool), 'files_total': 0, 'parsed': 0,
-                      'skipped_pdfs': 0, 'parse_errors': 0, 'unsupported_or_empty': 0, 'warnings': []}
+                      'skipped_pdfs': 0, 'parse_errors': 0, 'unsupported_or_empty': 0, 'warnings': [], 'changed_layout_files': 0,
+                      'changed_layout_rows': 0, 'short_reference_unresolved_rows': 0,
+                      'short_reference_ambiguous_rows': 0}
         if not index.exists():
             return
         with index.open(encoding='utf-8-sig') as f:
@@ -167,6 +189,15 @@ class DocumentMatcher:
                 if advice is None:
                     continue
                 self.advice_count += 1
+                if advice.short_refs:
+                    self._changed_advices.append(advice)
+                    self.stats['changed_layout_files'] += 1
+                    self.stats['changed_layout_rows'] += len(advice.lines)
+                    for pid in self.payer_ids.get((advice.entity, norm(advice.payer)), ()):
+                        for line in advice.lines:
+                            n = norm(line.number)
+                            if n.isdigit() and 3 <= len(n) <= 7:
+                                self._short_requests[(advice.entity, pid)].add(n.lstrip('0') or '0')
                 self._missing_numbers.update(norm(line.number) for line in advice.lines if norm(line.number) not in getattr(ctx, 'by_number', {}) and norm(line.number).isdigit() and len(norm(line.number)) >= 7)
                 if advice.reference:
                     ref = norm(advice.reference)
@@ -187,6 +218,43 @@ class DocumentMatcher:
                 for alias in variants & self._missing_numbers:
                     self.document_aliases[alias].extend(ids)
 
+        # Build only requested suffixes once, scoped by confirmed payer+entity.
+        # This deliberately does not broaden the global document-number index.
+        if self._short_requests:
+            for iid, item in ctx.items.items():
+                scope = (item.get('entity'), item.get('party_id'))
+                wanted = self._short_requests.get(scope)
+                if not wanted:
+                    continue
+                n = norm(item.get('document_number', ''))
+                aliases = {(n[-size:].lstrip('0') or '0') for size in range(3,8) if len(n) >= size and n[-size:].isdigit()}
+                for alias in wanted & aliases:
+                    self.short_aliases[(*scope, alias)].append(iid)
+        for advice in self._changed_advices:
+            for line in advice.lines:
+                candidates = self._line_candidates(line, advice)
+                if not candidates:
+                    self.stats['short_reference_unresolved_rows'] += 1
+                elif len(candidates) > 1:
+                    self.stats['short_reference_ambiguous_rows'] += 1
+
+    def _line_candidates(self, line, advice):
+        if advice.short_refs:
+            n = norm(line.number)
+            if not n.isdigit():
+                return []
+            alias = n.lstrip('0') or '0'
+            ids = set()
+            for pid in self.payer_ids.get((advice.entity, norm(advice.payer)), ()):
+                ids.update(self.short_aliases.get((advice.entity, pid, alias), ()))
+        else:
+            ids = self.ctx.by_number.get(norm(line.number), []) or self.document_aliases.get(norm(line.number), [])
+        candidates = [self.ctx.items[i] for i in ids if self.ctx.items[i].get('entity') == advice.entity]
+        candidates = [x for x in candidates if abs(money(x.get('total_amount', '0')) - abs(line.gross)) <= CENT]
+        if line.document_date:
+            candidates = [x for x in candidates if x.get('issue_date') == line.document_date]
+        return candidates
+
     def _rows(self, txn, advice, strong_ref):
         if advice.entity and txn.get('entity') != advice.entity:
             return None
@@ -199,10 +267,8 @@ class DocumentMatcher:
         # a currency header cannot silently treat USD invoice amounts as EUR.
         resolved, seen = [], set()
         for line in advice.lines:
-            ids = self.ctx.by_number.get(norm(line.number), []) or self.document_aliases.get(norm(line.number), [])
-            candidates = [self.ctx.items[i] for i in ids if self.ctx.items[i].get('entity') == advice.entity]
+            candidates = self._line_candidates(line, advice)
             candidates = [x for x in candidates if x.get('issue_date', '') <= txn['booking_date']]
-            candidates = [x for x in candidates if abs(money(x.get('total_amount', '0')) - abs(line.gross)) <= CENT]
             if len(candidates) != 1:
                 return None
             item = candidates[0]

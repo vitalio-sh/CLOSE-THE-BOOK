@@ -83,4 +83,24 @@ class BatchTests(unittest.TestCase):
         Context.apply(self.ctx,txn,rows)
         self.assertEqual(self.ctx.items['API-1']['open_amount'],D('0.00'))
 
+    def test_group_reserves_fifo_balance_without_mutation(self):
+        self.item('ARI-1','INV1','100')
+        self.item('ARI-2','INV2','100')
+        self.ctx.items['ARI-2']['issue_date']='2025-02-01'
+        self.ctx.customers['C1']={'name':'Buyer'}
+        base=dict(batch_id='BATCH12345',collection_date='2025-06-01',account_id='ES01-A',currency='EUR',debtor_name='Buyer',mandate_id='M1',remittance_info='',amount='100')
+        self.rows('direct_debit_batches',[dict(base,end_to_end_id='E1'),dict(base,end_to_end_id='E2')])
+        rows=BatchMatcher(self.ctx).reconcile(self.txn('200','BATCH12345'))
+        self.assertEqual({r['item_id']:r['amount'] for r in rows},{'ARI-1':'100.00','ARI-2':'100.00'})
+        self.assertTrue(all(i['open_amount']==D('100') for i in self.ctx.items.values()))
+    def test_explicit_fragments_can_aggregate_to_full_payment(self):
+        self.item('API-1','INV1','100')
+        base=dict(run_id='RUN12345678',run_type='transfers',execution_date='2025-06-01',debtor_account_id='ES01-A',end_to_end_id='RUN12345678-1',beneficiary='Supplier',currency='EUR',transfer_amount='100',document_number='INV1',document_type='INVOICE')
+        self.rows('payment_runs',[dict(base,document_amount='40'),dict(base,document_amount='60')])
+        rows=BatchMatcher(self.ctx).reconcile(self.txn('-100','RUN12345678-1'))
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['amount'],'100.00')
+        self.assertEqual(rows[0]['exception'],'')
+        self.assertEqual(self.ctx.items['API-1']['open_amount'],D('100'))
+
 if __name__=='__main__':unittest.main()

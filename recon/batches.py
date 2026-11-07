@@ -96,7 +96,7 @@ class BatchMatcher:
         self.ref_lengths = {len(key) for key in self.by_ref if key}
         self.return_lengths = {len(key) for key in self.return_details if key}
 
-    def _resolve(self, row, kind, txn):
+    def _resolve(self, row, kind, txn, reserved=None):
         number_field = {'payment_runs':'document_number','direct_debit_batches':'remittance_info',
                         'card_settlements':'order_number','cheque_deposits':'stub_reference'}[kind]
         number = norm(row[number_field])
@@ -109,6 +109,8 @@ class BatchMatcher:
                 ids.extend(self.ctx.by_party.get(pid, []))
         amount = abs(money(row.get('document_amount', row.get('gross', row.get('amount','0')))))
         candidates = []
+        remaining = {}
+        reserved = reserved or {}
         for iid in set(ids):
             item = self.ctx.items[iid]
             if item.get('side', iid[:2]) != side:
@@ -128,9 +130,10 @@ class BatchMatcher:
             # pay invoices for subsidiaries, so party evidence may override entity.
             score = 0
             printed = norm(item.get('document_number', item.get('supplier_invoice_number','')))
+            explicit = printed == number or any(len(token) >= 5 and printed.endswith(token) for token in re.findall(r'[0-9]+', row[number_field]))
             if printed == number:
                 score += 8
-            elif any(len(token) >= 5 and printed.endswith(token) for token in re.findall(r'[0-9]+', row[number_field])):
+            elif explicit:
                 score += 6
             if item.get('party_id') in known_parties:
                 score += 8
@@ -140,7 +143,12 @@ class BatchMatcher:
             if item.get('entity') == row['_entity']:
                 score += 2
             total = money(item.get('total_amount'))
-            opened = money(item.get('open_amount', total))
+            opened = money(item.get('open_amount', total)) - reserved.get(iid, ZERO)
+            remaining[iid] = opened
+            # Unreferenced rows cannot spend the same FIFO balance twice in one
+            # proposed group. Explicit repeated document rows may aggregate parts.
+            if reserved.get(iid, ZERO) and not explicit and (opened <= ZERO or amount > opened + CENT):
+                continue
             if abs(total-amount) <= CENT or abs(opened-amount) <= CENT:
                 score += 4
             elif amount > max(total, opened) + CENT:
@@ -155,7 +163,7 @@ class BatchMatcher:
             # Documented FIFO applies only within the same known payer and exact amount.
             if len({v[2].get('party_id') for v in tied}) != 1 or not known_parties:
                 return None
-            tied = [v for v in tied if money(v[2].get('open_amount')) == amount]
+            tied = [v for v in tied if remaining[v[1]] == amount]
             if not tied:
                 return None
             tied.sort(key=lambda v:(v[2].get('issue_date',''),v[1]))
@@ -164,28 +172,34 @@ class BatchMatcher:
 
     def _allocate(self, group, txn, returned=False):
         out = {}
+        reserved = defaultdict(lambda: ZERO)
         for detail in group['rows']:
-            item = self._resolve(detail, group['kind'], txn)
+            item = self._resolve(detail, group['kind'], txn, reserved=reserved)
             if item is None:
                 return None
             iid = item['item_id']
             amount = abs(money(detail.get('document_amount', detail.get('gross',detail.get('amount')))))
-            credit = 'C' in iid[:3]
-            opened = money(item.get('open_amount', item['total_amount']))
-            exception = ''
-            if returned:
-                exception = 'RETURNED'
-            elif opened <= ZERO and not credit:
-                exception = 'DUPLICATE_PAYMENT'
-            elif amount < opened - CENT and not credit:
-                exception = 'PARTIAL'
-            elif item['currency'] != txn['currency'] and not credit:
-                exception = 'FX_DIFFERENCE'
+            reserved[iid] += amount
             if iid in out:
                 out[iid]['amount'] = f"{money(out[iid]['amount']) + amount:.2f}"
             else:
                 out[iid] = {'bank_txn_id':txn['bank_txn_id'], 'item_id':iid,
-                            'amount':f'{amount:.2f}', 'category':'', 'exception':exception}
+                            'amount':f'{amount:.2f}', 'category':'', 'exception':''}
+        # Classify the complete allocation, not each fragment: two explicitly
+        # referenced partial detail rows can together fully settle one invoice.
+        for iid, row in out.items():
+            item = self.ctx.items[iid]
+            amount = money(row['amount'])
+            credit = 'C' in iid[:3]
+            opened = money(item.get('open_amount', item['total_amount']))
+            if returned:
+                row['exception'] = 'RETURNED'
+            elif opened <= ZERO and not credit:
+                row['exception'] = 'DUPLICATE_PAYMENT'
+            elif amount < opened - CENT and not credit:
+                row['exception'] = 'PARTIAL'
+            elif item['currency'] != txn['currency'] and not credit:
+                row['exception'] = 'FX_DIFFERENCE'
         return list(out.values())
 
     def reconcile(self, txn):

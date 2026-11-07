@@ -1,0 +1,118 @@
+{
+  "phase": "live",
+  "master_coverage": {
+    "customers": {
+      "source": "base",
+      "path": "/Users/neo/CodeProejcts/CLOSE-THE-BOOK/data/workspace/masters/customers.csv",
+      "exists": true,
+      "rows": 55672
+    },
+    "suppliers": {
+      "source": "base",
+      "path": "/Users/neo/CodeProejcts/CLOSE-THE-BOOK/data/workspace/masters/suppliers.csv",
+      "exists": true,
+      "rows": 12831
+    },
+    "bank_accounts": {
+      "source": "base",
+      "path": "/Users/neo/CodeProejcts/CLOSE-THE-BOOK/data/workspace/masters/bank_accounts.csv",
+      "exists": true,
+      "rows": 47
+    },
+    "payment_terms": {
+      "source": "base",
+      "path": "/Users/neo/CodeProejcts/CLOSE-THE-BOOK/data/workspace/masters/payment_terms.csv",
+      "exists": true,
+      "rows": 13
+    },
+    "categories": {
+      "source": "base",
+      "path": "/Users/neo/CodeProejcts/CLOSE-THE-BOOK/data/workspace/masters/categories.csv",
+      "exists": true,
+      "rows": 21
+    },
+    "fx_rates": {
+      "source": "base",
+      "path": "/Users/neo/CodeProejcts/CLOSE-THE-BOOK/data/workspace/masters/fx_rates.csv",
+      "exists": true,
+      "rows": 13706
+    }
+  },
+  "opening_coverage": {
+    "items": 325419,
+    "ar_invoices": 229534,
+    "ar_with_payment_terms": 229534,
+    "ar_with_known_payment_terms": 229534,
+    "ar_payment_terms_fraction": 1.0,
+    "ar_known_payment_terms_fraction": 1.0,
+    "history_directories": {
+      "/Users/neo/CodeProejcts/CLOSE-THE-BOOK/data/workspace/train": true
+    }
+  },
+  "document_parsing": {
+    "pdf_tool_available": true,
+    "files_total": 6889,
+    "parsed": 6889,
+    "skipped_pdfs": 0,
+    "parse_errors": 0,
+    "unsupported_or_empty": 0,
+    "warnings": [],
+    "changed_layout_files": 178,
+    "changed_layout_rows": 30225,
+    "short_reference_unresolved_rows": 0,
+    "short_reference_ambiguous_rows": 0
+  },
+  "historical_references": {
+    "added_count": 151591,
+    "scanned_rows": 5644153,
+    "reference_tokens": 412668,
+    "seconds": 17.431,
+    "skipped_reason": null
+  },
+  "pdf_facts": null,
+  "modules": {
+    "batches": 60944,
+    "matching": 95795,
+    "unidentified": 26028,
+    "category": 13788,
+    "documents": 6528
+  },
+  "rejected_proposals": {
+    "batches": 6
+  },
+  "source_hashes": {
+    "__init__.py": "a523c28ee4d9ac6faeca15c47d9844631a6d178caf884d96e3878fd3ee373875",
+    "batches.py": "39757172e62f25f7889241f379733a535b263469c37a8822fbb2eb99f05292a2",
+    "context.py": "a35b3a68c9e2c713faf68d80df166171e44a87f8b18f23381d2d957f23b1dbfc",
+    "documents.py": "584209f64b6071d56e572f8bab8e1221bb58435bf8fb8160f775868669f60f8d",
+    "history.py": "92e3e2a6b9a823a0532af0fd29d6973d9808f95cd6cd4a77b27953924adc9fac",
+    "matching.py": "2e65c08bc21535678d6efbcde6aaee3403b293346b0da769fa997f60aed3d720",
+    "pdf_facts.py": "7cef09dc342170d6c1c79c4e3a35845fbdd0395e7932ac5b95193db44ad9e845",
+    "run.py": "e23877a57342c86d969e7d2affc89d9f3e763b265799c588c2ff40c36dc0205d",
+    "validate.py": "69619cf19d4c4ec98277271255915acd42e21913aad39916b2a800f3f7afbfd8"
+  },
+  "seconds": 198.25,
+  "validation": {
+    "ok": true,
+    "rows": 605836,
+    "transactions": 203083,
+    "covered": 203083,
+    "missing": 0,
+    "uncompressed_bytes": 26247327,
+    "errors": []
+  },
+  "official_structure": {
+    "ok": true,
+    "errors": [],
+    "note": "Format only; no hidden labels or accuracy estimate."
+  },
+  "sha256": "d9d802084e014420cf58540289b8a3639309fd20b0ef46f76b65992fd21f8aa0",
+  "audit_sha256": "4b4c5a072673e6d2dce9a3d2e81c46faa5a6312e4492db79446aeeed5736d080",
+  "artifacts": {
+    "submission": "submission_live_release.csv.gz",
+    "audit": "submission_live_release.csv.gz.audit.jsonl",
+    "report": "submission_live_release.csv.gz.report.json"
+  },
+  "source_changed_during_run": false,
+  "publication": "validated"
+}

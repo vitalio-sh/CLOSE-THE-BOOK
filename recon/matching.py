@@ -131,33 +131,50 @@ def _exception(item, cash, txn, ctx, fx=False):
     text=words(text_of(txn))
     if any(x in text for x in ('DISPUT','RECLAM','DAMAGED','PENALTY','DEDUCCION')):
         return 'SHORT_DISPUTE',cash
+    # Intermediary charges on a documented non-SEPA cross-border receipt.
+    # A small difference alone never establishes this exception.
+    sepa={'AD','AL','AT','BE','BG','CH','CY','CZ','DE','DK','EE','ES','FI','FR','GB','GI','GR','HR','HU','IE','IS','IT','LI','LT','LU','LV','MC','MD','ME','MK','MT','NL','NO','PL','PT','RO','RS','SE','SI','SK','SM','VA'}
+    country=customer.get('country','').upper()
+    bank_text=words(' | '.join(str(txn.get(k) or '') for k in ('text','ref1','ref2','remittance_info')))
+    transfer=bool(re.search(r'\b(?:SWIFT|TRANSFER EN DIV|TRANSFERENCIA INTERNACIONAL|INTERNATIONAL TRANSFER|WIRE TRANSFER|GASTOS (?:SHA|BEN)|CHGS)\b',bank_text))
+    if (not fx and item.get('side')=='AR' and item.get('kind')!='credit'
+            and country and country not in sepa and transfer):
+        short=opened-cash
+        currency=item.get('currency')
+        rate=D(1) if currency=='EUR' else None
+        if rate is None:
+            rates=getattr(ctx,'fx_rates',{})
+            dates=[day for day,values in rates.items() if day<=txn.get('booking_date','') and currency in values]
+            if dates:rate=dec(rates[max(dates)][currency])
+        if rate and rate>0 and 0<short<=opened*D('0.02') and short/rate<=D(60):
+            return 'SHORT_BANK_CHARGES',opened
     return 'PARTIAL',cash
 
 def classify(txn,ctx):
     """Only explicit category evidence; return None for unknown lines."""
-    t=words(text_of(txn));positive=dec(txn['amount'])>0
+    t=words(' | '.join(str(txn.get(k) or '') for k in ('text','ref1','ref2','remittance_info')));positive=dec(txn['amount'])>0
     rules=[
       ('BANK_REVERSAL',r'ANULACION OPERACION INDEBIDA|BANK ERROR|ERROR REVERSAL|ERRONEOUS'),
-      ('CASH_POOL',r'CASH POOL|CASHPOOL|ZBA SWEEP|ZERO BALANC|NIVELACION SALDO|TRASPASO PROPIO|TRASPASO ENTRE CUENTAS ES00'),
+      ('CASH_POOL',r'CASH POOL|CASHPOOL|ZBA SWEEP|ZERO BALANC(?:E|ING)?|NIVELACION SALDO|TRASPASO PROPIO|TRASPASO ENTRE CUENTAS ES00'),
       ('INTERCOMPANY',r'INTRAGRUPO|INTERCOMPANY|FINANCIACION IC|PRESTAMO IC|TRANSF IC'),
       ('INTERNAL_TRANSFER',r'TRASPASO (?:A|DE) CTA|OWN ACCOUNT|INTERNAL TRANSFER|ENTRE CUENTAS PROPIAS'),
       ('CUSTOMER_ADVANCE',r'PROFORMA|ANTICIPO PF'),
       ('CARD_EXPENSES',r'ADEUDO MENSUAL DE TARJETA|CORPORATE CARD|CARD STATEMENT'),
-      ('PAYROLL',r'NOMINA|PAYROLL|SALARIES|GEHALT|LOHN|SALAIRES'),
+      ('PAYROLL',r'NOMINAS?|PAYROLL|SALARIES|GEHALT|LOHN|SALAIRES'),
       ('SOCIAL_SECURITY',r'SEGURIDAD SOCIAL|SEG SOCIAL|SOCIAL CHARGES|SOCIAL SECURITY|URSSAF|SOZIAL'),
       ('LEASING',r'LEASING|RENTING|ARRENDAMIENTO|CUOTA LSG'),
       ('INSURANCE',r'PRIMA SEGURO|INSURANCE PREMIUM|POLIZA SEGURO|ASSURANCE'),
-      ('LOAN_REPAYMENT',r'AMORTIZACION|LOAN REPAYMENT|CUOTA PRESTAMO|PRES [A-Z]{2}[0-9]'),
+      ('LOAN_REPAYMENT',r'AMORTIZACION|LOAN REPAYMENT|CUOTA PRESTAMO|PRES [A-Z]{2}[0-9]+'),
       ('LOAN_DRAWDOWN',r'DISPOSICION PRESTAMO|LOAN DRAWDOWN|ABONO PRESTAMO'),
       ('FX_DEAL',r'FX DEAL|FOREX DEAL|COMPRA DIVISAS|VENTA DIVISAS|COMPRAVENTA DIVISAS|OPERACION CAMBIO'),
     ]
     category=None
     for cat,pattern in rules:
-        if re.search(pattern,t):category=cat;break
-    if category is None and re.search(r'INTERE[ST]|ZINS',t):category='INTEREST_INCOME' if positive else 'INTEREST_EXPENSE'
-    if category is None and re.search(r'IMPUEST|TAX PAYMENT|TAX REFUND|VAT RETURN|DEVOLUCION HACIENDA',t):category='TAX_REFUND' if positive else 'TAX_PAYMENT'
-    if category is None and re.search(r'COMISION|COMMISSION|BANK FEES|SERVICE CHARGE|GEBUHR|FRAIS|MAINTENANCE FEE|LIQUIDACION CTA CTO|COM TRANSF|SERV EM TRANSF',t):category='BANK_FEES'
-    if category is None and re.search(r'DEVOLUCION PAGO DUPLICADO|ABONO PAGO DOBLE|REEMBOLSO|DUPLICATE REFUND|REFUND DUPLICATE PAYMENT',t):category='SUPPLIER_REFUND' if positive else 'CUSTOMER_REFUND'
+        if re.search(r'(?<![A-Z0-9])(?:'+pattern+r')(?![A-Z0-9])',t):category=cat;break
+    if category is None and re.search(r'\b(?:INTERESTS?|INTERESES|ZINS(?:EN)?)\b',t):category='INTEREST_INCOME' if positive else 'INTEREST_EXPENSE'
+    if category is None and re.search(r'\b(?:IMPUESTOS?|TAX PAYMENT|TAX REFUND|VAT RETURN|DEVOLUCION HACIENDA)\b',t):category='TAX_REFUND' if positive else 'TAX_PAYMENT'
+    if category is None and re.search(r'\b(?:COMISION(?:ES)?|COMMISSION(?:S)?|BANK FEES?|SERVICE CHARGES?|GEBUHR(?:EN)?|FRAIS|MAINTENANCE FEE|LIQUIDACION CTA CTO|COM TRANSF|SERV EM TRANSF)\b',t):category='BANK_FEES'
+    if category is None and re.search(r'\b(?:DEVOLUCION PAGO DUPLICADO|ABONO PAGO DOBLE|DUPLICATE REFUND|REFUND DUPLICATE PAYMENT)\b',t):category='SUPPLIER_REFUND' if positive else 'CUSTOMER_REFUND'
     return [row(txn,category=category)] if category else None
 
 def reconcile(txn,ctx):
@@ -305,7 +322,7 @@ def reconcile(txn,ctx):
         cash,fx=_cash(item,txn)
         if cash is None or dec(item.get('open_amount'))<=0:continue
         exception,applied=_exception(item,cash,txn,ctx,fx)
-        if exception in ('SHORT_DISCOUNT','SHORT_WITHHOLDING'):
+        if exception in ('SHORT_DISCOUNT','SHORT_WITHHOLDING','SHORT_BANK_CHARGES'):
             explained.append((item,applied,exception))
     if len(explained)==1:
         item,amount,exception=explained[0]
