@@ -22,6 +22,8 @@ def txn(tid, amount, text='', date='2024-10-02', account='ES01-X-EUR', **kw):
 def context(txns=()):
     ctx = object.__new__(Context)
     ctx.items = {}
+    ctx.by_number = defaultdict(list)
+    ctx.by_party = defaultdict(list)
     ctx.history = defaultdict(list)
     ctx.categories = set(CATEGORIES)
     ctx.phase_txns = list(txns)
@@ -133,6 +135,50 @@ class FallbackTests(unittest.TestCase):
     def test_unmatched_reembolso_receipt_is_supplier_refund(self):
         line = txn('a', '5327.09', 'ACH CREDIT SERVICES SANDERS CCD', remittance_info='REEMBOLSO INV0002506')
         self.assertEqual(self.run_fallback(line), ('SUPPLIER_REFUND', ''))
+
+    def run_with_customer(self, line, open_amount=None):
+        ctx = context([line])
+        ctx.customers = {'C1': {'customer_id': 'C1', 'name': 'Oak Mesa Pool Builders LLC'}}
+        ctx.suppliers, ctx.previous_masters = {}, {}
+        if open_amount is not None:
+            ctx.items['ARI-2024-0000001'] = {'item_id': 'ARI-2024-0000001', 'party_id': 'C1', 'side': 'AR',
+                                             'kind': 'invoice', 'entity': 'US01', 'issue_date': '2024-09-01',
+                                             'document_number': 'INV-1', 'open_amount': Decimal(open_amount),
+                                             'total_amount': Decimal(open_amount)}
+            ctx.by_party['C1'].append('ARI-2024-0000001')
+        out, audit = io.StringIO(), io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=FIELDS); writer.writeheader()
+        execute(ctx, [line], [], writer, audit)
+        row = list(csv.DictReader(io.StringIO(out.getvalue())))[0]
+        return row['category'], row['exception']
+
+    def test_bare_receipt_from_payer_without_open_items_is_unidentified(self):
+        # POLICIES §3: a receipt for which no open item exists (unknown payer) -> UNIDENTIFIED/UNIDENTIFIED.
+        line = txn('a', '1178.23', 'ACH CREDIT OAK MESA POOL BU CCD PAYMENT ID:2123915484', entity='US01',
+                   counterparty_name='Oak Mesa Pool Builders LLC')
+        self.assertEqual(self.run_with_customer(line), ('UNIDENTIFIED', 'UNIDENTIFIED'))
+        unknown = txn('b', '1178.23', 'SEPA-UEBERWEISUNG EREF+NOTPROVIDED SVWZ+PAYMENT', entity='US01',
+                      remittance_info='PAYMENT', counterparty_name='Ivan Vega Fernandez')
+        self.assertEqual(self.run_with_customer(unknown, '5000.00'), ('UNIDENTIFIED', 'UNIDENTIFIED'))
+
+    def test_bare_receipt_from_payer_with_open_items_abstains(self):
+        line = txn('a', '1178.23', 'ACH CREDIT OAK MESA POOL BU CCD PAYMENT ID:2123915484', entity='US01',
+                   counterparty_name='Oak Mesa Pool Builders LLC')
+        self.assertEqual(self.run_with_customer(line, '5000.00'), ('UNIDENTIFIED', ''))
+        # A small unreferenced receipt no matcher could place is unidentified even for a known payer.
+        small = txn('s', '232.53', 'ACH CREDIT OAK MESA POOL BU CCD PAYMENT ID:2123915484', entity='US01',
+                    counterparty_name='Oak Mesa Pool Builders LLC')
+        self.assertEqual(self.run_with_customer(small, '1000.00'), ('UNIDENTIFIED', 'UNIDENTIFIED'))
+        medium = txn('m', '832.53', 'ACH CREDIT OAK MESA POOL BU CCD PAYMENT ID:2123915484', entity='US01',
+                     counterparty_name='Oak Mesa Pool Builders LLC')
+        self.assertEqual(self.run_with_customer(medium, '100.00'), ('UNIDENTIFIED', ''))
+
+    def test_receipt_with_remittance_text_abstains_even_without_payer(self):
+        line = txn('a', '862.68', 'SEPA-UEBERWEISUNG EREF+NOTPROVIDED SVWZ+SERVICE AUGUST 2024', entity='US01',
+                   remittance_info='SERVICE AUGUST 2024')
+        self.assertEqual(self.run_with_customer(line), ('UNIDENTIFIED', ''))
+        bare_fp = txn('f', '361.61', 'FP POOLS HOLLOWFORD L ', entity='US01')
+        self.assertEqual(self.run_with_customer(bare_fp), ('UNIDENTIFIED', ''))
 
     def test_unmatched_outgoing_line_is_customer_refund(self):
         line = txn('a', '-434.21', 'TRANSFERENCIA A VIDAL Y HERRERO HOTELE | S S.A.')

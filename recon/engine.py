@@ -246,10 +246,11 @@ def execute(ctx, txns, handlers, writer, audit, progress=None):
             # payer (generic reference, cash deposit, initials-only payer, round amount).
             # In TRAIN the UNIDENTIFIED category always carries the exception, so the
             # category-only row is kept as an honest abstention.
-            from .nonitem import unidentified_evidence, fallback_category
+            from .nonitem import unidentified_evidence, fallback_category, unknown_payer_receipt
             # UNIDENTIFIED is a receipt-only category: in TRAIN no outgoing line carries it.
             outgoing = Decimal(txn['amount']) < 0
-            exc = 'UNIDENTIFIED' if not outgoing and unidentified_evidence(txn) else ''
+            exc = ('UNIDENTIFIED' if not outgoing and (unidentified_evidence(txn) or unknown_payer_receipt(txn, ctx))
+                   else '')
             known = getattr(ctx, 'categories', ()) or ()
             category = 'UNIDENTIFIED' if exc else fallback_category(txn)
             if category not in known:

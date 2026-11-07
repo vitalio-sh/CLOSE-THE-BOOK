@@ -161,6 +161,50 @@ def unidentified_evidence(txn, allow_round=True):
     return None
 
 
+# A receipt whose remittance slot is empty or a bare generic word, in each statement format.
+# Used only after every matcher abstained, together with "no open item for the payer".
+_BARE = r'(?:PAYMENT|TRANSFERENCIA|TRANSFER|PAGO)?'
+_BARE_REMITTANCE = [re.compile(p) for p in (
+    r'SVWZ\+' + _BARE + r'\s*$', r'/REMI/' + _BARE + r'(?:/|$)', r'/MOTIF ' + _BARE + r'\s*/REF\s*$',
+    r'CAUSALE ' + _BARE + r'\s*$', r'TYTUL: ' + _BARE + r'\s*$', r'CONCEPTO:? ' + _BARE + r'\s*$',
+    r'CCD PAYMENT ID:\d+(?: RMR\*IV\*PAYMENT\*PI\*[\d.]+\\?)?\s*$', r'^DIRECT CREDIT ',
+    r'^(?:TT IN|FP) [A-Z .&,]+ PAYMENT$', r'^PIX RECEBIDO .*PAYMENT$')]
+
+
+def bare_remittance(txn):
+    if _ascii(txn.get('remittance_info')).strip() not in ('', 'PAYMENT'):
+        return False
+    text = _ascii(txn.get('text')).strip()
+    return any(p.search(text) for p in _BARE_REMITTANCE)
+
+
+def payer_open_items(txn, ctx):
+    """Open AR items of the identified payer(s) issued by the booking date, or [] (unknown payer)."""
+    from .matching import party_candidates
+    owner, day = txn.get('entity'), txn['booking_date']
+    found = []
+    for pid in party_candidates(txn, ctx):
+        for iid in ctx.by_party.get(pid, ()):
+            item = ctx.items[iid]
+            if (item.get('side') == 'AR' and item['open_amount'] > 0 and item.get('entity') == owner
+                    and item.get('issue_date', '') <= day):
+                found.append(item)
+    return found
+
+
+def unknown_payer_receipt(txn, ctx):
+    """POLICIES §3 UNIDENTIFIED: "a receipt for which no open item exists (unknown payer ...)".
+
+    Only for a receipt every matcher abstained on, with no document reference (bare remittance),
+    and either no open item for the payer at all (or no payer found), or a small receipt (< 500):
+    in TRAIN, small unreferenced receipts that no matcher could place are mostly unidentified.
+    """
+    amount = Decimal(str(txn.get('amount') or 0))
+    if amount <= 0 or not bare_remittance(txn):
+        return False
+    return amount < 500 or not payer_open_items(txn, ctx)
+
+
 # Explicit category wording that, in TRAIN, never comes with an item (sign, pattern, category).
 _TEXT_RULES = [
     ('-', re.compile(r'DUPLICAD|PAGO DOBLE|DUPLICATE|\bREFUND'), 'CUSTOMER_REFUND'),   # §3/§4 refund of a duplicate
