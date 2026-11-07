@@ -121,8 +121,11 @@ def _ids(units):
     return tuple(sorted(ids))
 
 
-def candidates(txn, ctx, horizon_days=None):
-    """Every family solution as (family, party rank, items). Diagnostics use all of them."""
+def candidates(txn, ctx, horizon_days=None, quoted=None):
+    """Every family solution as (family, party rank, items). Diagnostics use all of them.
+
+    When `quoted` is a dict, it receives the quoted open item ids of each payer rank.
+    """
     if D(txn['amount']) <= 0:
         return []
     horizon = None
@@ -143,6 +146,8 @@ def candidates(txn, ctx, horizon_days=None):
         by_doc = {_normed(ctx, u[0], 'document_number'): u for u in units}
         q_inv = [u for u in units if u[0]['item_id'] in refs]
         q_cn = [c for c in credits if c['item_id'] in refs]
+        if quoted is not None:
+            quoted[rank] = {u[0]['item_id'] for u in q_inv} | {c['item_id'] for c in q_cn}
         anchor_ids = {u[0]['item_id'] for u in q_inv}
         for c in q_cn:
             unit = by_doc.get(_normed(ctx, c, 'related_document'))
@@ -248,5 +253,45 @@ def reconcile(txn, ctx):
             return None
         if len(solutions) == 1:
             ids = next(iter(solutions))
+            return [M.row(txn, iid, ctx.items[iid]['open_amount']) for iid in ids]
+    return None
+
+
+EARLY_FAMILIES = ('quoted_credit', 'quoted_invoice', 'single_net', 'unit_subset', 'anchored_rest')
+
+
+def _near(a, b):
+    """Same-length document numbers that differ in exactly one character (a typo)."""
+    return len(a) == len(b) and sum(x != y for x, y in zip(a, b)) == 1
+
+
+def reconcile_early(txn, ctx):
+    """Exact credit-note nets that run before ordinary matching (POLICIES 2, 5.9).
+
+    Ordinary matching reads such a receipt as a short payment (partial, withholding)
+    or an overpayment of one quoted invoice. A unique exact family solution that
+    includes the related credit notes explains the cash difference instead. Only the
+    quoted/single families and anchored subsets run here; every quoted open item of
+    the payer must be in the solution, unless it is a one-character typo of one.
+    """
+    quoted = {}
+    found = candidates(txn, ctx, HORIZON_DAYS, quoted)
+    for family in EARLY_FAMILIES:
+        if any(c[0] == family + '_multi' for c in found):
+            return None
+        sols = {(c[1], c[2]) for c in found if c[0] == family}
+        if family in ('unit_subset', 'anchored_rest'):
+            sols = {s for s in sols if quoted.get(s[0])}
+        if len({s[1] for s in sols}) > 1:
+            return None
+        if sols:
+            rank, ids = next(iter(sols))
+            chosen = {_normed(ctx, ctx.items[i], 'document_number') for i in ids}
+            for iid in quoted.get(rank, ()):
+                if iid in ids:
+                    continue
+                number = _normed(ctx, ctx.items[iid], 'document_number')
+                if not any(_near(number, other) for other in chosen):
+                    return None
             return [M.row(txn, iid, ctx.items[iid]['open_amount']) for iid in ids]
     return None

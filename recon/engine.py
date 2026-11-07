@@ -32,6 +32,10 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         # A quoted number that is another customer's invoice, one typo from the named payer's (5.5).
         from . import refnoise
         handlers.append(('refnoise_typo', lambda txn: refnoise.typo_owner(txn, ctx)))
+        # Exact nets of quoted or single invoices and their credit notes (POLICIES 2, 5.9)
+        # precede matching, which would read the credit as a short payment.
+        from .credit_groups import reconcile_early
+        handlers.append(('credit_early', lambda txn: reconcile_early(txn, ctx)))
         handlers.append(('matching', lambda txn: reconcile(txn, ctx)))
         from .financial_sequences import FinancialSequences
         handlers.append(('financial_sequences', FinancialSequences(ctx).reconcile))

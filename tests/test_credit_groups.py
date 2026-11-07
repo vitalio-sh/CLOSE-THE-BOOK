@@ -65,6 +65,50 @@ class CreditGroupTests(unittest.TestCase):
         self.assertEqual(_small_subsets([5, 7, 11, 40], 23, 3), [(0, 1, 2)])
         self.assertEqual(_small_subsets([5, 7, 11, 40], 99, 3), [])
 
+    def test_early_net_of_quoted_credit_beats_withholding(self):
+        # POLICIES 2/5.9: the open credit referencing the invoice explains the difference.
+        from recon.credit_groups import reconcile_early
+        items = [invoice('A', 'NF0124002785', '3041.27'), credit('C', 'ND0124000097', '304.12', 'NF0124002785'),
+                 invoice('B', 'NF0124002999', '500')]
+        rows = reconcile_early(txn('2737.15', 'Alice Water Works FATURA NF01240 CN 000097'), context(items))
+        self.assertEqual(ids(rows), {'A': ('3041.27', ''), 'C': ('304.12', '')})
+
+    def test_early_single_net_without_reference(self):
+        from recon.credit_groups import reconcile_early
+        items = [invoice('A', 'FA1', '11415.22'), credit('C', 'AV1', '1141.51', 'FA1')]
+        rows = reconcile_early(txn('10273.71', 'Alice Water Works REMI'), context(items))
+        self.assertEqual(set(ids(rows)), {'A', 'C'})
+
+    def test_early_quoted_anchor_with_remainder(self):
+        from recon.credit_groups import reconcile_early
+        items = [invoice('A', 'FV24-0214960', '3485.85'), credit('C', 'AB24-0200436', '1742.92', 'FV24-0214960'),
+                 invoice('B', 'FV24-0216571', '848.34'), invoice('E', 'FV24-0216586', '975.62'),
+                 invoice('G', 'FV24-0216999', '5000')]
+        rows = reconcile_early(txn('3566.89', 'Alice Water Works PAGO FRA. FV24-0214960 FV24'), context(items))
+        self.assertEqual(set(ids(rows)), {'A', 'C', 'B', 'E'})
+
+    def test_early_yields_to_other_quoted_invoice(self):
+        # A quoted open invoice outside the net solution keeps ordinary matching in charge.
+        from recon.credit_groups import reconcile_early
+        items = [invoice('A', 'FV24-0413922', '520.23'), credit('C', 'AB24-0400371', '78.03', 'FV24-0413922'),
+                 invoice('B', 'FV24-0499999', '900')]
+        self.assertIsNone(reconcile_early(txn('442.20', 'Alice Water Works FRA. FV24-0499999'), context(items)))
+
+    def test_early_accepts_one_character_typo_of_solution(self):
+        from recon.credit_groups import reconcile_early
+        items = [invoice('A', 'FV24-0413922', '520.23'), credit('C', 'AB24-0400371', '78.03', 'FV24-0413922'),
+                 invoice('B', 'FV24-0418922', '900')]
+        rows = reconcile_early(txn('442.20', 'Alice Water Works FRA. FV24-0418922'), context(items))
+        self.assertEqual(set(ids(rows)), {'A', 'C'})
+
+    def test_early_skips_unanchored_subsets(self):
+        from recon.credit_groups import reconcile_early
+        items = [invoice('A', 'F1', '100'), invoice('B', 'F2', '200'), credit('C', 'AB1', '50', 'F2'),
+                 invoice('E', 'F3', '999')]
+        for n, item in enumerate(items):
+            item['issue_date'] = f'2025-01-0{n + 1}'
+        self.assertIsNone(reconcile_early(txn('250', 'Alice Water Works PAYMENT'), context(items)))
+
     def test_outgoing_lines_ignored(self):
         items = [invoice('A', 'F1', '100'), credit('C', 'AB1', '30', 'F1')]
         self.assertIsNone(reconcile(txn('-70', 'Alice Water Works'), context(items)))
