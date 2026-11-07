@@ -457,6 +457,9 @@ def reconcile_early(txn, ctx):
 
 
 
+COMPLETION_UNITS = 7  # largest residual completion; bigger unique sets are amount-only guesses
+
+
 def complete_residual(txn, ctx, rows):
     """Complete an anchored group whose cash residual is one unique set of the payer's units.
 
@@ -504,7 +507,7 @@ def complete_residual(txn, ctx, rows):
         sols = subset_solutions(values, residual, minimum=1, maximum_items=SUBSET_UNITS) or []
     else:
         sols = _small_subsets(values, residual, REMAINDER_UNITS)
-    if len(sols) != 1:
+    if len(sols) != 1 or len(sols[0]) > COMPLETION_UNITS:
         return rows
     added = list(rows)
     for k in sols[0]:
