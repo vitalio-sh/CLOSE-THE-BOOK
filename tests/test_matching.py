@@ -389,3 +389,25 @@ class MatchingTests(unittest.TestCase):
         c=context(items);c.customers['C2']={'name':'Bob Pools Iberia','country':'ES'}
         self.assertNotIn('C',{r['item_id'] for r in reconcile(txn('229.45','Alice Water Works FRA FV25-00001 FV25-00002'),c) or []})
 if __name__=='__main__':unittest.main()
+
+
+class ShortNamePartyTests(unittest.TestCase):
+    def ctx(self, customers):
+        c = context([invoice()])
+        c.customers = customers
+        return c
+
+    def test_short_person_name_identifies_payer(self):
+        from recon.matching import party_candidates
+        c = self.ctx({'C1': {'name': 'Emma Ross', 'entity': 'ES01'}})
+        t = txn('100', 'ACH CREDIT EMMA ROSS CCD PAYMENT', counterparty_name='Emma Ross')
+        self.assertEqual(party_candidates(t, c), ['C1'])
+        self.assertEqual(reconcile(t, c)[0]['item_id'], 'I1')
+
+    def test_short_name_needs_whole_words_and_one_local_payer(self):
+        from recon.matching import party_candidates
+        c = self.ctx({'C1': {'name': 'Emma Ross', 'entity': 'ES01'}})
+        self.assertEqual(party_candidates(txn('100', 'GEMMAROSSI SL'), c), [])
+        c = self.ctx({'C1': {'name': 'Emma Ross', 'entity': 'ES01'}, 'C2': {'name': 'Emma Ross', 'entity': 'ES01'},
+                      'C3': {'name': 'Emma Ross', 'entity': 'US01'}})
+        self.assertEqual(party_candidates(txn('100', 'EMMA ROSS'), c), [])

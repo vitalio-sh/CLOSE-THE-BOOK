@@ -67,9 +67,42 @@ def _index(ctx):
             if len(n) >= 6 and n not in aliases[pid]:
                 aliases[pid].add(n); prefixes[n[:10]].add(pid)
     ctx._previous_accounts = previous_accounts
+    # Names of 6-9 normalised characters ('Emma Ross') never fill a 10-character
+    # prefix window; they are looked up as whole-word sequences instead.
+    shorts = defaultdict(set)
+    for pid, names in aliases.items():
+        for n in names:
+            if len(n) < 10:
+                shorts[n].add(pid)
     cached = (prefixes,ibans,aliases,children,parties)
     ctx._matching_index = cached
+    ctx._matching_shorts = shorts
     return cached
+
+def _party_entity_ok(party, owner):
+    entity = party.get('entity')
+    return not entity or not owner or entity == owner or (owner == 'ES00' and entity in ('ES01', 'ES02', 'PT01'))
+
+def _short_name_candidates(txn, ctx, parties):
+    """Payers whose short name (6-9 characters) is a whole-word sequence of the bank text.
+
+    POLICIES 5.5: the party name is often the only evidence. Several same-named
+    payers in the paying entity are ambiguous and are not proposed.
+    """
+    shorts = getattr(ctx, '_matching_shorts', None) or {}
+    if not shorts:
+        return set()
+    tokens = words(text_of(txn)).split()
+    owner = txn.get('entity')
+    found = set()
+    for size in (1, 2, 3, 4):
+        for i in range(len(tokens) - size + 1):
+            key = ''.join(tokens[i:i + size])
+            if 6 <= len(key) <= 9 and key in shorts:
+                local = {pid for pid in shorts[key] if _party_entity_ok(parties.get(pid, {}), owner)}
+                if len(local) == 1:
+                    found |= local
+    return found
 
 def party_candidates(txn,ctx):
     prefixes,ibans,aliases,children,parties = _index(ctx)
@@ -77,6 +110,7 @@ def party_candidates(txn,ctx):
     candidates=set()
     for i in range(max(0,len(compact)-9)):
         candidates.update(prefixes.get(compact[i:i+10],()))
+    candidates.update(_short_name_candidates(txn, ctx, parties))
     for token in re.findall('[A-Za-z0-9-]{8,}',raw):
         candidates.update(ibans.get(norm(token),()))
     acct=norm(txn.get('counterparty_account'))
