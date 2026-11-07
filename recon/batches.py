@@ -161,6 +161,11 @@ class BatchMatcher:
                                 key = row['end_to_end_id']
                             if folder == 'payment_runs' and row['run_type'] == 'confirming':
                                 key = row['end_to_end_id']
+                            if folder == 'payment_runs':
+                                # Run and transfer IDs repeat across entities and debtor
+                                # accounts (PR010024101092-0118 exists for PT01 and UK01):
+                                # a group is one transfer of one paying account.
+                                key = (key, row['debtor_account_id'])
                             rows_by_group[key].append(row)
             for (run_id, account, entity, execution_date), details in mixed_run_rows.items():
                 if len({row['currency'] for row in details}) > 1:
@@ -176,8 +181,11 @@ class BatchMatcher:
                     total = sum((money(r['document_amount']) for r in rows), ZERO)
                 else:
                     total = sum((money(r['amount']) for r in rows), ZERO)
-                reference = first['run_id'] if folder == 'payment_runs' and first['run_type'] == 'confirming' else key
-                when = key[1] if isinstance(key, tuple) and key[1] else first[datecol]
+                if folder == 'payment_runs':
+                    reference = first['run_id'] if first['run_type'] == 'confirming' else key[0]
+                else:
+                    reference = key
+                when = first[datecol]
                 group = {'kind':folder, 'ref':norm(reference), 'account':account,
                          'currency':currency, 'date':when, 'amount':total, 'rows':rows,
                          'direction':-1 if folder == 'payment_runs' else 1,

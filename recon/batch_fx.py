@@ -175,6 +175,7 @@ def _document_allocations(ctx, txn, details):
                 return None
             documents[(number, detail['currency'], credit)] += abs(value)
         suppliers = set()
+        pools = {}
         for (number, currency, credit), amount in documents.items():
             candidates, direct = [], []
             for iid in set(ctx.by_number.get(number, ())):
@@ -193,7 +194,29 @@ def _document_allocations(ctx, txn, details):
                 aliases.update(norm(item.get(key)) for key in ('supplier_name', 'party_name'))
                 if beneficiary in aliases:
                     direct.append(item)
-            pool = direct if direct else candidates if factor else []
+            pools[(number, currency, credit)] = (amount, direct if direct else candidates if factor else [])
+        # POLICIES §5.1/§5.3: one transfer pays one supplier. When a factor is the
+        # named beneficiary, a printed number shared by several suppliers is
+        # resolved by the only supplier that owns every document of the transfer.
+        if factor and len(pools) > 1:
+            common = None
+            for amount, pool in pools.values():
+                parties = {item.get('party_id') for item in pool if item.get('party_id')}
+                common = parties if common is None else common & parties
+            # Several suppliers can own the same printed numbers; the one whose
+            # open amounts equal the transfer's document amounts is the payee.
+            exact_hits = {party: sum(any(item.get('party_id') == party and
+                                         (money(item['open_amount']) == amount or
+                                          money(item['total_amount']) == amount) for item in pool)
+                                     for amount, pool in pools.values())
+                          for party in common or ()}
+            best = max(exact_hits.values(), default=0)
+            leaders = [party for party, hits in exact_hits.items() if hits == best]
+            if best and len(leaders) == 1:
+                party = leaders[0]
+                pools = {key: (amount, [item for item in pool if item.get('party_id') == party])
+                         for key, (amount, pool) in pools.items()}
+        for (number, currency, credit), (amount, pool) in pools.items():
             # The supplied document amount distinguishes repeated printed numbers
             # from date/amount-incompatible invoices; equal eligible ties abstain.
             exact = [item for item in pool if money(item['open_amount']) == amount

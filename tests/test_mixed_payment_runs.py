@@ -73,7 +73,16 @@ class MixedRunTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as d:
    ctx,txn,details=self.fixtures(Path(d));details=[dict(r,_entity='US01',beneficiary='Example Factoring') for r in details]
    ctx.items['API-4']={**ctx.items['API-2'],'item_id':'API-4','party_id':'S2'};ctx.by_number['INVEUR'].append('API-4')
+   # One transfer pays one supplier: the credit note only S1 owns resolves the shared number.
+   self.assertEqual({r['item_id'] for r in mixed_run_allocate(ctx,txn,details)},{'API-1','API-2','APC-3'})
+   # When the other supplier also owns every document of the transfer, the tie abstains.
+   ctx.items['APC-5']={**ctx.items['APC-3'],'item_id':'APC-5','party_id':'S2'};ctx.by_number['CREUR'].append('APC-5')
    self.assertIsNone(mixed_run_allocate(ctx,txn,details))
+   del ctx.items['APC-5'];ctx.by_number['CREUR'].remove('APC-5')
+   ctx.items['API-4']['issue_date']='2025-01-05';self.assertIsNotNone(mixed_run_allocate(ctx,txn,details))
+   ctx.items['API-4']['issue_date']='2025-01-01'
+   ctx.items['APC-3']['party_id']='S3';self.assertIsNone(mixed_run_allocate(ctx,txn,details))
+   ctx.items['APC-3']['party_id']='S1'
    ctx.items['API-4']['issue_date']='2025-01-05';self.assertIsNotNone(mixed_run_allocate(ctx,txn,details))
    ctx.items['API-4']['issue_date']='2025-01-01';ctx.items['API-4']['open_amount']=D('90');self.assertIsNotNone(mixed_run_allocate(ctx,txn,details))
    ctx.items['API-4']['open_amount']=D('110');ctx.items['API-4']['total_amount']=D('110');self.assertIsNotNone(mixed_run_allocate(ctx,txn,details))

@@ -226,6 +226,20 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(next_business_day('2025-04-18'),'2025-04-22')
         self.assertEqual(next_business_day('2025-12-25'),'2025-12-29')
 
+    def test_transfer_ids_repeating_across_accounts_stay_separate(self):
+        # PR...-0118 exists for PT01 and UK01 runs: one transfer per paying account.
+        self.item('API-1','F24/01582','6139.95',party='S1')
+        self.item('API-2','24006741','623.80',party='S2',currency='GBP')
+        base=dict(run_id='PR010024101092',run_type='transfers',execution_date='2025-06-01',end_to_end_id='PR010024101092-0118',beneficiary_iban='',document_type='INVOICE',remittance_info='')
+        self.rows('payment_runs',[
+            dict(base,debtor_account_id='ES01-A',beneficiary='Software Gil S.A.',currency='EUR',transfer_amount='6139.95',document_number='F24/01582',document_amount='6139.95'),
+            dict(base,debtor_account_id='UK01-B',beneficiary='WC4 Consulting Limited',currency='GBP',transfer_amount='623.80',document_number='24006741',document_amount='623.80')])
+        matcher=BatchMatcher(self.ctx)
+        result=matcher.reconcile(self.txn('-6139.95','PAGO TRANSFERENCIAS | 0971 317899 000118'))
+        self.assertEqual([(r['item_id'],r['amount']) for r in result],[('API-1','6139.95')])
+        uk=self.txn('-623.80','FP WC4 CONSULTING',currency='GBP'); uk['account_id']='UK01-B'
+        self.assertEqual([r['item_id'] for r in matcher.reconcile(uk)],['API-2'])
+
     def test_unique_subset_three_four_and_budget(self):
         from recon.batches import unique_small_subset
         self.assertEqual(unique_small_subset([100,210,440,900],750,3),(0,1,2))
