@@ -278,6 +278,95 @@ class BatchTests(unittest.TestCase):
         uk=self.txn('-623.80','FP WC4 CONSULTING',currency='GBP'); uk['account_id']='UK01-B'
         self.assertEqual([r['item_id'] for r in matcher.reconcile(uk)],['API-2'])
 
+    def test_confirming_without_run_single_invoice_due_today(self):
+        self.item('API-1','INV1','364.68',party='S1'); self.item('API-2','INV2','364.68',party='S2')
+        self.ctx.items['API-1'].update(due_date='2025-05-10',issue_date='2025-03-01',side='AP',kind='invoice')
+        self.ctx.items['API-2'].update(due_date='2025-05-20',issue_date='2025-03-01',side='AP',kind='invoice')
+        txn=self.maturity_txn('-364.68','PAGO CONFIRMING | REMESA CF000024112560 1 PROVEEDORES'); txn['entity']='ES01'
+        self.assertEqual([r['item_id'] for r in BatchMatcher(self.ctx).reconcile(txn)],['API-1'])
+        # A second invoice with the same amount and maturity abstains; so do several beneficiaries.
+        self.ctx.items['API-2']['due_date']='2025-05-12'
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(txn))
+        self.ctx.items['API-2']['due_date']='2025-05-20'
+        txn['text']='PAGO CONFIRMING | REMESA CF000024112560 2 PROVEEDORES'
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(txn))
+
+    def test_returned_supplier_transfer_reverses_original_allocation(self):
+        self.item('API-1','FAC1','6627.11',party='S1'); self.item('API-2','FAC2','7003.77',party='S1')
+        self.item('API-3','FAC3','13630.88',party='S2')
+        self.ctx.suppliers={'S1':{'name':'Franco Logística S.A.'},'S2':{'name':'Otro Proveedor S.L.'}}
+        for iid in ('API-1','API-2'): self.ctx.items[iid]['open_amount']=D(0)
+        self.ctx.items['API-3']['open_amount']=D(0)
+        self.ctx.history={
+            'API-1':[dict(bank_txn_id='BT0',item_id='API-1',amount='6627.11',exception='',booking_date='2025-05-20',account_id='ES01-A')],
+            'API-2':[dict(bank_txn_id='BT0',item_id='API-2',amount='7003.77',exception='',booking_date='2025-05-20',account_id='ES01-A')],
+            'API-3':[dict(bank_txn_id='BT9',item_id='API-3',amount='13630.88',exception='',booking_date='2025-05-21',account_id='ES01-A')]}
+        txn=self.txn('13630.88','DEVOLUCION TRANSFERENCIA AC04 | FRANCO LOGISTICA S.A.')
+        result=BatchMatcher(self.ctx).reconcile(txn)
+        self.assertEqual({(r['item_id'],r['amount'],r['exception']) for r in result},
+                         {('API-1','6627.11','RETURNED'),('API-2','7003.77','RETURNED')})
+        # Unnamed supplier, other account or already returned: abstain.
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(self.txn('13630.88','DEVOLUCION TRANSFERENCIA AC04 | DESCONOCIDO')))
+        other=dict(txn,account_id='ES01-B'); self.assertIsNone(BatchMatcher(self.ctx).reconcile(other))
+        self.ctx.history['API-1'].append(dict(bank_txn_id='BT5',item_id='API-1',amount='6627.11',exception='RETURNED',booking_date='2025-05-25',account_id='ES01-A'))
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(txn))
+
+    def test_factor_transfer_partial_row_resolved_within_supplier(self):
+        # Factor-named transfer: INV0003340 is printed by two suppliers and paid partially.
+        self.item('API-1','INV0003366','4404.19',party='S1'); self.item('API-2','INV0003340','3000.00',party='S1')
+        self.item('API-3','INV0003340','2500.00',party='S2')
+        base=dict(run_id='PR010024101002',run_type='transfers',execution_date='2025-06-01',debtor_account_id='ES01-A',end_to_end_id='PR010024101002-0310',beneficiary='Norte Pagos Confirming EFC',beneficiary_iban='',currency='EUR',transfer_amount='5531.44',document_type='INVOICE',remittance_info='')
+        self.rows('payment_runs',[dict(base,document_number='INV0003366',document_amount='4404.19'),
+                                  dict(base,document_number='INV0003340',document_amount='1127.25')])
+        result=BatchMatcher(self.ctx).reconcile(self.txn('-5531.44','ACH DEBIT NORTE PAGOS CONF VENDOR PMT'))
+        self.assertEqual({(r['item_id'],r['amount'],r['exception']) for r in result},
+                         {('API-1','4404.19',''),('API-2','1127.25','PARTIAL')})
+
+    def test_returned_transfer_named_beneficiary_beyond_three_days(self):
+        self.item('API-1','FV-24-0296','29259.78',party='S1'); self.item('API-2','FV-24-0307','3013.53',party='S1')
+        for iid in ('API-1','API-2'): self.ctx.items[iid].update(open_amount=D(0),historical_closed=True)
+        base=dict(run_id='PR010024122645',run_type='transfers',execution_date='2025-05-20',debtor_account_id='ES01-A',end_to_end_id='PR010024122645-0396',beneficiary='Motors Coral Bay North Pty Ltd',beneficiary_iban='',currency='EUR',transfer_amount='32273.31',document_type='INVOICE',remittance_info='')
+        self.rows('payment_runs',[dict(base,document_number='FV-24-0296',document_amount='29259.78'),
+                                  dict(base,document_number='FV-24-0307',document_amount='3013.53')])
+        matcher=BatchMatcher(self.ctx)
+        result=matcher.reconcile(self.txn('32273.31','RETURN AC01 MOTORS CORAL BAY NORTH PTY LTD'))
+        self.assertEqual({(r['item_id'],r['amount'],r['exception']) for r in result},
+                         {('API-1','29259.78','RETURNED'),('API-2','3013.53','RETURNED')})
+        self.assertIsNone(matcher.reconcile(self.txn('32273.31','RETURN AC01 OTHER SUPPLIER LTD')))
+        # A supplier refund naming the beneficiary is not a returned transfer.
+        self.assertIsNone(matcher.reconcile(self.txn('32273.31','TT IN MOTORS CORAL BAY NORTH PTY LTD DEVOLUCION SALDO A FAVOR')))
+
+    def test_rebuilt_transfer_reference_flags_duplicate_payment(self):
+        self.item('API-1','FV-24-0100','2844.12',party='S1')
+        self.ctx.items['API-1'].update(open_amount=D(0),historical_closed=True)
+        base=dict(run_id='PR010024091060',run_type='transfers',execution_date='2025-05-01',debtor_account_id='ES01-A',beneficiary='Proveedor Uno S.L.',beneficiary_iban='',currency='EUR',transfer_amount='2844.12',document_type='INVOICE',remittance_info='')
+        self.rows('payment_runs',[dict(base,end_to_end_id='PR010024091060-0001',document_number='FV-24-0100',document_amount='2844.12'),
+                                  dict(base,end_to_end_id='PR010024091060-0002',document_number='FV-24-0100',document_amount='2844.12')])
+        txn=self.txn('-2844.12','PAGO TRANSFERENCIAS | 4799-56-1122872-73 051775 000001'); txn['ref2']='PR010024091060-0'
+        result=BatchMatcher(self.ctx).reconcile(txn)
+        self.assertEqual([(r['item_id'],r['exception']) for r in result],[('API-1','DUPLICATE_PAYMENT')])
+        # Without the cut run reference the 31-day-old transfer is not an amount candidate.
+        txn['ref2']=''
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(txn))
+
+    def test_transfer_reference_rebuild(self):
+        from recon.history import transfer_reference
+        self.assertEqual(transfer_reference({'ref2':'PR010024101092-0','text':'PAGO TRANSFERENCIAS | 0971-56-6918583-73 317899 000118'}),'PR0100241010920118')
+        self.assertEqual(transfer_reference({'ref2':'PR010024101092-1','text':'PAGO TRANSFERENCIAS | 0971 317899 000118'}),'')
+        self.assertEqual(transfer_reference({'ref2':'NO242842873273','text':'FP X 000118'}),'')
+
+    def test_supplier_direct_debit_truncated_name_and_factory(self):
+        self.item('API-1','INV0001012','822.95',party='S1'); self.item('API-2','INV9','822.95',party='S2')
+        for iid in ('API-1','API-2'): self.ctx.items[iid].update(payment_method='dd',entity='ES02')
+        self.ctx.suppliers={'S1':{'name':'PM8 Mantenimiento S.A.'},'S2':{'name':'Otro Mantenimiento S.L.'}}
+        txn=self.txn('-822.95','PM8 MANTENIMIENT | Recibos varios'); txn.update(ref2='248084923622',entity='ES00')
+        self.assertEqual([r['item_id'] for r in BatchMatcher(self.ctx).reconcile(txn)],['API-1'])
+        # Transfer invoices, other entities and ambiguous names abstain.
+        self.ctx.items['API-1']['payment_method']='transfer'
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(txn))
+        self.ctx.items['API-1']['payment_method']='dd'; txn['entity']='FR01'
+        self.assertIsNone(BatchMatcher(self.ctx).reconcile(txn))
+
     def test_unique_subset_three_four_and_budget(self):
         from recon.batches import unique_small_subset
         self.assertEqual(unique_small_subset([100,210,440,900],750,3),(0,1,2))

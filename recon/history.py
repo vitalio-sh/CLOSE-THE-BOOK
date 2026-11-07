@@ -70,6 +70,7 @@ indices are preserved. Call once before constructing cached matcher indices.
     if first_date is not None:
         result['batch_reference_tokens'] = _batch_references(ctx, phase_dir, first_date, refs)
         result['reversal_reference_tokens'] = _reversal_references(ctx, phase_dir, first_date, refs, txns)
+        result['repeated_transfer_tokens'] = _repeated_transfer_references(ctx, phase_dir, first_date, txns, refs)
     result['reference_tokens'] = len(refs)
     if first_date is None:
         result['skipped_reason'] = 'No dated transactions'
@@ -225,4 +226,75 @@ def _reversal_references(ctx, phase_dir, first_date, refs, txns):
                     if len(token) >= 3 and any(c.isdigit() for c in token) and entity not in refs[token]:
                         refs[token].add(entity)
                         added += 1
+    return added
+
+
+def transfer_reference(txn):
+    """Rebuild a per-transfer end-to-end ID cut by the bank statement.
+
+    Norma 43 lines carry the run ID truncated after the dash in ref1/ref2
+    ('PR010024091060-0') and the transfer sequence at the end of the text
+    ('PAGO TRANSFERENCIAS | 4799-56-1122872-73 051775 000001'). Return the
+    normalized 'PR0100240910600001', or '' unless both parts agree.
+    """
+    run = None
+    for key in ('ref2', 'ref1'):
+        run = re.fullmatch(r'(PR\d{12})-(\d{0,3})', str(txn.get(key) or '').strip())
+        if run:
+            break
+    if not run:
+        return ''
+    sequence = re.search(r'\b(\d{6})\s*$', str(txn.get('text') or ''))
+    if not sequence or not sequence[1][-4:].startswith(run[2]):
+        return ''
+    return norm(run[1] + '-' + sequence[1][-4:])
+
+
+def _repeated_transfer_references(ctx, phase_dir, first_date, txns, refs):
+    """Documents of an earlier supplier transfer that a phase debit pays again.
+
+    POLICIES 3 (DUPLICATE_PAYMENT): paying the same transfer twice is a duplicate of
+    the documents it settled. The debit quotes the run ID cut after the dash plus the
+    transfer sequence (rebuilt by transfer_reference). When the original transfer was
+    made before the phase, its documents are closed and absent from the opening
+    snapshot; restore their identities at zero balance. Numbers that are open in the
+    snapshot are left alone.
+    """
+    wanted = {}
+    for txn in txns:
+        try:
+            amount = Decimal(str(txn.get('amount') or '0'))
+        except ArithmeticError:
+            continue
+        if amount < 0:
+            rebuilt = transfer_reference(txn)
+            if rebuilt:
+                wanted[(rebuilt, txn.get('account_id'))] = txn
+    if not wanted:
+        return 0
+    try:
+        floor = (date.fromisoformat(first_date).replace(day=1) - timedelta(days=92)).strftime('%Y%m')
+    except ValueError:
+        return 0
+    added = 0
+    roots = [phase_dir] + [Path(p) for p in getattr(ctx, 'history_dirs', ())]
+    seen = set()
+    for root in roots:
+        for path in sorted((Path(root) / 'payment_runs').glob('*.csv')):
+            if path.name.startswith('._') or path.name in seen:
+                continue
+            month = re.search(r'_(\d{6})(?:_\d+)?\.csv$', path.name)
+            if not month or month.group(1) < floor:
+                continue
+            seen.add(path.name)
+            entity = path.name.split('_')[0]
+            for row in read_csv(path):
+                if row.get('run_type') not in ('transfers', 'confirming'):
+                    continue
+                if (norm(row.get('end_to_end_id', '')), row.get('debtor_account_id')) not in wanted:
+                    continue
+                token = norm(row.get('document_number', ''))
+                if token and not ctx.by_number.get(token) and entity not in refs[token]:
+                    refs[token].add(entity)
+                    added += 1
     return added

@@ -103,6 +103,8 @@ def unique_small_subset(amounts, target, count, max_candidates=256, max_checks=1
 class BatchMatcher:
     def __init__(self, ctx):
         self.ctx = ctx
+        self._ap_by_amount = None
+        self._dd_by_amount = None
         self.groups = []
         self.mixed_run_groups = defaultdict(list)
         self.by_amount = defaultdict(list)
@@ -298,18 +300,54 @@ class BatchMatcher:
         out = {}
         reserved = defaultdict(lambda: ZERO)
         unresolved = 0
+        resolved = []
+        pending = []
         for detail in group['rows']:
             item = self._resolve(detail, group['kind'], txn, reserved=reserved, require_exact=returned)
             if item is None:
-                # The batch total already matched this line exactly: keep the rows we can
-                # resolve instead of dropping every pair because one row is unknown.
-                if not allow_partial:
-                    return None
-                unresolved += 1
+                pending.append(detail)
                 continue
+            resolved.append((detail, item))
+            amount = abs(money(detail.get('document_amount', detail.get('gross',detail.get('amount')))))
+            reserved[item['item_id']] += amount
+        if pending and group['kind'] == 'payment_runs' and not returned and resolved:
+            # POLICIES §5.3: one transfer pays one supplier. A printed number shared
+            # by several suppliers (factor-named beneficiary, partial amount) is
+            # resolved within the supplier that owns the transfer's other documents.
+            transfers = {d.get('end_to_end_id') for d in group['rows']}
+            parties = {item.get('party_id') for _, item in resolved}
+            if len(transfers) == 1 and len(parties) == 1 and next(iter(parties)):
+                party = next(iter(parties))
+                still = []
+                for detail in pending:
+                    value = money(detail['document_amount'])
+                    credit = value < 0 or detail.get('document_type') == 'CREDIT_NOTE'
+                    number = norm(detail['document_number'])
+                    found = [self.ctx.items[iid] for iid in set(self.ctx.by_number.get(number, []))
+                             if self.ctx.items[iid].get('party_id') == party
+                             and self.ctx.items[iid].get('side', iid[:2]) == 'AP'
+                             and ('C' in iid[:3]) == credit
+                             and self.ctx.items[iid].get('currency') == detail['currency']
+                             and self.ctx.items[iid].get('issue_date', '') <= txn.get('booking_date', '9999')
+                             and money(self.ctx.items[iid].get('open_amount', 0)) - reserved.get(iid, ZERO) >= abs(value)
+                             and norm(self.ctx.items[iid].get('document_number', '')) == number]
+                    if len(found) == 1:
+                        resolved.append((detail, found[0]))
+                        reserved[found[0]['item_id']] += abs(value)
+                    else:
+                        still.append(detail)
+                pending = still
+        if pending:
+            # The batch total already matched this line exactly: keep the rows we can
+            # resolve instead of dropping every pair because one row is unknown.
+            if not allow_partial:
+                return None
+            unresolved = len(pending)
+        order = {id(detail): n for n, detail in enumerate(group['rows'])}
+        resolved.sort(key=lambda pair: order[id(pair[0])])
+        for detail, item in resolved:
             iid = item['item_id']
             amount = abs(money(detail.get('document_amount', detail.get('gross',detail.get('amount')))))
-            reserved[iid] += amount
             if iid in out:
                 out[iid]['amount'] = f"{money(out[iid]['amount']) + amount:.2f}"
             else:
@@ -462,6 +500,137 @@ class BatchMatcher:
             return None
         return rows
 
+    def _confirming_without_run(self, txn, text, candidate_ids):
+        """One-beneficiary confirming debit whose run file is not available.
+
+        POLICIES §5.3 + the maturity rule above: the debit pays on the invoice's
+        due date (next TARGET business day). Without the run, accept only a
+        single open supplier invoice of the paying entity (or, for the ES00
+        payment factory, of ES01/ES02/PT01 — POLICIES §5.2) with exactly the
+        debited amount and that maturity; any tie abstains.
+        """
+        raw = ' '.join(str(txn.get(k, '') or '') for k in
+                       ('text', 'ref1', 'ref2', 'end_to_end_id', 'remittance_info')).upper()
+        amount = money(txn['amount'])
+        if amount >= 0 or not re.search(r'\bCONFIRMING\b', raw) or not re.search(r'\bREMESA\s+\S+\s+1\s+PROVEEDORES\b', raw):
+            return None
+        if any(self.groups[idx]['confirming'] and self.groups[idx]['account'] == txn['account_id']
+               and self.groups[idx]['ref'] and self.groups[idx]['ref'] in text for idx in candidate_ids):
+            return None
+        if self._ap_by_amount is None:
+            self._ap_by_amount = defaultdict(list)
+            for iid, item in self.ctx.items.items():
+                if item.get('side') == 'AP' and item.get('kind', 'credit' if 'C' in iid[:3] else 'invoice') == 'invoice':
+                    for value in {money(item.get('total_amount')), money(item.get('open_amount'))}:
+                        self._ap_by_amount[(item.get('currency'), value)].append(iid)
+        cash = abs(amount)
+        entities = {txn.get('entity')} | ({'ES01', 'ES02', 'PT01'} if txn.get('entity') == 'ES00' else set())
+        matches = set()
+        for iid in self._ap_by_amount.get((txn['currency'], cash), ()):
+            item = self.ctx.items[iid]
+            if (item.get('entity') in entities and item.get('open_amount') == cash
+                    and item.get('issue_date', '') <= txn['booking_date']
+                    and next_business_day(item.get('due_date', '')) == txn['booking_date']):
+                matches.add(iid)
+        if len(matches) != 1:
+            return None
+        iid = matches.pop()
+        return [{'bank_txn_id': txn['bank_txn_id'], 'item_id': iid, 'amount': f'{cash:.2f}',
+                 'category': '', 'exception': ''}]
+
+    def _returned_transfer(self, txn, text):
+        """POLICIES §3 RETURNED: our transfer rejected by the beneficiary bank.
+
+        The credit names the reason code and the beneficiary ('DEVOLUCION
+        TRANSFERENCIA AC04 | FRANCO LOGISTICA S.A.', 'RETURN MD07 BP6 PUMPS GMBH').
+        Every item of the returned operation gets a RETURNED row for the amount
+        originally allocated (§2). Accept only one earlier debit of the same
+        account whose AP allocations total exactly the returned cash and whose
+        single supplier is named in the text.
+        """
+        raw = ' '.join(str(txn.get(k, '') or '') for k in ('text', 'counterparty_name')).upper()
+        amount = money(txn['amount'])
+        if amount <= 0 or not re.search(r'\b(?:DEVOLUCION TRANSFERENCIA|RETURN)\s+[A-Z]{2}\d{2}\b', raw):
+            return None
+        history = getattr(self.ctx, 'history', None)
+        if not history:
+            return None
+        payments = defaultdict(list)
+        returned = set()
+        for iid, entries in history.items():
+            item = self.ctx.items.get(iid)
+            if not item or item.get('side') != 'AP':
+                continue
+            for entry in entries:
+                if entry.get('exception') == 'RETURNED':
+                    returned.add((iid, entry.get('booking_date', '')))
+                    continue
+                if (entry.get('account_id') == txn['account_id'] and entry.get('booking_date', '') < txn['booking_date']
+                        and entry.get('exception') != 'DUPLICATE_PAYMENT'):
+                    payments[entry['bank_txn_id']].append((iid, entry))
+        named = norm(raw)
+        matches = []
+        for bank_txn_id, entries in payments.items():
+            if sum((money(e['amount']) * (-1 if 'C' in iid[:3] else 1) for iid, e in entries), ZERO) != amount:
+                continue
+            parties = {self.ctx.items[iid].get('party_id') for iid, _ in entries}
+            if len(parties) != 1:
+                continue
+            party = self.ctx.suppliers.get(next(iter(parties)), {}) if hasattr(self.ctx, 'suppliers') else {}
+            names = {norm(party.get(k)) for k in ('name', 'trade_name')}
+            names.update(norm(self.ctx.items[iid].get(k)) for iid, _ in entries for k in ('supplier_name', 'party_name'))
+            if not any(len(n) >= 6 and n in named for n in names if n):
+                continue
+            paid = max(e.get('booking_date', '') for _, e in entries)
+            if any(iid == r_iid and day >= paid for iid, _ in entries for r_iid, day in returned):
+                continue
+            matches.append(entries)
+        if len(matches) != 1:
+            return None
+        return [{'bank_txn_id': txn['bank_txn_id'], 'item_id': iid, 'amount': f"{money(e['amount']):.2f}",
+                 'category': '', 'exception': 'RETURNED'} for iid, e in matches[0]]
+
+    def _supplier_direct_debit(self, txn):
+        """A supplier's SEPA direct debit charged to us ('PM8 MANTENIMIENT | Recibos varios').
+
+        The bank prints the creditor name cut at 16 characters (POLICIES §5.5) and
+        a 12-digit mandate reference. The ES00 payment factory is charged for
+        ES01/ES02/PT01 invoices (§5.2). Accept only one open direct-debit invoice
+        (payment_method 'dd') of exactly the debited amount whose supplier name
+        starts with the printed name; otherwise abstain.
+        """
+        amount = money(txn['amount'])
+        text = str(txn.get('text') or '')
+        if amount >= 0 or ' | ' not in text or not re.fullmatch(r'\d{12}', str(txn.get('ref2') or '').strip()):
+            return None
+        printed = norm(text.split(' | ')[0])
+        if len(printed) < 8:
+            return None
+        if self._dd_by_amount is None:
+            self._dd_by_amount = defaultdict(list)
+            for iid, item in self.ctx.items.items():
+                if item.get('side') == 'AP' and 'C' not in iid[:3] and item.get('payment_method') == 'dd':
+                    for value in {money(item.get('total_amount')), money(item.get('open_amount'))}:
+                        self._dd_by_amount[(item.get('currency'), value)].append(iid)
+        cash = abs(amount)
+        entities = {txn.get('entity')} | ({'ES01', 'ES02', 'PT01'} if txn.get('entity') == 'ES00' else set())
+        suppliers = getattr(self.ctx, 'suppliers', {})
+        matches = set()
+        for iid in self._dd_by_amount.get((txn['currency'], cash), ()):
+            item = self.ctx.items[iid]
+            if (item.get('entity') not in entities or item.get('open_amount') != cash
+                    or item.get('issue_date', '') > txn['booking_date']):
+                continue
+            party = suppliers.get(item.get('party_id'), {})
+            names = {norm(party.get('name')), norm(party.get('trade_name')), norm(item.get('supplier_name'))}
+            if any(name and name.startswith(printed) for name in names):
+                matches.add(iid)
+        if len(matches) != 1:
+            return None
+        iid = matches.pop()
+        return [{'bank_txn_id': txn['bank_txn_id'], 'item_id': iid, 'amount': f'{cash:.2f}',
+                 'category': '', 'exception': ''}]
+
     def _mixed_currency_run(self, txn, text):
         from .batch_fx import mixed_run_cash_evidence, mixed_run_rows_valid, mixed_run_allocate, signature, run_reference_ids
         matches = []
@@ -530,6 +699,13 @@ class BatchMatcher:
                 for idx in self.by_ref.get(text[start:start+length], []):
                     if self.groups[idx]['account'] == txn['account_id']:
                         candidates.add(idx)
+        from .history import transfer_reference
+        # A cut run reference plus the transfer sequence rebuild the end-to-end ID.
+        rebuilt = transfer_reference(txn)
+        if rebuilt:
+            for idx in self.by_ref.get(rebuilt, []):
+                if self.groups[idx]['account'] == txn['account_id'] and self.groups[idx]['kind'] == 'payment_runs':
+                    candidates.add(idx)
         mixed = self._mixed_currency_run(txn, text)
         if mixed:
             return mixed
@@ -549,7 +725,7 @@ class BatchMatcher:
             if reverse and group['date'] > txn['booking_date']:
                 continue
             delta = _days(txn['booking_date'], group['date'])
-            ref = group['ref'] in text
+            ref = group['ref'] in text or (bool(rebuilt) and group['ref'] == rebuilt)
             # A rejected transfer often quotes only the beneficiary (POLICIES 3, RETURNED).
             beneficiary = norm(group['rows'][0].get('beneficiary', '')) if group['kind'] == 'payment_runs' else ''
             named = (reverse and not ref and not group['confirming'] and len(beneficiary) >= 6
@@ -561,7 +737,10 @@ class BatchMatcher:
                 bank_amount = abs(money(txn['orig_amount']))
             if abs(bank_amount-group['amount']) > CENT:
                 continue
-            if delta > (120 if ref and (group['confirming'] or reverse) else 60 if named else 10 if ref else 3):
+            # A rebuilt end-to-end ID is an explicit transfer identity (duplicates repeat old transfers).
+            explicit_transfer = bool(rebuilt) and group['ref'] == rebuilt
+            if delta > (120 if ref and (group['confirming'] or reverse or explicit_transfer)
+                        else 60 if named else 10 if ref else 3):
                 continue
             ranked.append((int(ref)*100+int(named)*50-delta,idx,reverse))
         ranked.sort(reverse=True)
@@ -571,12 +750,16 @@ class BatchMatcher:
             if result:
                 return result
         confirming = (self._confirming_by_maturity(txn, text, candidates)
-                      or self._confirming_subset(txn, text, candidates))
+                      or self._confirming_subset(txn, text, candidates)
+                      or self._confirming_without_run(txn, text, candidates))
         if confirming:
             return confirming
         chargeback = self._card_chargeback(txn, amount)
         if chargeback:
             return chargeback
+        returned_transfer = self._returned_transfer(txn, text)
+        if returned_transfer:
+            return returned_transfer
         # Only explicit return text activates reverse-direction receipt matching.
         if amount < 0 and any(word in text for word in RETURN_WORDS):
             matches = []
@@ -619,4 +802,4 @@ class BatchMatcher:
             unique = {tuple((r['item_id'],r['amount']) for r in m): m for d,m,_ in matches if d == latest}
             if len(unique) == 1:
                 return next(iter(unique.values()))
-        return None
+        return self._supplier_direct_debit(txn)

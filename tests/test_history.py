@@ -31,6 +31,25 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(r['added_count'],1);self.assertEqual(c.items['ARI-2024-1']['open_amount'],Decimal(0));self.assertEqual(c.items['ARI-2024-2']['open_amount'],Decimal(25))
             self.assertEqual(c.by_number['FV2400001'],['ARI-2024-1'])
             self.assertEqual(enrich_referenced_closed(c,[self.txn()])['added_count'],0)
+    def test_repeated_transfer_documents_restored(self):
+        with tempfile.TemporaryDirectory() as d:
+            c=self.context(d)
+            with gzip.open(c.history_dirs[0]/'ap_invoices.csv.gz','wt',newline='') as f:
+                w=csv.DictWriter(f,fieldnames=['item_id','entity','supplier_id','supplier_invoice_number','issue_date','total_amount'])
+                w.writeheader();w.writerows([dict(item_id='API-1',entity='ES01',supplier_id='S1',supplier_invoice_number='FV-24-0100',issue_date='2024-09-01',total_amount='2844.12'),
+                                             dict(item_id='API-2',entity='ES01',supplier_id='S2',supplier_invoice_number='A003252',issue_date='2024-09-01',total_amount='606.23')])
+            runs=c.history_dirs[0]/'payment_runs';runs.mkdir()
+            fields=['run_id','run_type','execution_date','debtor_account_id','end_to_end_id','beneficiary','currency','transfer_amount','document_number','document_amount']
+            with (runs/'ES01_202409_0.csv').open('w',newline='') as f:
+                w=csv.DictWriter(f,fieldnames=fields);w.writeheader()
+                w.writerow(dict(run_id='PR010024091060',run_type='transfers',execution_date='2024-09-10',debtor_account_id='ES01-A',end_to_end_id='PR010024091060-0001',beneficiary='Proveedor Uno',currency='EUR',transfer_amount='2844.12',document_number='FV-24-0100',document_amount='2844.12'))
+                w.writerow(dict(run_id='PR010024091060',run_type='transfers',execution_date='2024-09-10',debtor_account_id='ES01-A',end_to_end_id='PR010024091060-0002',beneficiary='Proveedor Dos',currency='EUR',transfer_amount='606.23',document_number='A003252',document_amount='606.23'))
+            txns=[dict(text='PAGO TRANSFERENCIAS | 4799-56-1122872-73 051775 000001',ref2='PR010024091060-0',amount='-2844.12',account_id='ES01-A',booking_date='2024-10-20',entity='ES01'),
+                  dict(text='PAGO TRANSFERENCIAS | 4799-56-1122872-73 051775 000002',ref2='PR010024091060-0',amount='-606.23',account_id='ES01-B',booking_date='2024-10-20',entity='ES01')]
+            r=enrich_referenced_closed(c,txns)
+            # Only the transfer of the same debtor account is restored, at zero balance.
+            self.assertEqual(r['repeated_transfer_tokens'],1);self.assertEqual(set(c.items),{'API-1'})
+            self.assertEqual(c.items['API-1']['open_amount'],Decimal(0))
     def test_skip_sample(self):
         with tempfile.TemporaryDirectory() as d:
             c=self.context(d,'sample');self.write(c,[self.record()]);self.assertEqual(enrich_referenced_closed(c,[self.txn()])['added_count'],0)
