@@ -1228,6 +1228,33 @@ def _withholding_fill(txn, ctx, anchors, candidates, cash):
     return sorted(anchors + [i for i in rest if i['item_id'] in extra], key=lambda i: i['item_id'])
 
 
+def _discount_fill(txn, ctx, anchors, candidates, gap):
+    """Quoted invoices in full plus the one unquoted invoice paid net of its early-payment discount.
+
+    POLICIES 3 SHORT_DISCOUNT (cash = total - HALF_UP(total x pct), booked within the discount
+    days + 3; the newest invoice of a group keeps 10 more days) and 5.5 (truncated lists). The
+    gap must be the discounted amount of exactly one open, untouched invoice of the payer.
+    Returns anchors + [that invoice] (last), or None.
+    """
+    from .adjusted import discount_terms, newest_grace, _late
+    party = anchors[0]['party_id']
+    quoted = {i['item_id'] for i in anchors}
+    hits = []
+    for item in candidates:
+        if (item['party_id'] != party or item['item_id'] in quoted or item.get('kind') == 'credit'
+                or item.get('currency') != txn.get('currency') or item.get('entity') != txn.get('entity')):
+            continue
+        terms = discount_terms(item, ctx)
+        if terms is None or abs(terms[0] - gap) > D('0.004'):
+            continue
+        if _late(txn, terms[1], newest_grace(item, list(anchors) + [item])):
+            continue
+        hits.append(item)
+    if len(hits) != 1:
+        return None
+    return sorted(anchors, key=lambda i: i['item_id']) + hits
+
+
 def fragment_partial(txn, ctx, min_anchors=1, min_fragments=2):
     """Partial allocation of a large receipt whose text lists truncated document numbers.
 
@@ -1319,6 +1346,10 @@ def fragment_partial(txn, ctx, min_anchors=1, min_fragments=2):
             held = _withholding_fill(txn, ctx, chosen, candidates_of(scoped, txn, ctx), cash)
             if held:
                 return [row(txn, i['item_id'], i['open_amount'], 'SHORT_WITHHOLDING') for i in held]
+            discounted = _discount_fill(txn, ctx, chosen, candidates_of(scoped, txn, ctx), cash - signed)
+            if discounted:
+                return [row(txn, i['item_id'], i['open_amount'], 'SHORT_DISCOUNT' if i is discounted[-1] else '')
+                        for i in discounted]
     return [row(txn, i['item_id'], i['open_amount'], 'FX_DIFFERENCE' if fx and i.get('kind') != 'credit' else '')
             for i in chosen]
 
