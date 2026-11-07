@@ -403,3 +403,60 @@ def reconcile_early(txn, ctx):
             return [M.row(txn, iid, ctx.items[iid]['open_amount']) for iid in ids]
     return None
 
+
+
+def complete_residual(txn, ctx, rows):
+    """Complete an anchored group whose cash residual is one unique set of the payer's units.
+
+    A printed-fragment or quoted-only proposal of full open amounts for one payer that
+    leaves cash unexplained gains the payer's remaining units (an invoice with all its
+    open credit notes, POLICIES 2) that sum exactly to the residual, when the solution is
+    unique: any size in a book of at most SUBSET_UNITS units, else at most three units.
+    A negative residual takes one unique open credit note of the payer. Otherwise the
+    proposal is returned unchanged (never abstain).
+    """
+    if not rows or D(txn['amount']) <= 0:
+        return rows
+    chosen, parties, total = set(), set(), 0
+    for r in rows:
+        item = ctx.items.get(r.get('item_id'))
+        if (item is None or item.get('side') != 'AR' or r.get('exception') or r.get('category')
+                or item.get('currency') != txn.get('currency')
+                or D(str(r.get('amount') or 0)) != item['open_amount']):
+            return rows
+        chosen.add(item['item_id'])
+        parties.add(item.get('party_id'))
+        total += _signed(item)
+    if len(parties) != 1:
+        return rows
+    residual = _cents(abs(D(txn['amount']))) - total
+    if residual == 0:
+        return rows
+    invoices, credits, related = _book(ctx, txn, next(iter(parties)))
+    if residual < 0:
+        found = [c for c in credits if c['item_id'] not in chosen and _cents(c['open_amount']) == -residual]
+        if len(found) != 1:
+            return rows
+        return list(rows) + [M.row(txn, found[0]['item_id'], found[0]['open_amount'])]
+    horizon = (date.fromisoformat(txn['booking_date']) - timedelta(days=HORIZON_DAYS)).isoformat()
+    rest = []
+    for inv in invoices:
+        rel = list(related.get(_normed(ctx, inv, 'document_number'), ()))
+        if inv['item_id'] in chosen or any(c['item_id'] in chosen for c in rel):
+            continue
+        net = _cents(inv['open_amount']) - sum(_cents(c['open_amount']) for c in rel)
+        if net > 0 and inv.get('issue_date', '') >= horizon:
+            rest.append((inv, rel, net))
+    values = [u[2] for u in rest]
+    if len(rest) <= SUBSET_UNITS:
+        sols = subset_solutions(values, residual, minimum=1, maximum_items=SUBSET_UNITS) or []
+    else:
+        sols = _small_subsets(values, residual, REMAINDER_UNITS)
+    if len(sols) != 1:
+        return rows
+    added = list(rows)
+    for k in sols[0]:
+        inv, rel, _ = rest[k]
+        added.append(M.row(txn, inv['item_id'], inv['open_amount']))
+        added.extend(M.row(txn, c['item_id'], c['open_amount']) for c in rel)
+    return added

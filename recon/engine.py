@@ -55,10 +55,11 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         handlers.append(('quoted_groups', lambda txn: quoted_groups(txn, ctx)))
         # Last resort: uniquely anchored printed fragments of a payer's documents (partial).
         from .matching import fragment_partial
-        handlers.append(('fragments', lambda txn: fragment_partial(txn, ctx)))
+        from .credit_groups import complete_residual
+        handlers.append(('fragments', lambda txn: complete_residual(txn, ctx, fragment_partial(txn, ctx))))
         from .duplicates import ClosedDuplicates
         handlers.append(('closed_duplicate', ClosedDuplicates(ctx).reconcile))
-        handlers.append(('quoted_only', lambda txn: quoted_only(txn, ctx)))
+        handlers.append(('quoted_only', lambda txn: complete_residual(txn, ctx, quoted_only(txn, ctx))))
         # Last resort: unique payer group with one TRAIN partial share (ar_n_to_m).
         from .matching import party_partial_subset
         handlers.append(('party_partial', lambda txn: party_partial_subset(txn, ctx)))

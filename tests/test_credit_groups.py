@@ -171,6 +171,29 @@ class CreditGroupTests(unittest.TestCase):
             item['issue_date'] = f'2025-01-0{n + 1}'
         self.assertIsNone(reconcile_early(txn('250', 'Alice Water Works PAYMENT'), context(items)))
 
+    def test_residual_completion_adds_unique_unit(self):
+        from recon.credit_groups import complete_residual
+        items = [invoice('A', 'F1', '100'), invoice('B', 'F2', '200'), credit('C', 'AB2', '50', 'F2'),
+                 invoice('E', 'F3', '999')]
+        ctx = context(items)
+        t = txn('250', 'Alice Water Works F1')
+        rows = [{'bank_txn_id': 'T1', 'item_id': 'A', 'amount': '100.00', 'category': '', 'exception': ''}]
+        self.assertEqual({r['item_id'] for r in complete_residual(t, ctx, rows)}, {'A', 'B', 'C'})
+
+    def test_residual_completion_keeps_ambiguous_proposal(self):
+        from recon.credit_groups import complete_residual
+        items = [invoice('A', 'F1', '100'), invoice('B', 'F2', '150'), invoice('E', 'F3', '150')]
+        rows = [{'bank_txn_id': 'T1', 'item_id': 'A', 'amount': '100.00', 'category': '', 'exception': ''}]
+        self.assertEqual(complete_residual(txn('250', 'Alice Water Works F1'), context(items), rows), rows)
+
+    def test_residual_completion_negative_takes_one_credit(self):
+        from recon.credit_groups import complete_residual
+        items = [invoice('A', 'F1', '100'), invoice('B', 'F2', '200'), credit('C', 'AB9', '30', 'F9')]
+        rows = [{'bank_txn_id': 'T1', 'item_id': 'A', 'amount': '100.00', 'category': '', 'exception': ''},
+                {'bank_txn_id': 'T1', 'item_id': 'B', 'amount': '200.00', 'category': '', 'exception': ''}]
+        out = complete_residual(txn('270', 'Alice Water Works F1 F2'), context(items), rows)
+        self.assertEqual({r['item_id'] for r in out}, {'A', 'B', 'C'})
+
     def test_outgoing_lines_ignored(self):
         items = [invoice('A', 'F1', '100'), credit('C', 'AB1', '30', 'F1')]
         self.assertIsNone(reconcile(txn('-70', 'Alice Water Works'), context(items)))
