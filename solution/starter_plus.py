@@ -220,9 +220,14 @@ def main():
             p = os.path.join(a.data, ph, f"{name}.csv.gz")
             if not os.path.exists(p):
                 continue
+            carried = ph != a.phase and open_at_start is not None
             for r in rcsv(p):
                 iid = r["item_id"]
-                items[iid] = cents(r["total_amount"])
+                # documents of earlier phases: only those still open at the start of this phase, at their open
+                # amount (the others are already settled; loading them all would also need ~10 GB of RAM)
+                if carried and iid not in open_at_start:
+                    continue
+                items[iid] = open_at_start[iid] if carried else cents(r["total_amount"])
                 by_number[norm(r[numcol])].append(iid)
                 if r.get("customer_po"):
                     by_po[norm(r["customer_po"])].append(iid)
