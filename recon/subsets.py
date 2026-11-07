@@ -60,6 +60,41 @@ def positive_subsets(values, target, *, limit=2, maximum_items=30):
     return found
 
 
+class SubsetIndex:
+    """Meet-in-the-middle index of strictly positive integer values, built once and
+    queried for several targets. Masks are bit sets over the value positions."""
+
+    def __init__(self, values, bound, maximum_items=30):
+        self.ok = len(values) <= maximum_items and all(v > 0 for v in values)
+        self.left, self.right = [], defaultdict(list)
+        if not self.ok:
+            return
+        middle = len(values) // 2
+        def sums(start, stop):
+            result = [(0, 0)]
+            for index in range(start, stop):
+                value, bit = values[index], 1 << index
+                result += [(total + value, mask | bit) for total, mask in result if total + value <= bound]
+            return result
+        self.left = sums(0, middle)
+        for total, mask in sums(middle, len(values)):
+            self.right[total].append(mask)
+
+    def masks(self, target, *, exclude=0, limit=3):
+        found = []
+        if target < 0:
+            return found
+        for total, mask in self.left:
+            for tail in self.right.get(target - total, ()):
+                combined = mask | tail
+                if combined & exclude:
+                    continue
+                found.append(combined)
+                if len(found) >= limit:
+                    return found
+        return found
+
+
 def unique_subset(values, target, *, minimum=1, maximum_items=24):
     """Return the sole index tuple; abstain on ambiguity or budget exhaustion."""
     found = subset_solutions(values, target, minimum=minimum, maximum_items=maximum_items)

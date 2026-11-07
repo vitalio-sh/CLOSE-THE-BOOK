@@ -42,11 +42,18 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         from .residual_fees import ResidualFees
         handlers.append(('residual_fees', ResidualFees(ctx).reconcile))
         handlers.append(('refnoise', lambda txn: refnoise.reconcile(txn, ctx)))
+        # Quoted invoices with one TRAIN partial share or a unique rest (cut lists, ar_n_to_m).
+        from .matching import quoted_groups, quoted_only
+        handlers.append(('quoted_groups', lambda txn: quoted_groups(txn, ctx)))
         # Last resort: uniquely anchored printed fragments of a payer's documents (partial).
         from .matching import fragment_partial
         handlers.append(('fragments', lambda txn: fragment_partial(txn, ctx)))
         from .duplicates import ClosedDuplicates
         handlers.append(('closed_duplicate', ClosedDuplicates(ctx).reconcile))
+        handlers.append(('quoted_only', lambda txn: quoted_only(txn, ctx)))
+        # Last resort: unique payer group with one TRAIN partial share (ar_n_to_m).
+        from .matching import party_partial_subset
+        handlers.append(('party_partial', lambda txn: party_partial_subset(txn, ctx)))
     return handlers, document_stats
 
 

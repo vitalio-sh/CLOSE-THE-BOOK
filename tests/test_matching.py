@@ -1,7 +1,9 @@
 import unittest
 from types import SimpleNamespace
 from decimal import Decimal as D
-from recon.matching import reconcile,classify,norm
+from recon.matching import reconcile as _reconcile_only,classify,norm,quoted_groups,quoted_only
+def reconcile(t,c):
+    return _reconcile_only(t,c) or quoted_groups(t,c) or quoted_only(t,c)
 
 def context(items):
     by_number={};by_party={}
@@ -300,4 +302,90 @@ class MatchingTests(unittest.TestCase):
         for n,i in enumerate(items):i['issue_date']=f'2025-01-0{n+1}'
         rows=reconcile(txn('160','Alice Water Works FRA FV25-00001'),context(items)) or []
         self.assertNotIn('B',{r['item_id'] for r in rows})
+    def test_quoted_invoices_emitted_when_rest_unexplained(self):
+        # Cash covers quoted A and C plus an unidentifiable rest: emit A and C at their open amounts.
+        items=[invoice('A','INV24-0110001','100'),invoice('B','INV24-0110002','40'),invoice('C','INV24-0110003','60'),
+               invoice('D','INV24-0110004','45')]
+        t=txn('1000','Alice Water Works INV# INV24-0110001 0110003')
+        self.assertEqual({(r['item_id'],r['amount'],r['exception']) for r in reconcile(t,context(items))},
+                         {('A','100.00',''),('C','60.00','')})
+    def test_quoted_only_needs_surplus_and_unique_suffix(self):
+        items=[invoice('A','INV24-0110001','100'),invoice('C','INV24-0110003','60'),invoice('X','INV23-0110003','70')]
+        rows=reconcile(txn('1000','Alice Water Works INV# INV24-0110001 0110003'),context(items))
+        self.assertEqual({r['item_id'] for r in rows},{'A'})   # '0110003' names two open invoices
+        from recon.matching import _quoted_only
+        self.assertIsNone(_quoted_only(txn('150','Alice Water Works INV# INV24-0110001 INV24-0110003'),context(items)))
+    def test_quoted_invoices_short_cash_one_partial_share(self):
+        # 15177.39 = 1731.80 in full + 60 % of 22409.33 (13445.59, floor): B is PARTIAL.
+        items=[invoice('A','1032420259','1731.80'),invoice('B','1032421437','22409.33')]
+        rows=reconcile(txn('15177.39','Alice Water Works INV 1032420259 421437'),context(items))
+        self.assertEqual({(r['item_id'],r['amount'],r['exception']) for r in rows},
+                         {('A','1731.80',''),('B','13445.59','PARTIAL')})
+    def test_quoted_short_cash_without_partial_share_abstains(self):
+        items=[invoice('A','1032420259','1731.80'),invoice('B','1032421437','22409.33')]
+        from recon.matching import _quoted_partial
+        self.assertIsNone(_quoted_partial(txn('15000.00','Alice Water Works INV 1032420259 421437'),context(items)))
+    def test_quoted_rest_with_one_unquoted_partial_share(self):
+        # Quoted A in full; the rest is 50 % of unquoted B. No all-in-full combination exists.
+        items=[invoice('A','INV24-0110001','100.10'),invoice('B','INV24-0110002','400.50'),invoice('C','INV24-0110003','37.00')]
+        rows=reconcile(txn('300.35','Alice Water Works INV# INV24-0110001'),context(items))
+        self.assertEqual({(r['item_id'],r['amount'],r['exception']) for r in rows},
+                         {('A','100.10',''),('B','200.25','PARTIAL')})
+    def test_quoted_rest_partial_ambiguous_falls_back_to_quoted(self):
+        # 50 % of B (200.25) and 50 % of D (200.25) both fill the gap: only A is emitted.
+        items=[invoice('A','INV24-0110001','100.10'),invoice('B','INV24-0110002','400.50'),invoice('D','INV24-0110004','400.50')]
+        rows=reconcile(txn('300.35','Alice Water Works INV# INV24-0110001'),context(items))
+        self.assertEqual({(r['item_id'],r['amount'],r['exception']) for r in rows},{('A','100.10','')})
+    def test_unique_rest_defers_when_a_credit_family_explains_the_receipt(self):
+        # A+B quoted. Invoice-only rest: C+E. With credit K on E, the units E-K and J also make up
+        # the gap (credit_groups unit_subset, POLICIES 5.9): the unique rest defers to it.
+        from recon.credit_groups import reconcile as credit_reconcile
+        items=[invoice('A','FV25-00001','100'),invoice('B','FV25-00002','37.15'),invoice('C','FV25-00003','12.30'),
+               invoice('D','FV25-00004','55.55'),invoice('E','FV25-00005','80.00'),
+               invoice('F','FV25-00006','173.90'),invoice('J','FV25-00007','32.30')]   # D+F: no whole-book subset
+        for n,i in enumerate(items):i['issue_date']=f'2025-01-0{n+1}'
+        credit=invoice('K','AB25-00001','20.00',related_document='FV25-00005');credit['kind']='credit'
+        t=txn('229.45','Alice Water Works FRA FV25-00001 FV25-00002')
+        self.assertEqual({r['item_id'] for r in reconcile(t,context(items))},{'A','B','C','E'})
+        self.assertIsNone(_reconcile_only(t,context(items+[credit])))   # matching defers; credit_groups runs next
+        self.assertEqual({r['item_id'] for r in credit_reconcile(t,context(items+[credit]))},{'A','B','E','J','K'})
+        # A cancelling credit note (POLICIES 5.7) never nets a receipt: the completion stands.
+        cancel=dict(credit,reason='ANULACION FACTURA')
+        self.assertEqual({r['item_id'] for r in reconcile(t,context(items+[cancel]))},{'A','B','C','E'})
+    def test_party_partial_subset_unique_share(self):
+        # No reference: A, C in full and 60 % of B (truncated 240.30 of 400.50) make up the cash.
+        from recon.matching import party_partial_subset
+        items=[invoice('A','INV24-0110001','100.10'),invoice('B','INV24-0110002','400.50'),invoice('C','INV24-0110003','37.00')]
+        rows=party_partial_subset(txn('377.40','Alice Water Works PAYMENT'),context(items))
+        self.assertEqual({(r['item_id'],r['amount'],r['exception']) for r in rows},
+                         {('A','100.10',''),('B','240.30','PARTIAL'),('C','37.00','')})
+    def test_party_partial_subset_abstains(self):
+        from recon.matching import party_partial_subset
+        items=[invoice('A','INV24-0110001','100.10'),invoice('B','INV24-0110002','400.50'),invoice('C','INV24-0110003','37.00')]
+        # An all-in-full reading exists (A+C): not a partial group.
+        self.assertIsNone(party_partial_subset(txn('137.10','Alice Water Works PAYMENT'),context(items)))
+        # Two partial readings (60 % of B or of D): ambiguous.
+        d=invoice('D','INV24-0110004','400.50')
+        self.assertIsNone(party_partial_subset(txn('377.40','Alice Water Works PAYMENT'),context(items+[d])))
+        # No identified payer.
+        self.assertIsNone(party_partial_subset(txn('377.40','PAYMENT'),context(items)))
+        # The in-full members must be fresh invoices, not residuals of earlier partial payments.
+        resid=[dict(i) for i in items];resid[2]['total_amount']=D('370.00')
+        self.assertIsNone(party_partial_subset(txn('377.40','Alice Water Works PAYMENT'),context(resid)))
+        # Open related credit note: credit-note families decide.
+        k=invoice('K','AB24-0000001','10.00',related_document='INV24-0110003');k['kind']='credit'
+        self.assertIsNone(party_partial_subset(txn('377.40','Alice Water Works PAYMENT'),context(items+[k])))
+    def test_full_numbers_of_lookalike_payer_scope_the_rest(self):
+        # The name matches C1, but the full numbers are C2's: C2's book completes the cut list.
+        items=[invoice('A','FV25-00001','100'),invoice('B','FV25-00002','37.15'),invoice('C','FV25-00003','12.30'),
+               invoice('D','FV25-00004','55.55'),invoice('E','FV25-00005','80.00'),invoice('Z','FV25-09999','92.30')]
+        for n,i in enumerate(items):i['issue_date']=f'2025-01-0{n+1}'
+        for i in items[:5]:i['party_id']='C2'
+        c=context(items);c.customers['C2']={'name':'Alice Water Works S.L.U.','country':'ES'}
+        c.customers['C1']={'name':'Alice Water Works S.L.','country':'ES'}
+        rows=reconcile(txn('229.45','Alice Water Works S.L. FRA FV25-00001 FV25-00002'),c)
+        self.assertEqual({r['item_id'] for r in rows},{'A','B','C','E'})
+        # A number that merely collides with an unrelated customer's invoice does not scope its book.
+        c=context(items);c.customers['C2']={'name':'Bob Pools Iberia','country':'ES'}
+        self.assertNotIn('C',{r['item_id'] for r in reconcile(txn('229.45','Alice Water Works FRA FV25-00001 FV25-00002'),c) or []})
 if __name__=='__main__':unittest.main()

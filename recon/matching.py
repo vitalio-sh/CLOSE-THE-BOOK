@@ -2,10 +2,10 @@
 from bisect import bisect_right
 from collections import defaultdict
 from datetime import date, timedelta
-from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN
+from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN, ROUND_FLOOR
 import re
 import unicodedata
-from .subsets import unique_subset, subset_solutions, positive_subsets
+from .subsets import unique_subset, subset_solutions, positive_subsets, SubsetIndex
 
 D = Decimal
 CENT = D('0.01')
@@ -415,7 +415,206 @@ def _invoice_service_month(item):
     except (KeyError, ValueError, TypeError):
         return None
 
-def reconcile(txn,ctx):
+def reconcile(txn, ctx):
+    return _reconcile(txn, ctx)
+
+
+def quoted_groups(txn, ctx):
+    """Complete readings of a receipt that quotes open invoices of one payer: one quoted
+    invoice at a TRAIN partial share, or the quoted invoices plus a unique rest. Runs after
+    the credit-note families and the noisy-reference fallback declined."""
+    quoted = _quoted_refs(txn, ctx)
+    if not quoted:
+        return None
+    return _quoted_partial(txn, ctx, quoted) or _quoted_rest_partial(txn, ctx, quoted)
+
+
+def quoted_only(txn, ctx):
+    """Last resort after the fragment anchors: the unambiguously quoted invoices alone."""
+    return _quoted_only(txn, ctx)
+
+
+_RETURN_RE = (r'DEVOLUCION (?:RECIBO|TRANSFERENCIA)|DEVOL RECIB|RUECKLASTSCHRIFT|RETURNED ITEM|CHEQUE IMPAYE'
+              r'|CHARGEBACK|CONTRACARGO|DIRECT DEBIT RETURN')
+
+
+def _quoted_refs(txn, ctx):
+    """Unambiguously quoted open AR invoices of one payer in a receipt, or None.
+
+    Full document numbers, or numeric suffixes that name exactly one open invoice
+    (POLICIES 5.5: our number without prefix). Payer evidence narrows the candidates.
+    """
+    if dec(txn['amount']) <= 0 or classify(txn, ctx):
+        return None
+    raw = text_of(txn)
+    if re.search(_RETURN_RE, words(raw)):
+        return None
+    compact = norm(raw)
+    parties = party_candidates(txn, ctx)
+    numeric_tokens = set(re.findall(r'\b\d{5,}\b', raw))
+    candidates = set()
+    for token in re.findall(r'[A-Za-z0-9][A-Za-z0-9/._-]{3,}', raw):
+        candidates.update(ctx.by_number.get(norm(token), ()))
+    for pid in parties:
+        candidates.update(ctx.by_party.get(pid, ()))
+    def usable(item):
+        return (item.get('kind') != 'credit' and item.get('side') == 'AR' and dec(item.get('open_amount')) > 0
+                and item.get('currency') == txn.get('currency') and item.get('entity') == txn.get('entity')
+                and _eligible(item, txn))
+    pool = [ctx.items[i] for i in candidates if i in ctx.items and usable(ctx.items[i])]
+    if parties:
+        pool = [i for i in pool if i.get('party_id') in parties] or pool
+    quoted, by_token = {}, defaultdict(set)
+    for item in pool:
+        n = norm(item.get('document_number'))
+        if len(n) >= 7 and n in compact:
+            quoted[item['item_id']] = item
+        else:
+            for v in numeric_tokens:
+                if n.endswith(v):
+                    by_token[v].add(item['item_id'])
+    for v, ids in by_token.items():
+        if len(ids) == 1:   # a suffix shared by several open invoices identifies none of them
+            iid = next(iter(ids))
+            quoted[iid] = ctx.items[iid]
+    pdf_facts = getattr(ctx, 'pdf_facts', None)
+    if pdf_facts is not None and any(pdf_facts.resolve(i) != i for i in quoted):
+        return None
+    if not quoted or len({i['party_id'] for i in quoted.values()}) != 1:
+        return None
+    return quoted
+
+
+def _quoted_only(txn, ctx, quoted=None):
+    """A receipt that quotes open invoices of one payer but was not fully explained.
+
+    The cash exceeds the quoted invoices and no unique rule identified the rest (the list
+    was cut by the bank, POLICIES 5.5). Each unambiguously quoted invoice is a normal payment
+    of its open amount (POLICIES 2); the unexplained remainder is not guessed.
+    """
+    quoted = _quoted_refs(txn, ctx) if quoted is None else quoted
+    if not quoted:
+        return None
+    if sum((dec(i['open_amount']) for i in quoted.values()), D(0)) >= dec(txn['amount']) - CENT:
+        return None
+    return [row(txn, iid, quoted[iid]['open_amount']) for iid in sorted(quoted)]
+
+
+# TRAIN: a multi-invoice receipt that leaves one invoice partly open pays 40, 50 or 60 %
+# of that invoice's total (ar_n_to_m); other partial ratios belong to discounts/disputes.
+_PARTIAL_SHARES = (D('0.4'), D('0.5'), D('0.6'))
+
+
+def _quoted_partial(txn, ctx, quoted=None):
+    """All paid invoices are quoted, the cash is short, and exactly one invoice takes the cut.
+
+    The others are paid in full; the one fresh invoice whose applied amount is a TRAIN
+    partial share of its total is PARTIAL with the applied amount (POLICIES 2 and 3).
+    """
+    quoted = _quoted_refs(txn, ctx) if quoted is None else quoted
+    if not quoted or len(quoted) < 2:
+        return None
+    cash = dec(txn['amount'])
+    gross = sum((dec(i['open_amount']) for i in quoted.values()), D(0))
+    if gross <= cash + CENT:
+        return None
+    found = []
+    for iid, item in quoted.items():
+        opened, total = dec(item['open_amount']), dec(item.get('total_amount'))
+        if opened != total:
+            continue
+        applied = cash - (gross - opened)
+        if not D(0) < applied < opened:
+            continue
+        shares = {(total * f).quantize(CENT, rounding=r) for f in _PARTIAL_SHARES for r in (ROUND_HALF_UP, ROUND_FLOOR)}
+        if any(abs(applied - v) <= CENT for v in shares):
+            found.append((iid, applied))
+    if len(found) != 1:
+        return None
+    partial, applied = found[0]
+    return [row(txn, iid, applied if iid == partial else quoted[iid]['open_amount'], 'PARTIAL' if iid == partial else '')
+            for iid in sorted(quoted)]
+
+
+def _quoted_rest_partial(txn, ctx, quoted=None):
+    """The quoted invoices leave a gap that one unique combination of the payer's other open
+    invoices fills: all in full, or with exactly one fresh invoice paid at a TRAIN partial
+    share (40/50/60 % of its total, PARTIAL with the applied amount; POLICIES 2, 3, 5.5).
+
+    The plain all-in-full reading is tried first; a partial reading is considered only when
+    no plain combination exists, and must be unique across every quoted or unquoted choice.
+    """
+    quoted = _quoted_refs(txn, ctx) if quoted is None else quoted
+    if not quoted:
+        return None
+    cash = dec(txn['amount'])
+    gap = cash - sum((dec(i['open_amount']) for i in quoted.values()), D(0))
+    if gap <= CENT:
+        return None
+    party = next(iter(quoted.values()))['party_id']
+    fresh_quoted = [i for i in quoted.values() if dec(i['open_amount']) == dec(i.get('total_amount'))]
+    bound = max([gap / D('0.4')] + [gap + dec(i['open_amount']) for i in fresh_quoted])
+    candidates = [ctx.items[i] for i in ctx.by_party.get(party, ()) if i not in quoted]
+    candidates = [i for i in candidates if i.get('kind') != 'credit' and i.get('side') == 'AR'
+                  and i.get('currency') == txn.get('currency') and i.get('entity') == txn.get('entity')
+                  and _eligible(i, txn) and dec(i['open_amount']) > 0]
+    try:
+        limit = (date.fromisoformat(txn['booking_date']) - timedelta(days=_REST_WINDOW_DAYS)).isoformat()
+    except (KeyError, TypeError, ValueError):
+        return None
+    def bounded(ceiling):
+        pool = [i for i in candidates if dec(i['open_amount']) <= ceiling]
+        if len(pool) > _REST_MAX_ITEMS:
+            pool = [i for i in pool if i.get('issue_date', '') >= limit]
+        return sorted(pool, key=lambda i: i['item_id']) if len(pool) <= _REST_MAX_ITEMS else None
+    cents = lambda amount: int((amount * 100).to_integral_value())
+    def emit(pool, mask, partial=None, applied=None):
+        chosen = list(quoted.values()) + [pool[k] for k in range(len(pool)) if mask >> k & 1]
+        if partial is not None and partial['item_id'] not in {i['item_id'] for i in chosen}:
+            chosen.append(partial)
+        return [row(txn, i['item_id'], applied if partial is not None and i['item_id'] == partial['item_id'] else i['open_amount'],
+                    'PARTIAL' if partial is not None and i['item_id'] == partial['item_id'] else '')
+                for i in sorted(chosen, key=lambda i: i['item_id'])]
+    # The all-in-full reading over exactly the pool of _unique_rest decides first.
+    plain_pool = bounded(gap)
+    if plain_pool is None:
+        return None
+    plain = SubsetIndex([cents(dec(i['open_amount'])) for i in plain_pool], cents(gap), _REST_MAX_ITEMS).masks(cents(gap), limit=2)
+    if len(plain) == 1:
+        return emit(plain_pool, plain[0])
+    if plain:
+        return None
+    pool = bounded(bound)
+    if pool is None:
+        return None
+    index = SubsetIndex([cents(dec(i['open_amount'])) for i in pool], cents(bound), _REST_MAX_ITEMS)
+    if not index.ok:
+        return None
+    def shares(item):
+        total = dec(item.get('total_amount'))
+        return {(total * f).quantize(CENT, rounding=r) for f in _PARTIAL_SHARES for r in (ROUND_HALF_UP, ROUND_FLOOR)}
+    readings = {}
+    for item in fresh_quoted:
+        for value in shares(item):
+            if D(0) < value < dec(item['open_amount']):
+                for mask in index.masks(cents(gap + dec(item['open_amount']) - value), limit=2):
+                    readings[(item['item_id'], mask)] = (item, value)
+    for k, item in enumerate(pool):
+        if dec(item['open_amount']) != dec(item.get('total_amount')):
+            continue
+        for value in shares(item):
+            if D(0) < value < min(gap, dec(item['open_amount'])) + CENT:
+                for mask in index.masks(cents(gap - value), exclude=1 << k, limit=2):
+                    readings[(item['item_id'], mask)] = (item, value)
+        if len(readings) > 1:
+            return None
+    if len(readings) != 1:
+        return None
+    (iid, mask), (item, value) = next(iter(readings.items()))
+    return emit(pool, mask, item, value)
+
+
+def _reconcile(txn,ctx):
     if classify(txn,ctx):
         return None  # Allow runner to label this explicit non-item operation.
     raw=text_of(txn);compact=norm(raw)
@@ -501,7 +700,14 @@ def reconcile(txn,ctx):
                     pairs.append((inv,credit))
         if len(pairs)==1:
             return [row(txn,i['item_id'],i['open_amount']) for i in pairs[0]]
-    gap_rows = _gap_fill(txn, open_refs, candidates_of(scoped, txn, ctx))
+    # POLICIES 5.5: bank texts truncate names and customers have lookalike names. A full
+    # document number of one other customer identifies the payer whose book completes the list.
+    rest_scope = scoped
+    ref_parties = {i['party_id'] for i in open_refs}
+    if (open_refs and len(ref_parties) == 1 and not ref_parties & set(parties)
+            and all(i['item_id'] in ids for i in open_refs) and _name_echo(ctx, next(iter(ref_parties)), compact)):
+        rest_scope = list(scoped) + list(ctx.by_party.get(next(iter(ref_parties)), ()))
+    gap_rows = _gap_fill(txn, open_refs, candidates_of(rest_scope, txn, ctx), ctx)
     if gap_rows is None and not open_refs and prefix_hits:
         # Truncated references are weak: they only seed quoted items whose total, alone
         # or with a FIFO-shaped fill, equals the cash; they never act as a single reference.
@@ -511,7 +717,7 @@ def reconcile(txn,ctx):
             if all(i.get('currency')==txn.get('currency') for i in seeds) and \
                     abs(sum((dec(i['open_amount']) for i in seeds),D(0))-abs(dec(txn['amount'])))<=CENT:
                 return [row(txn,i['item_id'],i['open_amount']) for i in sorted(seeds,key=lambda x:x['item_id'])]
-            gap_rows = _gap_fill(txn, seeds, candidates_of(scoped, txn, ctx))
+            gap_rows = _gap_fill(txn, seeds, candidates_of(scoped, txn, ctx), ctx)
     if gap_rows is not None:
         return gap_rows
     if len(valid_refs)==1:
@@ -762,7 +968,50 @@ def candidates_of(scoped, txn, ctx):
     return [ctx.items[i] for i in scoped if _eligible(ctx.items[i], txn)]
 
 
-def _gap_fill(txn, open_refs, candidates):
+def _related_credit(ctx, txn, party):
+    """Whether the payer has an open credit note that references one of its open invoices.
+
+    POLICIES 2 and 5.9: such a receipt may pay invoices net of the credit note. Readings that
+    pay only invoices (unique rest, quoted-invoice fallbacks) abstain, so the credit-note
+    families (credit_groups) decide. Cancelling credit notes (5.7) never net a receipt.
+    """
+    if ctx is None or not party:
+        return False
+    entity, currency, booked = txn.get('entity'), txn.get('currency'), txn.get('booking_date', '9999')
+    numbers, related = set(), set()
+    for iid in ctx.by_party.get(party, ()):
+        item = ctx.items.get(iid)
+        if (item is None or item.get('side') != 'AR' or dec(item.get('open_amount')) <= 0
+                or item.get('entity') != entity or item.get('currency') != currency
+                or item.get('issue_date', '') > booked):
+            continue
+        if item.get('kind') == 'credit':
+            if 'ANULACION' not in words(item.get('reason')):
+                key = norm(item.get('related_document'))
+                if key:
+                    related.add(key)
+        else:
+            numbers.add(norm(item.get('document_number')))
+    return bool(related & numbers)
+
+
+def _name_echo(ctx, party, compact):
+    """The bank text carries the first ten characters of one of the party's names (lookalike
+    or truncated name, POLICIES 5.5), not merely a colliding document number."""
+    aliases = _index(ctx)[2]
+    return any(len(a) >= 10 and a[:10] in compact for a in aliases.get(party, ()))
+
+
+def _credit_family_solves(ctx, txn, party):
+    """The payer has an open related credit note and a credit-note family (credit_groups,
+    which runs later) explains the receipt: the invoice-only unique rest defers to it."""
+    if not _related_credit(ctx, txn, party):
+        return False
+    from .credit_groups import reconcile as credit_reconcile
+    return credit_reconcile(txn, ctx) is not None
+
+
+def _gap_fill(txn, open_refs, candidates, ctx=None):
     """Quoted invoices of one payer plus the oldest other open items that make up the rest.
 
     Bank texts truncate reference lists: the cash covers the quoted invoices and more of
@@ -787,7 +1036,7 @@ def _gap_fill(txn, open_refs, candidates):
     fill = [i for i in rest if i.get('kind') != 'credit' and abs(dec(i['open_amount']) - gap) <= CENT][:1]
     if not fill:
         fill = _ordered_sets(rest, int(gap * 100), txn.get('booking_date', '')) or []
-    if not fill:
+    if not fill and not _credit_family_solves(ctx, txn, party):
         fill = _unique_rest(rest, gap, txn.get('booking_date', '')) or []
     if not fill:
         return None
@@ -868,13 +1117,81 @@ def fragment_partial(txn, ctx, min_anchors=2, min_fragments=3):
         return None
     # The anchored documents plus a FIFO-shaped exact remainder explain the whole cash.
     scoped = [iid for pid in parties for iid in ctx.by_party.get(pid, ())]
-    full = _gap_fill(txn, [anchors[iid] for iid in sorted(anchors)], candidates_of(scoped, txn, ctx))
+    full = _gap_fill(txn, [anchors[iid] for iid in sorted(anchors)], candidates_of(scoped, txn, ctx), ctx)
     if full is not None:
         return full
     return [row(txn, iid, anchors[iid]['open_amount']) for iid in sorted(anchors)]
 
 _REST_MAX_ITEMS = 30
 _REST_WINDOW_DAYS = 180
+_NM_MAX_ITEMS = 20
+
+
+def party_partial_subset(txn, ctx):
+    """Last resort: a receipt of an identified payer that pays several open invoices, one of
+    them at a TRAIN partial share (40/50/60 % of its total, PARTIAL with the applied amount)
+    and the others in full (POLICIES 2, 3; TRAIN ar_n_to_m).
+
+    Only after every other handler abstained. The payer's book must be small (at most 20
+    open invoices, else those of the last 180 days); no all-in-full combination may make up
+    the cash, and the partial reading must be unique across every invoice, share and payer
+    candidate. A payer with an open related credit note abstains (credit-note families).
+    """
+    cash = dec(txn['amount'])
+    if cash <= 0 or classify(txn, ctx):
+        return None
+    if re.search(_RETURN_RE, words(text_of(txn))):
+        return None
+    parties = party_candidates(txn, ctx)
+    if not parties:
+        return None
+    try:
+        limit = (date.fromisoformat(txn['booking_date']) - timedelta(days=_REST_WINDOW_DAYS)).isoformat()
+    except (KeyError, TypeError, ValueError):
+        return None
+    cents = lambda amount: int((amount * 100).to_integral_value())
+    readings = []
+    for pid in parties:
+        pool = [ctx.items[i] for i in ctx.by_party.get(pid, ()) if i in ctx.items]
+        pool = [i for i in pool if i.get('kind') != 'credit' and i.get('side') == 'AR'
+                and i.get('currency') == txn.get('currency') and i.get('entity') == txn.get('entity')
+                and _eligible(i, txn) and dec(i.get('open_amount')) > 0]
+        if not pool:
+            continue
+        if _related_credit(ctx, txn, pid):
+            return None
+        if len(pool) > _NM_MAX_ITEMS:
+            pool = [i for i in pool if i.get('issue_date', '') >= limit]
+        if len(pool) > _NM_MAX_ITEMS:
+            return None
+        smaller = sorted((i for i in pool if dec(i['open_amount']) < cash), key=lambda i: i['item_id'])
+        plain = SubsetIndex([cents(dec(i['open_amount'])) for i in smaller], cents(cash), _NM_MAX_ITEMS)
+        if not plain.ok or plain.masks(cents(cash), limit=1):
+            return None   # an all-in-full reading exists: not a partial group
+        # The other invoices of the group are fresh (TRAIN: no earlier partial residuals).
+        full = [i for i in smaller if dec(i['open_amount']) == dec(i.get('total_amount'))]
+        index = SubsetIndex([cents(dec(i['open_amount'])) for i in full], cents(cash), _NM_MAX_ITEMS)
+        position = {i['item_id']: k for k, i in enumerate(full)}
+        for item in pool:
+            opened, total = dec(item['open_amount']), dec(item.get('total_amount'))
+            if opened != total:
+                continue
+            values = {(total * f).quantize(CENT, rounding=r) for f in _PARTIAL_SHARES
+                      for r in (ROUND_HALF_UP, ROUND_FLOOR)}
+            exclude = 1 << position[item['item_id']] if item['item_id'] in position else 0
+            for value in values:
+                if not (D(0) < value < opened and value < cash):
+                    continue
+                for mask in index.masks(cents(cash - value), exclude=exclude, limit=2):
+                    readings.append((item, value, [full[k] for k in range(len(full)) if mask >> k & 1]))
+            if len(readings) > 1:
+                return None
+    if len(readings) != 1:
+        return None
+    partial, value, others = readings[0]
+    rows = [row(txn, i['item_id'], i['open_amount']) for i in others]
+    rows.append(row(txn, partial['item_id'], value, 'PARTIAL'))
+    return sorted(rows, key=lambda r: r['item_id'])
 
 
 def _unique_rest(rest, gap, booking):
