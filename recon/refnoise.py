@@ -502,3 +502,9 @@ def typo_owner(txn, ctx):
             reconcile.last_rule = 'typo_owner'
             return [row(txn, item['item_id'], item['open_amount'])]
     return None
+
+
+def payer_candidates(txn, ctx):
+    """Best-evidence tier of payer_tiers (compatibility helper used by residual_fees)."""
+    tiers = payer_tiers(txn, ctx)
+    return list(tiers[0]) if tiers else []
