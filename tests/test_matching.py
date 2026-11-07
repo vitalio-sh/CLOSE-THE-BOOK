@@ -234,4 +234,28 @@ class MatchingTests(unittest.TestCase):
         c=context(items);c.customers['C2']={'name':'Alice Water Works','country':'ES'}
         rows=reconcile(txn('30','Alice Water Works FB-90001 FB-90002'),c)
         self.assertEqual({r['item_id'] for r in rows},{'B1','B2','B3'})
+
+    def test_numeric_suffix_reference_beats_truncated_prefix(self):
+        # 'INVOICE INV24-0116' (cut text) is a prefix of B, but B is also quoted as '0116143'.
+        items=[invoice('A','INV24-0116705','100'),invoice('B','INV24-0116143','50'),
+               invoice('C','INV24-0117623','30'),invoice('E','INV24-0100001','50')]
+        items[3]['issue_date']='2024-12-01'   # older exact 50: a gap fill would take it
+        t=txn('180','DIRECT CREDIT ALICE WATER INVOICE INV24-0116',counterparty_name='Alice Water Works',
+              remittance_info='INVOICE INV24-0116705 0116143 0117623')
+        self.assertEqual({r['item_id'] for r in reconcile(t,context(items))},{'A','B','C'})
+    def test_unique_rest_completes_cut_reference_list(self):
+        # Quoted A; the cut list hides B and D. B+D is the only exact combination of the rest.
+        items=[invoice('A','FV25-00001','100'),invoice('B','FV25-00002','37.15'),invoice('C','FV25-00003','12.30'),
+               invoice('D','FV25-00004','55.55'),invoice('E','FV25-00005','80.00')]
+        for n,i in enumerate(items):i['issue_date']=f'2025-01-0{n+1}'
+        rows=reconcile(txn('192.70','Alice Water Works FRA FV25-00001'),context(items))
+        self.assertEqual({(r['item_id'],r['amount'],r['exception']) for r in rows},
+                         {('A','100.00',''),('B','37.15',''),('D','55.55','')})
+    def test_unique_rest_ambiguous_abstains_from_completion(self):
+        # B+D and C+E both make up the gap of 60: no completion (only the quoted invoice is emitted).
+        items=[invoice('A','FV25-00001','100'),invoice('B','FV25-00002','25'),invoice('C','FV25-00003','20'),
+               invoice('D','FV25-00004','35'),invoice('E','FV25-00005','40')]
+        for n,i in enumerate(items):i['issue_date']=f'2025-01-0{n+1}'
+        rows=reconcile(txn('160','Alice Water Works FRA FV25-00001'),context(items)) or []
+        self.assertNotIn('B',{r['item_id'] for r in rows})
 if __name__=='__main__':unittest.main()

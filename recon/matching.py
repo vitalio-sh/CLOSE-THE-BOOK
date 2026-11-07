@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 import re
 import unicodedata
-from .subsets import unique_subset, subset_solutions
+from .subsets import unique_subset, subset_solutions, positive_subsets
 
 D = Decimal
 CENT = D('0.01')
@@ -351,8 +351,10 @@ def reconcile(txn,ctx):
         item=ctx.items[iid]
         n=norm(item.get('document_number'))
         if len(n)>=5 and n in compact:refs.add(iid)
-        elif any(len(n)>len(t)>=max(7,len(n)*0.6) and n.startswith(t) for t in truncated_tokens):prefix_hits.add(iid)
+        # POLICIES 5.5: a number quoted without its prefix ('INV24-0116705 0116143') is an
+        # explicit reference even when a truncated token ('INV24-0116') is also its prefix.
         elif any(len(v)>=5 and n.endswith(v) for v in numeric_tokens):refs.add(iid)
+        elif any(len(n)>len(t)>=max(7,len(n)*0.6) and n.startswith(t) for t in truncated_tokens):prefix_hits.add(iid)
         elif item.get('customer_po') and len(norm(item['customer_po']))>=6 and norm(item['customer_po']) in compact:refs.add(iid)
     pdf_facts=getattr(ctx,'pdf_facts',None)
     if pdf_facts is not None:
@@ -691,6 +693,8 @@ def _gap_fill(txn, open_refs, candidates):
     if not fill:
         fill = _ordered_sets(rest, int(gap * 100), txn.get('booking_date', '')) or []
     if not fill:
+        fill = _unique_rest(rest, gap, txn.get('booking_date', '')) or []
+    if not fill:
         return None
     return [row(txn, i['item_id'], i['open_amount']) for i in sorted(open_refs + fill, key=lambda i: i['item_id'])]
 
@@ -773,3 +777,29 @@ def fragment_partial(txn, ctx, min_anchors=2, min_fragments=3):
     if full is not None:
         return full
     return [row(txn, iid, anchors[iid]['open_amount']) for iid in sorted(anchors)]
+
+_REST_MAX_ITEMS = 30
+_REST_WINDOW_DAYS = 180
+
+
+def _unique_rest(rest, gap, booking):
+    """The single exact combination of the payer's other open invoices that makes up the gap.
+
+    Bank texts list the paid invoices in arbitrary order and cut the list (POLICIES 5.5), so
+    the unquoted rest can be any open invoices of the quoting payer, each paid in full. Only a
+    combination that is unique among the candidates is accepted. A payer with more than 30
+    candidates is searched among invoices issued in the last 180 days (TRAIN: invoices paid by
+    one multi-invoice transfer are almost always younger); a larger pool abstains.
+    """
+    pool = [i for i in rest if i.get('kind') != 'credit' and D(0) < dec(i['open_amount']) <= gap]
+    if len(pool) > _REST_MAX_ITEMS:
+        try:
+            limit = (date.fromisoformat(booking) - timedelta(days=_REST_WINDOW_DAYS)).isoformat()
+        except (TypeError, ValueError):
+            return None
+        pool = [i for i in pool if i.get('issue_date', '') >= limit]
+    found = positive_subsets([int(dec(i['open_amount']) * 100) for i in pool], int(gap * 100),
+                             maximum_items=_REST_MAX_ITEMS)
+    if not found or len(found) != 1:
+        return None
+    return [pool[k] for k in found[0]]
