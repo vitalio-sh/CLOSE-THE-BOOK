@@ -1171,6 +1171,63 @@ def _anchor_fill(txn, anchors, candidates, currency, cash):
     return sorted(anchors + fill, key=lambda i: i['item_id']) if fill else None
 
 
+WITHHOLDING_COUNTRIES = ('MX', 'BR', 'MA')
+_WHT_RATES = (D('0.0125'), D('0.015'), D('0.10'))
+
+
+def _withholding_fill(txn, ctx, anchors, candidates, cash):
+    """Quoted invoices plus the unique rest of the payer's open invoices, all net of one tax rate.
+
+    POLICIES 3 SHORT_WITHHOLDING: some customers in Mexico, Brazil and Morocco withhold
+    1.25 %, 1.5 % or 10 % of each invoice total; every invoice is fully cleared at its open
+    amount. A truncated list (5.5) quotes only some of them. Accept the reading only when
+    exactly one (rate, rest) combination makes (anchors + rest) x (1 - rate) equal the cash
+    to the cent; the rest is a bounded exact subset of whole invoices (_unique_rest pool).
+    """
+    party = anchors[0]['party_id']
+    if getattr(ctx, 'customers', {}).get(party, {}).get('country') not in WITHHOLDING_COUNTRIES:
+        return None
+    if any(i.get('kind') == 'credit' or dec(i['open_amount']) != dec(i.get('total_amount')) for i in anchors):
+        return None
+    quoted = {i['item_id'] for i in anchors}
+    rest = sorted((i for i in candidates if i['party_id'] == party and i['item_id'] not in quoted
+                   and i.get('kind') != 'credit' and dec(i.get('open_amount')) > 0
+                   and dec(i['open_amount']) == dec(i.get('total_amount'))
+                   and i.get('currency') == txn.get('currency') and i.get('entity') == txn.get('entity')),
+                  key=lambda i: (i.get('issue_date', ''), i['item_id']))
+    if len(rest) > _REST_MAX_ITEMS:
+        try:
+            limit = (date.fromisoformat(txn['booking_date']) - timedelta(days=_REST_WINDOW_DAYS)).isoformat()
+        except (KeyError, TypeError, ValueError):
+            return None
+        rest = [i for i in rest if i.get('issue_date', '') >= limit]
+    if len(rest) > _REST_MAX_ITEMS:
+        return None
+    base = int(sum(dec(i['open_amount']) for i in anchors) * 100)
+    cash_c = int(cash * 100)
+    values = [int(dec(i['open_amount']) * 100) for i in rest]
+    readings = set()
+    for rate in _WHT_RATES:
+        keep = D(1) - rate
+        lo = int(((D(cash_c) - D('1.5')) / keep).to_integral_value(rounding=ROUND_FLOOR))
+        for total in range(lo, lo + int(D(4) / keep) + 2):
+            net = (D(total) * keep).to_integral_value(rounding=ROUND_HALF_UP)
+            if abs(net - cash_c) > 1 or total < base:
+                continue
+            if total == base:
+                readings.add(())
+                continue
+            found = positive_subsets(values, total - base, maximum_items=_REST_MAX_ITEMS)
+            if found is None or len(found) > 1:
+                return None
+            if found:
+                readings.add(tuple(sorted(rest[k]['item_id'] for k in found[0])))
+    if len(readings) != 1:
+        return None
+    extra = set(next(iter(readings)))
+    return sorted(anchors + [i for i in rest if i['item_id'] in extra], key=lambda i: i['item_id'])
+
+
 def fragment_partial(txn, ctx, min_anchors=1, min_fragments=2):
     """Partial allocation of a large receipt whose text lists truncated document numbers.
 
@@ -1246,13 +1303,22 @@ def fragment_partial(txn, ctx, min_anchors=1, min_fragments=2):
     if len({i['party_id'] for i in anchors.values()}) != 1:
         return None
     signed = sum((dec(i['open_amount']) * (-1 if i.get('kind') == 'credit' else 1) for i in anchors.values()), D(0))
-    if signed <= 0 or signed > cash + CENT:
+    if signed <= 0:
         return None
     chosen = [anchors[iid] for iid in sorted(anchors)]
+    scoped = [iid for pid in parties for iid in ctx.by_party.get(pid, ())]
+    if signed > cash + CENT:
+        held = None if fx else _withholding_fill(txn, ctx, chosen, candidates_of(scoped, txn, ctx), cash)
+        return [row(txn, i['item_id'], i['open_amount'], 'SHORT_WITHHOLDING') for i in held] if held else None
     if signed < cash - CENT:
         # The anchored documents plus a FIFO-shaped exact remainder explain the whole cash.
-        scoped = [iid for pid in parties for iid in ctx.by_party.get(pid, ())]
-        chosen = _anchor_fill(txn, chosen, candidates_of(scoped, txn, ctx), currency, cash) or chosen
+        filled = _anchor_fill(txn, chosen, candidates_of(scoped, txn, ctx), currency, cash)
+        if filled:
+            chosen = filled
+        elif not fx:
+            held = _withholding_fill(txn, ctx, chosen, candidates_of(scoped, txn, ctx), cash)
+            if held:
+                return [row(txn, i['item_id'], i['open_amount'], 'SHORT_WITHHOLDING') for i in held]
     return [row(txn, i['item_id'], i['open_amount'], 'FX_DIFFERENCE' if fx and i.get('kind') != 'credit' else '')
             for i in chosen]
 
