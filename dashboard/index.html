@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reconciliation desk · Valtermia</title>
+<style>
+  :root {
+    --sidebar: #eef3f8;
+    --page: #ffffff;
+    --ink: #1b2b3a;
+    --muted: #5f6f7e;
+    --line: #dfe6ee;
+    --brand: #0f4c7a;
+    --brand-soft: #e7f0f8;
+    --green: #1d7a4d;
+    --green-soft: #e3f4ec;
+    --amber: #a66400;
+    --amber-soft: #fdf1da;
+    --grey-soft: #eceff3;
+    --selected: #e8f1f9;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink); background: var(--page); font-size: 14px; line-height: 1.4;
+  }
+  .app { display: grid; grid-template-columns: 252px 1fr; min-height: 100vh; }
+
+  /* sidebar */
+  aside { background: var(--sidebar); border-right: 1px solid var(--line); padding: 26px 18px 20px; display: flex; flex-direction: column; }
+  .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px; }
+  .logo { width: 40px; height: 40px; border-radius: 6px; background: var(--brand); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 22px; }
+  .brand-name { font-weight: 700; font-size: 19px; line-height: 1.1; }
+  .brand-sub { color: var(--muted); font-size: 13px; }
+  .workspace { margin: 26px 8px 12px; color: var(--muted); font-size: 13px; }
+  nav { display: grid; gap: 4px; }
+  nav a { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; color: var(--ink); text-decoration: none; font-size: 15px; }
+  nav a.active { background: var(--selected); color: var(--brand); font-weight: 600; }
+  nav a:hover { background: #dde8f2; }
+  nav .ico { width: 18px; text-align: center; color: var(--brand); }
+  .side-foot { margin-top: auto; padding: 0 8px; color: var(--muted); font-size: 13px; }
+  .snapshot { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; color: var(--ink); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+  .side-foot a { color: var(--brand); }
+
+  /* main */
+  main { padding: 28px 40px 48px; min-width: 0; }
+  .topbar { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; }
+  .crumb { color: var(--muted); font-size: 14px; }
+  h1 { font-size: 36px; margin: 6px 0 8px; font-weight: 700; letter-spacing: -0.01em; }
+  .lede { color: var(--muted); font-size: 16px; margin: 0; }
+  .meta { text-align: right; color: var(--muted); font-size: 13px; white-space: nowrap; }
+  .badge-ro { display: inline-block; background: var(--grey-soft); color: var(--ink); padding: 4px 10px; border-radius: 4px; font-size: 13px; margin-bottom: 8px; }
+  .meta div + div { margin-top: 2px; }
+
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); margin: 28px 0 30px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .kpi { padding: 18px 24px; }
+  .kpi + .kpi { border-left: 1px solid var(--line); }
+  .kpi .label { color: var(--muted); font-size: 14px; }
+  .kpi .value { font-size: 40px; font-weight: 700; margin: 6px 0 4px; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+  .kpi .hint { color: var(--muted); font-size: 13px; }
+  .kpi.linked .value { color: var(--green); }
+  .kpi.unid .value { color: var(--amber); }
+
+  .section-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+  h2 { font-size: 24px; margin: 0 0 6px; font-weight: 700; }
+  .section-head p { color: var(--muted); margin: 0 0 18px; font-size: 15px; }
+  .btn { border: 1px solid var(--line); background: #fff; color: var(--ink); padding: 10px 16px; border-radius: 6px; font: inherit; font-size: 15px; cursor: pointer; white-space: nowrap; }
+  .btn:hover { background: var(--sidebar); }
+
+  .explorer { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; min-height: 620px; }
+  .list-pane { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; }
+  .toolbar { display: flex; gap: 12px; padding: 16px; border-bottom: 1px solid var(--line); }
+  .search { flex: 1; border: 1px solid #c9d3de; border-radius: 6px; padding: 10px 12px; font: inherit; font-size: 15px; min-width: 0; }
+  select.filter { border: 1px solid #c9d3de; border-radius: 6px; padding: 9px 10px; font: inherit; font-size: 15px; background: #fff; }
+  .count { padding: 12px 16px; color: var(--muted); font-size: 14px; border-bottom: 1px solid var(--line); }
+  .row-head, .row { display: grid; grid-template-columns: 1fr 120px 130px; gap: 12px; align-items: center; padding: 14px 16px; }
+  .row-head { color: var(--muted); font-size: 13px; border-bottom: 1px solid var(--line); background: #fbfcfd; }
+  .rows { overflow: auto; flex: 1; }
+  .row { border-bottom: 1px solid var(--line); cursor: pointer; }
+  .row:hover { background: #f7fafc; }
+  .row.selected { background: var(--selected); }
+  .row .party { font-weight: 600; font-size: 15px; }
+  .row .sub { color: var(--muted); font-size: 13px; margin-top: 3px; }
+  .row .id { color: var(--brand); font-size: 13px; margin-top: 3px; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .num small { display: block; color: var(--muted); font-size: 12px; }
+  .pill { display: inline-block; padding: 4px 10px; border-radius: 5px; font-size: 13px; white-space: nowrap; justify-self: start; }
+  .pill.linked { background: var(--green-soft); color: var(--green); }
+  .pill.exception { background: var(--amber-soft); color: var(--amber); }
+  .pill.category { background: var(--brand-soft); color: var(--brand); }
+  .pill.unidentified { background: var(--grey-soft); color: var(--ink); }
+
+  .detail { padding: 22px 26px; overflow: auto; min-width: 0; }
+  .detail-head { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 14px; }
+  .detail h3 { font-size: 26px; margin: 14px 0 6px; }
+  .big { font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .big span { font-size: 18px; color: var(--muted); margin-left: 6px; font-weight: 500; }
+  .when { color: var(--muted); font-size: 14px; margin-top: 4px; }
+  .callout { background: var(--brand-soft); border-left: 3px solid var(--brand); border-radius: 6px; padding: 14px 16px; margin: 20px 0; }
+  .callout strong { display: block; margin-bottom: 4px; }
+  .callout.amber { background: var(--amber-soft); border-color: var(--amber); }
+  .callout.grey { background: var(--grey-soft); border-color: #8a96a3; }
+  h4 { font-size: 16px; margin: 22px 0 10px; }
+  table.kv { width: 100%; border-collapse: collapse; font-size: 15px; }
+  table.kv td { padding: 7px 0; vertical-align: top; }
+  table.kv td:first-child { color: var(--muted); width: 36%; }
+  table.kv td.mono { font-variant-numeric: tabular-nums; word-break: break-all; }
+  .raw { background: var(--sidebar); border-radius: 6px; padding: 12px 14px; color: var(--ink); font-size: 14px; margin-top: 12px; word-break: break-word; }
+  .alloc { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-top: 10px; display: flex; justify-content: space-between; gap: 12px; }
+  .alloc .doc { font-weight: 600; }
+  .alloc .ref { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .alloc .amt { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .alloc .state { color: var(--muted); font-size: 13px; font-weight: 400; margin-top: 2px; }
+  .empty { padding: 40px 20px; color: var(--muted); text-align: center; }
+
+  @media (max-width: 1100px) {
+    .app { grid-template-columns: 1fr; }
+    aside { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px; }
+    nav { grid-auto-flow: column; }
+    .side-foot { display: none; }
+    .explorer { grid-template-columns: 1fr; }
+    .list-pane { border-right: 0; border-bottom: 1px solid var(--line); }
+    .kpis { grid-template-columns: repeat(2, 1fr); }
+    .kpi:nth-child(3) { border-left: 0; }
+    .kpi:nth-child(n+3) { border-top: 1px solid var(--line); }
+  }
+  @media (max-width: 640px) {
+    main { padding: 20px 16px 40px; }
+    .topbar { flex-direction: column; }
+    .meta { text-align: left; }
+    h1 { font-size: 28px; }
+    .kpi .value { font-size: 30px; }
+    .section-head { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="brand">
+      <div class="logo">V</div>
+      <div><div class="brand-name">Valtermia</div><div class="brand-sub">Close the books</div></div>
+    </div>
+    <div class="workspace">Team 10 workspace</div>
+    <nav>
+      <a class="active" href="#"><span class="ico">▤</span>Reconciliation desk</a>
+      <a href="#"><span class="ico">⇄</span>How it works</a>
+      <a href="#"><span class="ico">↥</span>Submission checks</a>
+    </nav>
+    <div class="side-foot">
+      <div class="snapshot"><span class="dot"></span>Published run snapshot</div>
+      <div>Grupo Valtermia</div>
+      <div>Talky × Anthropic hackathon</div>
+      <div style="margin-top:12px">Team repository: CLOSE-THE-BOOK</div>
+    </div>
+  </aside>
+
+  <main>
+    <div class="topbar">
+      <div>
+        <div class="crumb">Finance operations / <span id="crumb-phase">LIVE dataset</span></div>
+        <h1>Reconciliation desk</h1>
+        <p class="lede">Follow a bank movement through to its proposed accounting treatment.</p>
+      </div>
+      <div class="meta">
+        <span class="badge-ro">Read-only review</span>
+        <div id="run-meta"></div>
+        <div id="pub-meta"></div>
+      </div>
+    </div>
+
+    <section class="kpis">
+      <div class="kpi"><div class="label">Bank transactions</div><div class="value" id="k-total">–</div><div class="hint" id="k-period">–</div></div>
+      <div class="kpi linked"><div class="label">Invoice linked</div><div class="value" id="k-linked">–</div><div class="hint">Includes proposals with exceptions</div></div>
+      <div class="kpi"><div class="label">Category only</div><div class="value" id="k-cat">–</div><div class="hint">No invoice allocation</div></div>
+      <div class="kpi unid"><div class="label">Unidentified</div><div class="value" id="k-unid">–</div><div class="hint">Requires further investigation</div></div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div>
+          <h2>Transaction explorer</h2>
+          <p id="explorer-note">–</p>
+        </div>
+        <button class="btn" id="walk">Walk through an example</button>
+      </div>
+
+      <div class="explorer">
+        <div class="list-pane">
+          <div class="toolbar">
+            <input class="search" id="search" type="search" placeholder="Search party, invoice or reference…">
+            <select class="filter" id="filter">
+              <option value="all">All outcomes</option>
+              <option value="linked">Invoice linked</option>
+              <option value="exception">Exception</option>
+              <option value="category">Category only</option>
+              <option value="unidentified">Unidentified</option>
+            </select>
+          </div>
+          <div class="count" id="count">–</div>
+          <div class="row-head"><div>Bank transaction / counterparty</div><div class="num">Bank amount</div><div>Outcome</div></div>
+          <div class="rows" id="rows"></div>
+        </div>
+        <div class="detail" id="detail"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="data.js"></script>
+<script>
+(function () {
+  var D = window.DASHBOARD_DATA;
+  var LABEL = { linked: "Invoice linked", exception: "Exception", category: "Category only", unidentified: "Unidentified" };
+  var NOTE = {
+    linked: "Matched to open invoices by reference and amount.",
+    exception: "Matched to invoices, but at least one allocation carries an exception.",
+    category: "No invoice settled. Classified with a category from the chart of accounts.",
+    unidentified: "No matching evidence. Needs investigation."
+  };
+  var CALLOUT_CLASS = { linked: "", exception: "amber", category: "grey", unidentified: "grey" };
+  var fmt = function (n) { return Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+  var fmtInt = function (n) { return Number(n).toLocaleString("en-US"); };
+  var esc = function (s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); };
+  var $ = function (id) { return document.getElementById(id); };
+
+  var ex = D.examples;
+  var state = { filter: "all", q: "", sel: ex.length ? ex[0].id : null };
+
+  // header and KPIs
+  $("crumb-phase").textContent = (D.phase === "live" ? "LIVE" : D.phase.toUpperCase()) + " dataset";
+  $("k-total").textContent = fmtInt(D.kpi.bank_transactions);
+  $("k-linked").textContent = fmtInt(D.kpi.invoice_linked);
+  $("k-cat").textContent = fmtInt(D.kpi.category_only);
+  $("k-unid").textContent = fmtInt(D.kpi.unidentified);
+  $("k-period").textContent = D.kpi.period[0] + " – " + D.kpi.period[1];
+  $("run-meta").textContent = "Submission · " + D.phase.toUpperCase();
+  $("pub-meta").textContent = "Generated " + new Date().toISOString().slice(0, 10);
+  $("explorer-note").textContent = ex.length + " representative examples from " + fmtInt(D.kpi.bank_transactions) + " operations. Search covers these examples.";
+
+  function haystack(e) {
+    return [e.party, e.text, e.ref1, e.ref2, e.remittance, e.id].concat(e.allocations.map(function (a) { return a.item_id + " " + a.document_number + " " + a.party_name; })).join(" ").toLowerCase();
+  }
+  function visible() {
+    var q = state.q.trim().toLowerCase();
+    return ex.filter(function (e) {
+      return (state.filter === "all" || e.outcome === state.filter) && (!q || haystack(e).indexOf(q) !== -1);
+    });
+  }
+
+  function renderList() {
+    var list = visible();
+    $("count").textContent = list.length + " of " + ex.length + " examples";
+    if (!list.length) { $("rows").innerHTML = '<div class="empty">No transactions match this search.</div>'; return; }
+    $("rows").innerHTML = list.map(function (e) {
+      var sel = e.id === state.sel ? " selected" : "";
+      return '<div class="row' + sel + '" data-id="' + esc(e.id) + '">' +
+        '<div><div class="party">' + esc(e.party || "(no counterparty)") + '</div>' +
+        '<div class="sub">' + esc(e.booking_date) + ' · ' + esc(e.entity) + '</div>' +
+        '<div class="id">' + esc(e.id) + '</div></div>' +
+        '<div class="num">' + fmt(e.amount) + '<small>' + esc(e.currency) + '</small></div>' +
+        '<div><span class="pill ' + e.outcome + '">' + LABEL[e.outcome] + '</span></div></div>';
+    }).join("");
+  }
+
+  function renderDetail() {
+    var e = ex.find(function (x) { return x.id === state.sel; });
+    if (!e) { $("detail").innerHTML = '<div class="empty">Select a transaction.</div>'; return; }
+    var allocs = e.allocations.length ? e.allocations.map(function (a) {
+      var applied = a.exception ? a.exception.replace(/_/g, " ").toLowerCase() : "applied";
+      return '<div class="alloc"><div><div class="doc">' + esc(a.document_number || a.item_id) + '</div>' +
+        '<div class="ref">' + esc(a.item_id) + (a.party_name ? ' · ' + esc(a.party_name) : '') + '</div></div>' +
+        '<div class="amt">' + fmt(a.amount) + ' ' + esc(a.currency) +
+        '<div class="state">' + esc(applied) + (a.total != null ? ' · Total ' + fmt(a.total) : '') + '</div></div></div>';
+    }).join("") : (e.category ? '<div class="alloc"><div><div class="doc">' + esc(e.category) + '</div><div class="ref">Category · no invoice allocation</div></div></div>'
+      : '<div class="empty" style="padding:18px">No allocation proposed.</div>');
+    var entity = D.entities && D.entities[e.entity] ? D.entities[e.entity] : e.entity;
+    $("detail").innerHTML =
+      '<div class="detail-head"><span>Selected transaction</span><span class="pill ' + e.outcome + '">' + LABEL[e.outcome] + '</span></div>' +
+      '<h3>' + esc(e.party || "(no counterparty)") + '</h3>' +
+      '<div class="big">' + fmt(e.amount) + '<span>' + esc(e.currency) + '</span></div>' +
+      '<div class="when">' + esc(e.booking_date) + ' · ' + (e.amount >= 0 ? 'Money in' : 'Money out') + ' · ' + esc(e.entity) + '</div>' +
+      '<div class="callout ' + CALLOUT_CLASS[e.outcome] + '"><strong>' + LABEL[e.outcome] + '</strong>' + esc(NOTE[e.outcome]) + '</div>' +
+      '<h4>Bank evidence</h4>' +
+      '<table class="kv">' +
+      '<tr><td>Transaction ID</td><td class="mono">' + esc(e.id) + '</td></tr>' +
+      '<tr><td>Legal entity</td><td>' + esc(entity) + '</td></tr>' +
+      '<tr><td>Account</td><td class="mono">' + esc(e.account) + '</td></tr>' +
+      '<tr><td>Ref1</td><td class="mono">' + esc(e.ref1 || "—") + '</td></tr>' +
+      '<tr><td>Ref2</td><td class="mono">' + esc(e.ref2 || "—") + '</td></tr>' +
+      '</table>' +
+      '<div class="raw">' + esc(e.text || e.remittance || "—") + '</div>' +
+      '<h4>Proposed allocations (' + e.allocations.length + ')</h4>' + allocs;
+  }
+
+  function renderAll() { renderList(); renderDetail(); }
+
+  $("rows").addEventListener("click", function (ev) {
+    var row = ev.target.closest(".row");
+    if (!row) return;
+    state.sel = row.getAttribute("data-id");
+    renderAll();
+  });
+  $("search").addEventListener("input", function (ev) { state.q = ev.target.value; renderList(); });
+  $("filter").addEventListener("change", function (ev) { state.filter = ev.target.value; renderList(); });
+  $("walk").addEventListener("click", function () {
+    var pool = ex.filter(function (e) { return e.outcome === "linked" && e.allocations.length > 0; });
+    var pick = pool.length ? pool[Math.floor(Math.random() * pool.length)] : ex[0];
+    state.filter = "all"; state.q = ""; $("filter").value = "all"; $("search").value = "";
+    state.sel = pick.id; renderAll();
+    $("detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+
+  renderAll();
+})();
+</script>
+</body>
+</html>
