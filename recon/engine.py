@@ -70,6 +70,9 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         # Confirming-bank credits naming the customer only by a truncated "ORD." name.
         from .third_party import reconcile_confirming
         handlers.append(('confirming_payer', lambda txn: reconcile_confirming(txn, ctx)))
+        # Same-named payers told apart by the stated service month (POLICIES 5.6).
+        from .third_party import reconcile_homonym_month
+        handlers.append(('homonym_month', lambda txn: reconcile_homonym_month(txn, ctx)))
     return handlers, document_stats
 
 

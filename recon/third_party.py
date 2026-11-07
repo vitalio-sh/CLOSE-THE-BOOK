@@ -57,3 +57,51 @@ def reconcile_confirming(txn, ctx):
     return [{'bank_txn_id': txn['bank_txn_id'], 'item_id': item['item_id'],
              'amount': format(item['open_amount'].quantize(Decimal('0.01')), '.2f'),
              'category': '', 'exception': ''}]
+
+
+def reconcile_homonym_month(txn, ctx):
+    """Same-named payers resolved by the stated service month (POLICIES 5.6).
+
+    Several customers of the entity share a short person name, so party resolution abstains.
+    When the text names a service month ("SERVICE AUGUST 2024", invoiced at the start of the
+    following month) and exactly one open invoice of those same-named customers has exactly
+    the amount for that month, that invoice is paid.  Last resort only.
+    """
+    from .matching import (_index, _party_entity_ok, _stated_service_month, _invoice_service_month,
+                           party_candidates, text_of, words)
+    amount = Decimal(str(txn.get('amount') or 0))
+    if amount <= 0:
+        return None
+    raw = text_of(txn)
+    stated = _stated_service_month(raw, txn.get('booking_date'))
+    if not stated or not stated[1]:
+        return None
+    wanted = stated[0]
+    _, _, _, _, parties = _index(ctx)
+    shorts = getattr(ctx, '_matching_shorts', None) or {}
+    owner, day = txn.get('entity'), txn['booking_date']
+    pids = set(party_candidates(txn, ctx))
+    tokens = words(raw).split()
+    for size in (1, 2, 3, 4):
+        for i in range(len(tokens) - size + 1):
+            key = ''.join(tokens[i:i + size])
+            if 6 <= len(key) <= 9 and key in shorts:
+                pids |= {pid for pid in shorts[key] if _party_entity_ok(parties.get(pid, {}), owner)}
+    candidates = []
+    for pid in pids:
+        for iid in ctx.by_party.get(pid, ()):
+            item = ctx.items[iid]
+            if (item.get('side') == 'AR' and item.get('kind') == 'invoice' and item.get('entity') == owner
+                    and item.get('issue_date', '') <= day and item.get('currency', txn.get('currency')) == txn.get('currency')
+                    and abs(item['open_amount'] - amount) <= Decimal('0.005')):
+                facts = getattr(ctx, 'pdf_facts', None)
+                fact = facts.get(iid) if facts is not None else {}
+                service = (fact or {}).get('service_month') or _invoice_service_month(item)
+                if service == wanted:
+                    candidates.append(item)
+    if len(candidates) != 1:
+        return None
+    item = candidates[0]
+    return [{'bank_txn_id': txn['bank_txn_id'], 'item_id': item['item_id'],
+             'amount': format(item['open_amount'].quantize(Decimal('0.01')), '.2f'),
+             'category': '', 'exception': ''}]
