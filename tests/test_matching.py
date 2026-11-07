@@ -56,9 +56,20 @@ class MatchingTests(unittest.TestCase):
         items=[invoice('A','F1','60'),invoice('B','F2','40'),invoice('C','F3','17')]
         rows=reconcile(txn('100','Alice Water Works PAYMENT'),context(items))
         self.assertEqual({r['item_id'] for r in rows},{'A','B'})
-    def test_ambiguous_subset_rejected(self):
+    def test_ambiguous_subset_takes_fifo_prefix(self):
+        # Two exact sets; POLICIES 5.6 FIFO: the oldest-first prefix (A, B) is paid.
         items=[invoice('A','F1','60'),invoice('B','F2','40'),invoice('C','F3','30'),invoice('D','F4','70')]
+        rows=reconcile(txn('100','Alice Water Works PAYMENT'),context(items))
+        self.assertEqual({r['item_id'] for r in rows},{'A','B'})
+    def test_free_subset_without_fifo_shape_rejected(self):
+        # Exact sets exist (A+C, A+B+D) but none is a prefix or a contiguous run: abstain.
+        items=[invoice('A','F1','60'),invoice('B','F2','10'),invoice('C','F3','40'),invoice('D','F4','30')]
+        for n,i in enumerate(items):i['issue_date']=f'2025-01-0{n+1}'
         self.assertIsNone(reconcile(txn('100','Alice Water Works PAYMENT'),context(items)))
+    def test_signature_overpayment_single(self):
+        items=[invoice('A','F1','480'),invoice('B','F2','700')]
+        rows=reconcile(txn('500','Alice Water Works PAYMENT'),context(items))
+        self.assertEqual([(r['item_id'],r['amount'],r['exception']) for r in rows],[('A','480.00','OVERPAYMENT')])
     def test_pdf_replacement(self):
         a=invoice();b=invoice('I2','FV25-00002')
         c=context([a,b]);c.pdf_facts=SimpleNamespace(resolve=lambda iid:'I2' if iid=='I1' else iid,get=lambda iid:{})

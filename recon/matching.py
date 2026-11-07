@@ -391,7 +391,14 @@ def reconcile(txn,ctx):
         if cash is not None and dec(item.get('open_amount'))>0 and abs(cash-dec(item['open_amount']))<=CENT:
             exact.append((item,cash,fx))
     if exact:
-        if len({x[0].get('party_id') for x in exact})!=1:return None
+        if len({x[0].get('party_id') for x in exact})!=1:
+            # Several identified payers have an exact open item: the best-ranked payer
+            # (IBAN/name evidence order from party_candidates) pays, as POLICIES 5.6 FIFO
+            # applies within that payer.
+            rank={pid:n for n,pid in enumerate(parties)}
+            best=min(rank.get(x[0].get('party_id'),len(rank)) for x in exact)
+            exact=[x for x in exact if rank.get(x[0].get('party_id'),len(rank))==best]
+            if len({x[0].get('party_id') for x in exact})!=1:return None
         # Explicit service month outranks FIFO. PDF facts take precedence; the
         # documented next-month invoicing rule works without enabling PDFs.
         if len(exact)>1:
@@ -460,6 +467,9 @@ def reconcile(txn,ctx):
     if len(explained)==1:
         item,amount,exception=explained[0]
         return [row(txn,item['item_id'],amount,exception)]
+    ladder = _known_payer_ladder(txn, ctx, parties, candidates)
+    if ladder is not None:
+        return ladder
     # Closed exact matches can be duplicate payments, but only with history evidence.
     dup=[]
     for item in candidates:
@@ -467,4 +477,104 @@ def reconcile(txn,ctx):
         if cash is not None and dec(item.get('open_amount'))==0 and getattr(ctx,'history',{}).get(item['item_id']) and abs(cash-dec(item['total_amount']))<=CENT:
             dup.append((item,cash))
     if len(dup)==1:return [row(txn,dup[0][0]['item_id'],dup[0][1],'DUPLICATE_PAYMENT')]
+    return None
+
+
+OVERPAY_ROUND = {D(x) for x in ('1', '2', '5', '10', '20', '25', '50', '100', '200', '250', '500', '1000')}
+
+
+def _days_between(a, b):
+    try:
+        return abs((date.fromisoformat(a) - date.fromisoformat(b)).days)
+    except (TypeError, ValueError):
+        return 99999
+
+
+def _ordered_sets(group, target, booking):
+    """FIFO-shaped exact sets over one payer's open items (signed cents, credits negative).
+
+    Order: oldest-first prefix, due-date prefix, then the contiguous run (by issue or due
+    order) whose latest due date is closest to the payment. Never a free subset-sum:
+    unconstrained exact sums produce spurious matches on large open books.
+    """
+    n = len(group)
+    if n < 2:
+        return None
+    vals = [int(dec(i['open_amount']) * 100) * (-1 if i.get('kind') == 'credit' else 1) for i in group]
+    invoice = [i.get('kind') != 'credit' for i in group]
+    by_issue = list(range(n))
+    by_due = sorted(by_issue, key=lambda k: (group[k].get('due_date') or group[k].get('issue_date', ''),
+                                             group[k].get('issue_date', ''), group[k]['item_id']))
+    for order in (by_issue, by_due):
+        run = 0
+        for j, k in enumerate(order):
+            run += vals[k]
+            if run == target and j >= 1 and any(invoice[x] for x in order[:j + 1]):
+                return [group[x] for x in order[:j + 1]]
+    if n > 400:
+        return None
+    dist = [_days_between(i.get('due_date') or i.get('issue_date'), booking) for i in group]
+    best = None
+    for order in (by_issue, by_due):
+        seen = {0: [0]}
+        run = 0
+        for j, k in enumerate(order, 1):
+            run += vals[k]
+            for a in seen.get(run - target, ()):
+                if j - a >= 2:
+                    idx = order[a:j]
+                    if any(invoice[x] for x in idx):
+                        key = (max(dist[x] for x in idx), len(idx))
+                        if best is None or key < best[0]:
+                            best = (key, idx)
+            seen.setdefault(run, []).append(j)
+    return [group[x] for x in best[1]] if best else None
+
+
+def _known_payer_ladder(txn, ctx, parties, candidates):
+    """Resolve a receipt/payment of an identified payer that no unique rule explained.
+
+    Payers are tried in evidence order; the first FIFO-shaped exact set wins. Then a
+    single invoice overpaid by a round amount or exactly 1 %/10 % (OVERPAYMENT).
+    """
+    if not parties or not candidates:
+        return None
+    cash = abs(dec(txn['amount']))
+    orig_ccy = txn.get('orig_currency') or ''
+    orig_cash = abs(dec(txn['orig_amount'])) if orig_ccy and orig_ccy != txn.get('currency') and txn.get('orig_amount') else None
+    rank = {pid: n for n, pid in enumerate(parties)}
+    groups = defaultdict(list)
+    for item in candidates:
+        if dec(item.get('open_amount')) <= 0 or item.get('entity') != txn.get('entity'):
+            continue
+        if item.get('currency') == txn.get('currency'):
+            groups[(rank.get(item['party_id'], len(rank)), item['party_id'], False)].append(item)
+        elif orig_cash is not None and item.get('currency') == orig_ccy:
+            groups[(rank.get(item['party_id'], len(rank)), item['party_id'], True)].append(item)
+    for key in sorted(groups):
+        fx_group = key[2]
+        target = orig_cash if fx_group else cash
+        group = sorted(groups[key], key=lambda i: (i.get('issue_date', ''), i['item_id']))
+        found = _ordered_sets(group, int(target * 100), txn.get('booking_date', ''))
+        if found:
+            return [row(txn, i['item_id'], i['open_amount'],
+                        'FX_DIFFERENCE' if fx_group and i.get('kind') != 'credit' else '')
+                    for i in sorted(found, key=lambda i: i['item_id'])]
+    for key in sorted(groups):
+        if key[2]:
+            continue
+        best = None
+        for item in groups[key]:
+            if item.get('kind') == 'credit':
+                continue
+            opened = dec(item['open_amount'])
+            excess = cash - opened
+            if excess <= 0:
+                continue
+            signature = excess in OVERPAY_ROUND or any(
+                abs(excess - (opened * r).quantize(CENT, rounding=ROUND_HALF_UP)) <= CENT for r in (D('0.01'), D('0.10')))
+            if signature and (best is None or excess < best[0] or (excess == best[0] and item.get('issue_date', '') < best[1].get('issue_date', ''))):
+                best = (excess, item)
+        if best:
+            return [row(txn, best[1]['item_id'], best[1]['open_amount'], 'OVERPAYMENT')]
     return None
