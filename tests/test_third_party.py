@@ -99,6 +99,11 @@ class AgencyTests(unittest.TestCase):
         rows = reconcile_agency(self.receipt('4732.59'), self.ctx())
         self.assertEqual([r['item_id'] for r in rows], ['ARI-1', 'ARI-2'])
 
+    def test_documented_overpayment_on_the_anchor(self):
+        # POLICIES §3 OVERPAYMENT: an excess of exactly 1 % of the invoice.
+        rows = reconcile_agency(self.receipt('457.64'), self.ctx())
+        self.assertEqual([(r['item_id'], r['amount'], r['exception']) for r in rows], [('ARI-1', '453.11', 'OVERPAYMENT')])
+
     def test_other_cash_difference_abstains(self):
         self.assertIsNone(reconcile_agency(self.receipt('4000.00'), self.ctx()))
 

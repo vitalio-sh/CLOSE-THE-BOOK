@@ -170,16 +170,34 @@ def reconcile_agency(txn, ctx):
     anchor = anchors[0]
     if anchor.get('currency', txn.get('currency')) != txn.get('currency'):
         return None
+    account = [ctx.items[iid] for iid in ctx.by_party.get(anchor['party_id'], ())
+               if ctx.items[iid].get('side') == 'AR' and ctx.items[iid].get('kind') == 'invoice'
+               and ctx.items[iid].get('entity') == entity and ctx.items[iid]['open_amount'] > 0
+               and ctx.items[iid].get('issue_date', '') <= day]
     if abs(anchor['open_amount'] - amount) <= Decimal('0.005'):
         chosen = [anchor]
-    else:
-        account = [ctx.items[iid] for iid in ctx.by_party.get(anchor['party_id'], ())
-                   if ctx.items[iid].get('side') == 'AR' and ctx.items[iid].get('kind') == 'invoice'
-                   and ctx.items[iid].get('entity') == entity and ctx.items[iid]['open_amount'] > 0
-                   and ctx.items[iid].get('issue_date', '') <= day]
-        if abs(sum((i['open_amount'] for i in account), Decimal(0)) - amount) > Decimal('0.005'):
-            return None
+    elif abs(sum((i['open_amount'] for i in account), Decimal(0)) - amount) <= Decimal('0.005'):
         chosen = account
+    else:
+        explained = _explained_difference(anchor, amount, txn, ctx)
+        if not explained:
+            return None
+        exc, applied = explained
+        return [{'bank_txn_id': txn['bank_txn_id'], 'item_id': anchor['item_id'],
+                 'amount': format(Decimal(str(applied)).quantize(Decimal('0.01')), '.2f'),
+                 'category': '', 'exception': exc}]
     return [{'bank_txn_id': txn['bank_txn_id'], 'item_id': item['item_id'],
              'amount': format(item['open_amount'].quantize(Decimal('0.01')), '.2f'),
              'category': '', 'exception': ''} for item in sorted(chosen, key=lambda i: i['item_id'])]
+
+
+_EXPLAINED = {'OVERPAYMENT', 'SHORT_DISCOUNT', 'SHORT_WITHHOLDING', 'SHORT_BANK_CHARGES', 'SHORT_DISPUTE'}
+
+
+def _explained_difference(item, amount, txn, ctx):
+    """POLICIES §3 exception of the anchor invoice when the agency pays it with a documented
+    difference (early-payment discount, 1 %/10 %/round overpayment, withholding, bank charges,
+    stated dispute).  An unexplained difference (PARTIAL or an unknown excess) returns None."""
+    from .matching import _exception
+    exc, applied = _exception(item, amount, txn, ctx)
+    return (exc, applied) if exc in _EXPLAINED else None
