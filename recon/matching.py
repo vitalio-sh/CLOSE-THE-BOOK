@@ -250,7 +250,9 @@ def _exception(item, cash, txn, ctx, fx=False, grace=0):
                 return ('FX_DIFFERENCE' if fx else 'SHORT_DISCOUNT'),opened
         except (ValueError,KeyError,TypeError):pass
     customer=getattr(ctx,'customers',{}).get(item.get('party_id'),{})
-    if customer.get('country') in ('MX','BR','MA') and opened==total:
+    from .adjusted import retention_pct
+    # A PDF guarantee retention explains the shortfall (first payment PARTIAL), not tax withheld.
+    if customer.get('country') in ('MX','BR','MA') and opened==total and retention_pct(item, ctx) is None:
         for rate in (D('0.0125'),D('0.015'),D('0.10')):
             if abs(cash-(total*(1-rate)).quantize(CENT,rounding=ROUND_HALF_UP))<=CENT:
                 return ('FX_DIFFERENCE' if fx else 'SHORT_WITHHOLDING'),opened

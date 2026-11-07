@@ -50,11 +50,29 @@ def discount_terms(item, ctx):
     return total - half_up(total * pct / 100), deadline
 
 
+def retention_pct(item, ctx):
+    """Guarantee retention stated on the invoice PDF (POLICIES 5.8), as a Decimal percentage."""
+    facts = getattr(ctx, 'pdf_facts', None)
+    if facts is None or not hasattr(facts, 'get'):
+        return None
+    try:
+        value = (facts.get(item['item_id']) or {}).get('retention_pct')
+        return D(str(value)) if value else None
+    except (ArithmeticError, KeyError, TypeError, ValueError):
+        return None
+
+
 def withholding_value(item, ctx, rate):
-    """Cash after tax withheld at source on an untouched invoice of an MX/BR/MA customer."""
+    """Cash after tax withheld at source on an untouched invoice of an MX/BR/MA customer.
+
+    An invoice whose PDF retains a guarantee is short by the retention, not by tax: the first
+    payment is PARTIAL (POLICIES 3), even when the retention equals a withholding rate.
+    """
     customer = getattr(ctx, 'customers', {}).get(item.get('party_id'), {})
     total = dec(item.get('total_amount'))
     if customer.get('country') not in WITHHOLDING_COUNTRIES or total != dec(item.get('open_amount')):
+        return None
+    if retention_pct(item, ctx) is not None:
         return None
     return total - half_up(total * rate)
 
@@ -360,7 +378,12 @@ def fraction_partial(txn, ctx):
             cash, fx = target_for(txn, item.get('currency'))
             if cash is None:
                 continue
-            if any((total * f).quantize(CENT, rounding=ROUND_DOWN) == cash for f in PARTIAL_FRACTIONS):
+            fractions = [(f, ROUND_DOWN) for f in PARTIAL_FRACTIONS]
+            retained = retention_pct(item, ctx)
+            if retained is not None and 0 < retained < 100:
+                keep = 1 - retained / 100
+                fractions += [(keep, ROUND_DOWN), (keep, ROUND_HALF_UP)]
+            if any((total * f).quantize(CENT, rounding=mode) == cash for f, mode in fractions):
                 hits.append((item, cash, fx))
     if len(hits) != 1:
         return None

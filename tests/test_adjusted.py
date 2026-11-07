@@ -154,3 +154,22 @@ class FractionPartialTests(unittest.TestCase):
         cr = invoice('CR', 'AB1', '50'); cr['kind'] = 'credit'
         rows = fraction_partial(txn('50', 'Alice Water Works'), ctx([invoice('A', 'F1', '100'), cr]))
         self.assertEqual({r['item_id']: r['amount'] for r in rows}, {'A': '100.00', 'CR': '50.00'})
+
+
+class RetentionTests(unittest.TestCase):
+    class Facts:
+        def __init__(self, facts): self.facts = facts
+        def get(self, item_id): return dict(self.facts.get(item_id, {}))
+        def resolve(self, item_id): return item_id
+
+    def test_pdf_retention_is_partial_not_withholding(self):
+        from recon.adjusted import single_adjusted, fraction_partial
+        c = ctx([invoice('A', 'FV24-00001', '382109.54')], 'MX')
+        t = txn('343898.59', 'Alice Water Works PAYMENT')
+        self.assertEqual(single_adjusted(t, c)[0]['exception'], 'SHORT_WITHHOLDING')
+        c.pdf_facts = self.Facts({'A': {'retention_pct': '10'}})
+        self.assertIsNone(single_adjusted(t, c))
+        rows = fraction_partial(t, c)
+        self.assertEqual([(r['amount'], r['exception']) for r in rows], [('343898.59', 'PARTIAL')])
+        rows = reconcile(txn('343898.59', 'Alice Water Works FV24-00001'), c)
+        self.assertEqual([(r['amount'], r['exception']) for r in rows], [('343898.59', 'PARTIAL')])
