@@ -225,23 +225,56 @@ def _net_referenced(txn, invoices, credits, refs, ctx):
             rows[item['item_id']] = row(txn, item['item_id'], applied, exc)
     return [rows[key] for key in sorted(rows)]
 
+_SERVICE_MONTHS = {
+    1: 'JANUARY ENERO JANVIER JANUAR GENNAIO JANEIRO JAN ENE JANV GEN',
+    2: 'FEBRUARY FEBRERO FEVRIER FEBRUAR FEBBRAIO FEVEREIRO FEB FEVR FEV',
+    3: 'MARCH MARZO MARS MARZ MAERZ MARCO MAR MRZ',
+    4: 'APRIL ABRIL AVRIL APRILE APR ABR AVR',
+    5: 'MAY MAYO MAI MAGGIO MAIO MAG',
+    6: 'JUNE JUNIO JUIN JUNI GIUGNO JUNHO JUN GIU',
+    7: 'JULY JULIO JUILLET JULI LUGLIO JULHO JUL JUIL LUG',
+    8: 'AUGUST AGOSTO AOUT AUG AGO',
+    9: 'SEPTEMBER SEPTIEMBRE SETIEMBRE SEPTEMBRE SETTEMBRE SETEMBRO SEP SEPT SET',
+    10: 'OCTOBER OCTUBRE OCTOBRE OKTOBER OTTOBRE OUTUBRO OCT OKT OTT OUT',
+    11: 'NOVEMBER NOVIEMBRE NOVEMBRE NOVEMBRO NOV',
+    12: 'DECEMBER DICIEMBRE DECEMBRE DEZEMBER DICEMBRE DEZEMBRO DEC DIC DEZ',
+}
+_SERVICE_MONTH_OF = {w: m for m, ws in _SERVICE_MONTHS.items() for w in ws.split()}
+_SERVICE_FULL = [(w, m) for m, ws in _SERVICE_MONTHS.items() for w in ws.split() if len(w) >= 6]
+_SERVICE_RE = re.compile(r'\b(?:SERVICE|SERVICES|SERVICIOS?|MANT|MANTENIMIENTO|MAINTENANCE|MAINT|MES|MONTH|CUOTA'
+                         r'|WARTUNG|ENTRETIEN|MANUTENZIONE|MENSUALIDAD|ALQUILER|MIETE|LOYER)'
+                         r'(?:\s+(?:DE|DEL|OF|MANTENIMIENTO))?\s+([A-Z]{3,10})(?:\s+(20\d{2}|\d{2})\b)?')
+
+
+def _service_month_word(word):
+    """Month number of a month word: full name, abbreviation, or a bank-truncated full name."""
+    if word in _SERVICE_MONTH_OF:
+        return _SERVICE_MONTH_OF[word]
+    if len(word) >= 5:   # 'CUOTA MANTENIMIENTO DICIEMB' (text cut at 38 characters)
+        hits = {m for full, m in _SERVICE_FULL if full.startswith(word)}
+        if len(hits) == 1:
+            return hits.pop()
+    return None
+
+
 def _stated_service_month(raw, booking_date):
     """Return the service-month upper bound and whether its year is explicit.
 
     Policy 5.6: monthly fees are invoiced at the beginning of the following
     month. A yearless month therefore must precede the booking month.
+    Every keyword occurrence is tried ('SPA SERVICE ACME ... SERVICE JANUARY 2025').
     """
-    from .pdf_facts import MONTHS
-    match = re.search(r'(?:SERVICE|SERVICIOS?|MANT|MAINTENANCE|MES|MONTH)\s+(?:DE\s+)?([A-Z]+)(?:\s+(20\d{2}|\d{2})\b)?', words(raw))
-    if not match or match[1] not in MONTHS:
-        return None
-    month = MONTHS[match[1]]
-    try:
-        booked = date.fromisoformat(booking_date)
-        year = (int(match[2]) if len(match[2]) == 4 else 2000 + int(match[2])) if match[2] else booked.year - (month >= booked.month)
-        return f'{year:04d}-{month:02d}', bool(match[2])
-    except (TypeError, ValueError):
-        return None
+    for match in _SERVICE_RE.finditer(words(raw)):
+        month = _service_month_word(match[1])
+        if month is None:
+            continue
+        try:
+            booked = date.fromisoformat(booking_date)
+            year = (int(match[2]) if len(match[2]) == 4 else 2000 + int(match[2])) if match[2] else booked.year - (month >= booked.month)
+            return f'{year:04d}-{month:02d}', bool(match[2])
+        except (TypeError, ValueError):
+            return None
+    return None
 
 def _invoice_service_month(item):
     try:
