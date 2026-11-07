@@ -399,7 +399,7 @@ class DocumentMatcher:
                     for pid in self.payer_ids.get((advice.entity, norm(advice.payer)), ()):
                         for line in advice.lines:
                             n = norm(line.number)
-                            if n.isdigit() and 3 <= len(n) <= 7:
+                            if n.isdigit() and 1 <= len(n) <= 7:
                                 self._short_requests[(advice.entity, pid)].add(n.lstrip('0') or '0')
                 self._missing_numbers.update(norm(line.number) for line in advice.lines if norm(line.number) not in getattr(ctx, 'by_number', {}) and norm(line.number).isdigit() and len(norm(line.number)) >= 7)
                 if advice.reference:
@@ -430,7 +430,7 @@ class DocumentMatcher:
                 if not wanted:
                     continue
                 n = norm(item.get('document_number', ''))
-                aliases = {(n[-size:].lstrip('0') or '0') for size in range(3,8) if len(n) >= size and n[-size:].isdigit()}
+                aliases = {(n[-size:].lstrip('0') or '0') for size in range(1,8) if len(n) >= size and n[-size:].isdigit()}
                 for alias in wanted & aliases:
                     self.short_aliases[(*scope, alias)].append(iid)
         for advice in self._changed_advices:
