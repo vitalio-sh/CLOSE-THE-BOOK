@@ -208,8 +208,9 @@ class BatchMatcher:
             score = 0
             printed = norm(item.get('document_number', item.get('supplier_invoice_number','')))
             explicit = printed == number or any(len(token) >= 5 and printed.endswith(token) for token in re.findall(r'[0-9]+', row[number_field]))
-            if require_exact and printed != number:
-                # A return re-opens the printed collected invoice, never a substitute.
+            if require_exact and not explicit:
+                # A return re-opens the printed collected invoice ('FV24-0217685' or
+                # 'RECIBO 0217685'), never a substitute chosen by payer name.
                 continue
             if printed == number:
                 score += 8
