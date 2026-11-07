@@ -17,6 +17,7 @@ Zero-net veto: a unit whose credits offset its invoice fully never joins a run
 or a subset (it would make the group ambiguous); the group is not trimmed.
 """
 import re
+from datetime import date, timedelta
 from collections import defaultdict
 from decimal import Decimal
 
@@ -27,7 +28,9 @@ D = Decimal
 
 
 SUBSET_UNITS = 22   # meet-in-the-middle budget: 2 x 2048 partial sums
-FREE_UNITS = 8      # largest unanchored unit set accepted from an exact sum
+FREE_UNITS = 6      # largest unanchored unit set accepted from an exact sum
+REMAINDER_UNITS = 3 # unquoted units added to quoted anchors in a large book
+HORIZON_DAYS = 365  # subset searches skip units issued more than a year before the receipt
 
 
 def _cents(value):
@@ -38,6 +41,19 @@ def _signed(item):
     return -_cents(item['open_amount']) if item.get('kind') == 'credit' else _cents(item['open_amount'])
 
 
+def _normed(ctx, item, field):
+    """Normalized document fields, computed once per item and field."""
+    cache = getattr(ctx, '_credit_group_norms', None)
+    if cache is None:
+        cache = {}
+        ctx._credit_group_norms = cache
+    key = (item['item_id'], field)
+    value = cache.get(key)
+    if value is None:
+        value = cache[key] = M.norm(item.get(field))
+    return value
+
+
 def _evidence(txn, ctx):
     """Payer candidates and quoted item ids, mirroring matching.reconcile."""
     raw = M.text_of(txn)
@@ -46,17 +62,19 @@ def _evidence(txn, ctx):
     refs = set()
     for token in re.findall(r'[A-Za-z0-9][A-Za-z0-9/._-]{3,}', raw):
         refs.update(ctx.by_number.get(M.norm(token), ()))
-    numeric_tokens = set(re.findall(r'\b\d{5,}\b', raw))
+    numeric_tokens = [v for v in set(re.findall(r'\b\d{5,}\b', raw))]
     for pid in parties:
         for iid in ctx.by_party.get(pid, ()):
             item = ctx.items[iid]
-            n = M.norm(item.get('document_number'))
+            n = _normed(ctx, item, 'document_number')
             if len(n) >= 5 and n in compact:
                 refs.add(iid)
-            elif any(len(v) >= 5 and n.endswith(v) for v in numeric_tokens):
+            elif numeric_tokens and any(n.endswith(v) for v in numeric_tokens):
                 refs.add(iid)
-            elif item.get('customer_po') and len(M.norm(item['customer_po'])) >= 6 and M.norm(item['customer_po']) in compact:
-                refs.add(iid)
+            elif item.get('customer_po'):
+                po = _normed(ctx, item, 'customer_po')
+                if len(po) >= 6 and po in compact:
+                    refs.add(iid)
     return parties, refs
 
 
@@ -74,37 +92,42 @@ def _book(ctx, txn, pid):
     its cancelling credit note; both leave the book.
     """
     invoices, credits = [], []
+    entity, currency, booked = txn.get('entity'), txn.get('currency'), txn.get('booking_date', '9999')
     for iid in ctx.by_party.get(pid, ()):
         item = ctx.items[iid]
-        if (item.get('side') != 'AR' or item.get('entity') != txn.get('entity')
-                or item.get('currency') != txn.get('currency')
-                or item.get('issue_date', '') > txn.get('booking_date', '9999')
-                or item['open_amount'] <= 0):
+        if (item['open_amount'] <= 0 or item.get('side') != 'AR' or item.get('entity') != entity
+                or item.get('currency') != currency or item.get('issue_date', '') > booked):
             continue
         (credits if item.get('kind') == 'credit' else invoices).append(item)
-    cancelled = {M.norm(c.get('related_document')) for c in credits if _cancels(c)}
+    if not credits:
+        return invoices, credits, {}
+    cancelled = {_normed(ctx, c, 'related_document') for c in credits if _cancels(c)}
     credits = [c for c in credits if not _cancels(c)]
-    invoices = [i for i in invoices if M.norm(i.get('document_number')) not in cancelled]
+    invoices = [i for i in invoices if _normed(ctx, i, 'document_number') not in cancelled]
     invoices.sort(key=lambda i: (i.get('issue_date', ''), i['item_id']))
     related = defaultdict(list)
     for credit in credits:
-        key = M.norm(credit.get('related_document'))
+        key = _normed(ctx, credit, 'related_document')
         if key:
             related[key].append(credit)
     return invoices, credits, related
 
 
-def _with_credits(invoices, related):
-    items = list(invoices)
-    for inv in invoices:
-        items.extend(related.get(M.norm(inv.get('document_number')), ()))
-    return items
+def _ids(units):
+    ids = []
+    for inv, rel, _ in units:
+        ids.append(inv['item_id'])
+        ids.extend(c['item_id'] for c in rel)
+    return tuple(sorted(ids))
 
 
-def candidates(txn, ctx):
+def candidates(txn, ctx, horizon_days=None):
     """Every family solution as (family, party rank, items). Diagnostics use all of them."""
     if D(txn['amount']) <= 0:
         return []
+    horizon = None
+    if horizon_days:
+        horizon = (date.fromisoformat(txn['booking_date']) - timedelta(days=horizon_days)).isoformat()
     cash = _cents(abs(D(txn['amount'])))
     parties, refs = _evidence(txn, ctx)
     out = []
@@ -112,61 +135,51 @@ def candidates(txn, ctx):
         invoices, credits, related = _book(ctx, txn, pid)
         if not credits or not invoices:
             continue
-        by_doc = {M.norm(i.get('document_number')): i for i in invoices}
-        q_inv = [i for i in invoices if i['item_id'] in refs]
-        q_cn = [c for c in credits if c['item_id'] in refs]
-        # quoted_credit: quoted credits plus the invoices they reference (and quoted invoices).
-        if q_cn:
-            anchors = {i['item_id']: i for i in q_inv}
-            for c in q_cn:
-                inv = by_doc.get(M.norm(c.get('related_document')))
-                if inv is not None:
-                    anchors[inv['item_id']] = inv
-            if anchors:
-                base = list(anchors.values())
-                for variant in (base + q_cn, _with_credits(base, related)):
-                    ids = {i['item_id'] for i in variant}
-                    if sum(_signed(i) for i in {i['item_id']: i for i in variant}.values()) == cash:
-                        out.append(('quoted_credit', rank, tuple(sorted(ids))))
-        # quoted_invoice: quoted invoices plus every open credit that references one of them.
-        if q_inv:
-            items = {i['item_id']: i for i in _with_credits(q_inv, related) + q_cn}
-            if len(items) > len(q_inv) and sum(_signed(i) for i in items.values()) == cash:
-                out.append(('quoted_invoice', rank, tuple(sorted(items))))
-        # single_net: one invoice and all its open credit notes.
-        for inv in invoices:
-            rel = related.get(M.norm(inv.get('document_number')), ())
-            if rel and _cents(inv['open_amount']) - sum(_cents(c['open_amount']) for c in rel) == cash:
-                out.append(('single_net', rank, tuple(sorted([inv['item_id']] + [c['item_id'] for c in rel]))))
-        # run_net: contiguous issue-date runs of invoices plus their open credits.
-        n = len(invoices)
-        if n <= 400:
-            inv_c = [_cents(i['open_amount']) for i in invoices]
-            rel_c = [sum(_cents(c['open_amount']) for c in related.get(M.norm(i.get('document_number')), ())) for i in invoices]
-            for a in range(n):
-                total = 0
-                has_credit = False
-                for b in range(a, n):
-                    if inv_c[b] - rel_c[b] <= 0:
-                        break  # zero-net veto: a run never carries a fully credited invoice
-                    total += inv_c[b] - rel_c[b]
-                    has_credit = has_credit or rel_c[b] > 0
-                    if b > a and has_credit and total == cash:
-                        run = invoices[a:b + 1]
-                        out.append(('run_net', rank, tuple(sorted(i['item_id'] for i in _with_credits(run, related)))))
-        # unit_subset: quoted units are anchors; the remaining units (an invoice with all its
-        # open credits, net strictly positive) form a bounded exact subset with a unique solution.
+        # A unit is an invoice with all its open credit notes, and its net in cents.
         units = []
         for inv in invoices:
-            rel = related.get(M.norm(inv.get('document_number')), ())
+            rel = related.get(_normed(ctx, inv, 'document_number'), ())
             units.append((inv, list(rel), _cents(inv['open_amount']) - sum(_cents(c['open_amount']) for c in rel)))
-        anchor_ids = {i['item_id'] for i in q_inv}
+        by_doc = {_normed(ctx, u[0], 'document_number'): u for u in units}
+        q_inv = [u for u in units if u[0]['item_id'] in refs]
+        q_cn = [c for c in credits if c['item_id'] in refs]
+        anchor_ids = {u[0]['item_id'] for u in q_inv}
         for c in q_cn:
-            inv = by_doc.get(M.norm(c.get('related_document')))
-            if inv is not None:
-                anchor_ids.add(inv['item_id'])
+            unit = by_doc.get(_normed(ctx, c, 'related_document'))
+            if unit is not None:
+                anchor_ids.add(unit[0]['item_id'])
         anchors = [u for u in units if u[0]['item_id'] in anchor_ids]
-        rest = [u for u in units if u[0]['item_id'] not in anchor_ids and u[2] > 0]
+        # quoted_credit: quoted credits plus the invoices they reference (and quoted invoices).
+        if q_cn and anchors:
+            explicit = [inv for inv, _, _ in anchors] + q_cn
+            if sum(_signed(i) for i in explicit) == cash:
+                out.append(('quoted_credit', rank, tuple(sorted({i['item_id'] for i in explicit}))))
+            if sum(u[2] for u in anchors) == cash:
+                out.append(('quoted_credit', rank, _ids(anchors)))
+        # quoted_invoice: quoted invoices plus every open credit that references one of them.
+        if q_inv and any(u[1] for u in q_inv) and sum(u[2] for u in q_inv) == cash:
+            out.append(('quoted_invoice', rank, _ids(q_inv)))
+        # single_net: one invoice and all its open credit notes.
+        for u in units:
+            if u[1] and u[2] == cash:
+                out.append(('single_net', rank, _ids([u])))
+        # run_net: contiguous issue-date runs of units (at least two, one with a credit).
+        # Zero-net veto: a fully credited invoice never joins a run, it splits the book.
+        start, total, sums, with_credit = 0, 0, {0: 0}, [0]
+        for b, unit in enumerate(units):
+            if unit[2] <= 0:
+                start, total, sums, with_credit = b + 1, 0, {0: b + 1}, [0]
+                continue
+            total += unit[2]
+            with_credit.append(with_credit[-1] + (1 if unit[1] else 0))
+            a = sums.get(total - cash)
+            if a is not None and b - a >= 1 and with_credit[b + 1 - start] - with_credit[a - start] > 0:
+                out.append(('run_net', rank, _ids(units[a:b + 1])))
+            sums[total] = b + 1
+        # unit_subset: quoted units are anchors; the remaining positive units form a bounded
+        # exact subset with a unique solution.
+        rest = [u for u in units if u[0]['item_id'] not in anchor_ids and u[2] > 0
+                and (horizon is None or u[0].get('issue_date', '') >= horizon)]
         target = cash - sum(u[2] for u in anchors)
         if target == 0 and anchors:
             sols = [()]
@@ -180,24 +193,57 @@ def candidates(txn, ctx):
             chosen = anchors + [rest[k] for k in sols[0]]
             # Without a quoted anchor, a large amount-only combination is too weak.
             if any(u[1] for u in chosen) and (anchors or len(chosen) <= FREE_UNITS):
-                ids = []
-                for u in chosen:
-                    ids.append(u[0]['item_id'])
-                    ids.extend(c['item_id'] for c in u[1])
-                out.append(('unit_subset', rank, tuple(sorted(ids))))
+                out.append(('unit_subset', rank, _ids(chosen)))
+        # anchored_rest: quoted anchors and a remainder of at most REMAINDER_UNITS further units,
+        # searched over a book too large for the full subset search.
+        if anchors and target > 0 and len(rest) > SUBSET_UNITS:
+            found = _small_subsets([u[2] for u in rest], target, REMAINDER_UNITS)
+            if len(found) > 1:
+                out.append(('anchored_rest_multi', rank, ()))
+            elif found:
+                chosen = anchors + [rest[k] for k in found[0]]
+                if any(u[1] for u in chosen):
+                    out.append(('anchored_rest', rank, _ids(chosen)))
     return out
 
 
-FAMILIES = ('quoted_credit', 'quoted_invoice', 'single_net', 'run_net', 'unit_subset')
+def _small_subsets(values, target, size):
+    """Up to two index tuples of at most `size` values summing to target (size <= 3)."""
+    found = []
+    where = defaultdict(list)
+    for k, v in enumerate(values):
+        where[v].append(k)
+    for k in where.get(target, ()):
+        found.append((k,))
+    n = len(values)
+    if size >= 2:
+        for a in range(n):
+            for b in where.get(target - values[a], ()):
+                if b > a:
+                    found.append((a, b))
+            if len(found) > 1:
+                return found
+    if size >= 3 and len(found) <= 1 and n <= 200:
+        for a in range(n):
+            for b in range(a + 1, n):
+                for c in where.get(target - values[a] - values[b], ()):
+                    if c > b:
+                        found.append((a, b, c))
+                if len(found) > 1:
+                    return found
+    return found
+
+
+FAMILIES = ('quoted_credit', 'quoted_invoice', 'single_net', 'run_net', 'unit_subset', 'anchored_rest')
 
 
 def reconcile(txn, ctx):
     """First family (in FAMILIES order) with exactly one solution across payer candidates."""
-    found = candidates(txn, ctx)
+    found = candidates(txn, ctx, HORIZON_DAYS)
     for family in FAMILIES:
-        solutions = {c[2] for c in found if c[0] == family}
-        if family == 'unit_subset' and any(c[0] == 'unit_subset_multi' for c in found):
+        if any(c[0] == family + '_multi' for c in found):
             return None
+        solutions = {c[2] for c in found if c[0] == family}
         if len(solutions) > 1:
             return None
         if len(solutions) == 1:

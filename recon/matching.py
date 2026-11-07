@@ -146,6 +146,17 @@ def _quoted_by_sibling(ctx, txn, items):
             pos = blob.find(number, pos + 1)
     return quoted
 
+def _remember_last(fn):
+    """One-entry memo: matching, credit groups and the fallback ask about the same line."""
+    last = [None, None, None]
+    def wrapper(txn, ctx):
+        key = (txn.get('bank_txn_id'), text_of(txn), txn.get('counterparty_account'))
+        if last[0] is not ctx or last[1] != key:
+            last[:] = [ctx, key, fn(txn, ctx)]
+        return list(last[2])
+    return wrapper
+
+party_candidates = _remember_last(party_candidates)
 
 def _eligible(item, txn, reverse=False):
     if item.get('issue_date','') > txn.get('booking_date','9999'):return False

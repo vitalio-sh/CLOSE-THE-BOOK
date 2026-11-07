@@ -59,6 +59,12 @@ class CreditGroupTests(unittest.TestCase):
         items = [invoice('A', 'F1', '100'), credit('C', 'AB1', '30', 'F1')]
         self.assertIsNone(reconcile(txn('70', 'Mystery sender'), context(items)))
 
+    def test_small_subsets_unique_or_nothing(self):
+        from recon.credit_groups import _small_subsets
+        self.assertEqual(len(_small_subsets([5, 7, 11, 13], 18, 2)), 2)   # 5+13 and 7+11: ambiguous
+        self.assertEqual(_small_subsets([5, 7, 11, 40], 23, 3), [(0, 1, 2)])
+        self.assertEqual(_small_subsets([5, 7, 11, 40], 99, 3), [])
+
     def test_outgoing_lines_ignored(self):
         items = [invoice('A', 'F1', '100'), credit('C', 'AB1', '30', 'F1')]
         self.assertIsNone(reconcile(txn('-70', 'Alice Water Works'), context(items)))
