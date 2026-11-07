@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Team 10 — Close the Books</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#000; --fg:#fff; --mute:#8a8a8a; --line:#2a2a2a; --acc:#E6FF00; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html, body { width:100%; height:100%; background:var(--bg); overflow:hidden; }
+  body { font-family: "Inter", "Helvetica Neue", "Segoe UI", Arial, sans-serif; color:var(--fg);
+         -webkit-font-smoothing:antialiased; }
+  #stage { position:absolute; left:50%; top:50%; width:1920px; height:1080px; transform-origin:center center; }
+  .slide { position:absolute; inset:0; padding:110px 140px 120px; display:flex; flex-direction:column;
+           opacity:0; pointer-events:none; transition:opacity .45s ease; }
+  .slide.active { opacity:1; pointer-events:auto; }
+  .slide .anim { opacity:0; transform:translateY(18px); transition:opacity .6s ease, transform .6s ease; }
+  .slide.active .anim { opacity:1; transform:none; }
+  .slide.active .d1 { transition-delay:.15s } .slide.active .d2 { transition-delay:.3s }
+  .slide.active .d3 { transition-delay:.45s } .slide.active .d4 { transition-delay:.6s }
+  .slide.active .d5 { transition-delay:.75s } .slide.active .d6 { transition-delay:.9s }
+  .kicker { font-size:24px; letter-spacing:.18em; text-transform:uppercase; color:var(--mute); margin-bottom:22px; }
+  h1 { font-size:58px; line-height:1.15; font-weight:700; max-width:1640px; letter-spacing:-.01em; }
+  h1 .acc, .acc { color:var(--acc); }
+  .rule { height:2px; background:var(--line); margin:40px 0 50px; }
+  .body { flex:1; display:flex; gap:80px; align-items:flex-start; }
+  .foot { position:absolute; left:140px; right:140px; bottom:50px; display:flex; justify-content:space-between;
+          font-size:20px; color:var(--mute); border-top:1px solid var(--line); padding-top:16px; }
+  .big { font-size:120px; font-weight:800; line-height:1; letter-spacing:-.03em; }
+  .lbl { font-size:28px; color:#cfcfcf; margin-top:14px; line-height:1.35; }
+  .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:60px; width:100%; }
+  .stat { border-top:2px solid var(--line); padding-top:30px; }
+  .why { margin-top:70px; font-size:32px; line-height:1.5; color:#dcdcdc; }
+  .why b { color:var(--fg); }
+  table { border-collapse:collapse; font-size:32px; width:100%; }
+  th { text-align:left; font-weight:500; color:var(--mute); font-size:22px; text-transform:uppercase;
+       letter-spacing:.12em; padding:0 24px 18px 0; border-bottom:2px solid var(--line); }
+  td { padding:22px 24px 22px 0; border-bottom:1px solid var(--line); }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  th.num { text-align:right; }
+  .col { flex:1; }
+  .steps { display:flex; flex-direction:column; gap:34px; font-size:34px; line-height:1.35; }
+  .steps .n { color:var(--acc); font-weight:800; margin-right:22px; }
+  .card { border:1px solid var(--line); padding:34px 36px; flex:1; }
+  .card h3 { font-size:34px; margin-bottom:14px; }
+  .card p { font-size:27px; color:#cfcfcf; line-height:1.4; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:36px; width:100%; }
+  .chain { display:flex; align-items:stretch; gap:0; width:100%; margin-top:20px; }
+  .blk { flex:1; border:2px solid #fff; padding:34px 22px; text-align:center; font-size:32px; font-weight:600;
+         display:flex; flex-direction:column; justify-content:center; min-height:220px; }
+  .blk small { display:block; font-size:22px; font-weight:400; color:var(--mute); margin-top:14px; line-height:1.35; }
+  .arr { width:70px; display:flex; align-items:center; justify-content:center; font-size:44px; color:var(--mute); }
+  .principles { margin-top:80px; font-size:52px; font-weight:700; text-align:center; width:100%; }
+  .principles .sep { color:var(--mute); margin:0 30px; }
+  .title-wrap { margin:auto 0; }
+  .title-wrap h1 { font-size:110px; max-width:none; }
+  .names { font-size:40px; color:#cfcfcf; margin-top:40px; letter-spacing:.02em; }
+  .tag { font-size:26px; color:var(--mute); margin-top:70px; }
+  .bar-badge { display:inline-block; border:2px solid var(--acc); color:var(--acc); padding:6px 16px;
+               font-size:22px; letter-spacing:.12em; text-transform:uppercase; font-weight:700; }
+  .notoff { display:inline-block; border:1px solid var(--mute); color:var(--mute); padding:4px 12px;
+            font-size:20px; letter-spacing:.12em; text-transform:uppercase; }
+  svg text { font-family:inherit; }
+  .hint { position:fixed; right:18px; bottom:12px; font-size:12px; color:#444; font-family:sans-serif; }
+  .list { font-size:34px; line-height:1.45; list-style:none; }
+  .list li { padding:22px 0; border-bottom:1px solid var(--line); display:flex; gap:28px; }
+  .list li .n { color:var(--acc); font-weight:800; min-width:50px; }
+  .list li span.d { color:#cfcfcf; }
+  .progress { position:fixed; left:0; top:0; height:3px; background:var(--acc); transition:width .4s ease; }
+</style>
+</head>
+<body>
+<div class="progress" id="prog"></div>
+<div id="stage">
+
+<!-- 1 TITLE -->
+<section class="slide">
+  <div class="title-wrap">
+    <div class="kicker anim">Claude Code Hackathon · Madrid · 7 November 2026</div>
+    <h1 class="anim d1">Team 10 — <span class="acc">Close the Books</span></h1>
+    <div class="names anim d2">Vitalii · Luke · Ivan · Marina</div>
+    <div class="tag anim d3">Automated bank reconciliation for a multinational group</div>
+  </div>
+  <div class="foot"><span></span><span class="pg"></span></div>
+</section>
+
+<!-- 2 PROBLEM -->
+<section class="slide">
+  <div class="kicker anim">The problem</div>
+  <h1 class="anim d1">Every bank line must be explained: which invoices it pays, how much, or what it is</h1>
+  <div class="rule anim d1"></div>
+  <div class="stats">
+    <div class="stat anim d2"><div class="big acc">17</div><div class="lbl">companies</div></div>
+    <div class="stat anim d3"><div class="big acc">12</div><div class="lbl">currencies</div></div>
+    <div class="stat anim d4"><div class="big acc">~210k</div><div class="lbl">bank lines per half-year</div></div>
+    <div class="stat anim d5"><div class="big acc">~1M</div><div class="lbl">open invoices</div></div>
+  </div>
+  <div class="why anim d6"><b>Why it is hard:</b> references are cut or mistyped · one payment can cover hundreds of
+    invoices · key facts live only in PDFs and payment advices · <b>10 exception types</b> to flag</div>
+  <div class="foot"><span>Source: challenge README and POLICIES (Grupo Valtermia, synthetic data)</span><span class="pg"></span></div>
+</section>
+
+<!-- 3 PHASE 1 -->
+<section class="slide">
+  <div class="kicker">Phase 1 · Explore alone, then compare</div>
+  <h1 class="anim">We each built a prototype, then compared them <span class="acc">fairly on the same test period</span></h1>
+  <div class="rule"></div>
+  <div class="body">
+    <div class="col anim d1">
+      <div class="steps">
+        <div><span class="n">1</span>Each member studied the challenge and built a prototype alone</div>
+        <div><span class="n">2</span>Fair test period: April–June 2025, with the correct answers</div>
+        <div><span class="n">3</span>Same data, same official scorer, results per segment</div>
+        <div><span class="n">4</span>Strengths and weaknesses → split the work</div>
+      </div>
+    </div>
+    <div class="col anim d2">
+      <table>
+        <tr><th>Prototype</th><th class="num">Test period score</th></tr>
+        <tr><td>Vitalii</td><td class="num acc">77.22</td></tr>
+        <tr><td>Ivan</td><td class="num">54.31</td></tr>
+        <tr><td>Luke</td><td class="num">49.32</td></tr>
+        <tr><td>Marina</td><td class="num" style="color:var(--mute)">ideas, no code yet</td></tr>
+      </table>
+      <div class="lbl" style="font-size:24px;margin-top:26px">Others beat the best prototype on specific areas:
+        direct debits and returns (Luke), lines without an invoice (Ivan).</div>
+    </div>
+  </div>
+  <div class="foot"><span>Source: team holdout Apr–Jun 2025, official scorer (not an official LIVE score)</span><span class="pg"></span></div>
+</section>
+
+<!-- 4 PHASE 2 -->
+<section class="slide">
+  <div class="kicker">Phase 2 · Own an area, check often, integrate</div>
+  <h1 class="anim">Each member owned one area; we checked together every <span class="acc">~90 minutes</span> and integrated in rounds <span class="acc">r6 → r14</span></h1>
+  <div class="rule"></div>
+  <div class="body" style="flex-direction:column;gap:40px">
+    <div class="steps anim d1" style="flex-direction:row;gap:60px;font-size:30px">
+      <div><span class="n">→</span>Claude orchestrator (Vitalii)</div>
+      <div><span class="n">→</span>Parallel agents, one focus each</div>
+      <div><span class="n">→</span>GitHub issues for tasks and results</div>
+    </div>
+    <div class="grid2" style="grid-template-columns:1fr 1fr 1fr">
+      <div class="card anim d2"><h3>Luke</h3><p>Tests and adversarial validation of returned direct debits (MD06). Found a bug — the fix is in r14.</p></div>
+      <div class="card anim d3"><h3>Marina</h3><p>Entity-first payer filter: search the payer inside the company that owns the account first. <span class="acc">dc4690e</span></p></div>
+      <div class="card anim d4"><h3>Ivan</h3><p>Independent pipeline and review of the team rules. The issues he found were fixed.</p></div>
+    </div>
+  </div>
+  <div class="foot"><span>Source: team repository, review branches r6–r14, GitHub issue #3</span><span class="pg"></span></div>
+</section>
+
+<!-- 5 KEY INSIGHTS -->
+<section class="slide">
+  <div class="kicker">Key insights</div>
+  <h1 class="anim">Four insights drove the score: <span class="acc">documents first, link globally, abstain, chase rare exceptions</span></h1>
+  <div class="rule"></div>
+  <div class="grid2">
+    <div class="card anim d1"><h3><span class="acc">1</span> Documents first</h3><p>The score counts (line, invoice) pairs, so big documents — advices and batches — outweigh thousands of small lines.</p></div>
+    <div class="card anim d2"><h3><span class="acc">2</span> Link globally, then match</h3><p>Payment advices arrive after the cash: link everything across the period before matching.</p></div>
+    <div class="card anim d3"><h3><span class="acc">3</span> Abstain rather than guess</h3><p>Final precision <span class="acc">99.8%</span>.</p></div>
+    <div class="card anim d4"><h3><span class="acc">4</span> Rare exceptions are cheap wins</h3><p>Each exception type is worth about <span class="acc">2 points</span>, however rare it is.</p></div>
+  </div>
+  <div class="foot"><span>Source: official scoring formula; team measurements</span><span class="pg"></span></div>
+</section>
+
+<!-- 6 RULE CHAIN -->
+<section class="slide">
+  <div class="kicker">How the solution works</div>
+  <h1 class="anim">A deterministic chain of rules, from the strongest evidence to the weakest</h1>
+  <div class="rule"></div>
+  <div class="chain">
+    <div class="blk anim d1">Batches<small>direct debits, cards, cheques, payment runs</small></div>
+    <div class="arr anim d1">→</div>
+    <div class="blk anim d2">Payment advices<small>CSV, Excel, text, PDF</small></div>
+    <div class="arr anim d2">→</div>
+    <div class="blk anim d3">Matching + exceptions<small>number, payer, account; partial, returned, FX…</small></div>
+    <div class="arr anim d3">→</div>
+    <div class="blk anim d4">PDF facts<small>instalments, replaced invoices, advances</small></div>
+    <div class="arr anim d4">→</div>
+    <div class="blk anim d5">Categories<small>fees, taxes, payroll, transfers</small></div>
+  </div>
+  <div class="principles anim d6"><span class="acc">Never force a match</span><span class="sep">·</span><span class="acc">No AI at run time</span></div>
+  <div class="foot"><span>Source: team solver recon/ (Python standard library + pdftotext)</span><span class="pg"></span></div>
+</section>
+
+<!-- 7 RESULTS -->
+<section class="slide">
+  <div class="kicker">Results</div>
+  <h1 class="anim">We reached <span class="acc">94.91</span> on the live leaderboard, <span class="acc">rank 2</span> — and the gains hold on unseen data</h1>
+  <div class="rule"></div>
+  <div class="body" style="gap:70px">
+    <div class="anim d1" style="flex:1.7">
+      <svg id="steps" width="1000" height="560" viewBox="0 0 1000 560"></svg>
+    </div>
+    <div class="anim d3" style="flex:1">
+      <div style="font-size:30px;font-weight:700;margin-bottom:10px">March 2025 check</div>
+      <div style="margin-bottom:24px"><span class="notoff">holdout · NOT official</span></div>
+      <svg id="march" width="520" height="300" viewBox="0 0 520 300"></svg>
+      <div class="lbl" style="font-size:24px;margin-top:20px">A month never tuned on. The r9 → r11 gain
+        (<span class="acc">+0.69</span>) matched the official LIVE gain exactly; r14 had no segment regressions.</div>
+    </div>
+  </div>
+  <div class="foot"><span>Source: official LIVE leaderboard (Talky); team holdout March 2025 with golden opening balances (not official). FINAL score hidden until 20:30.</span><span class="pg"></span></div>
+</section>
+
+<!-- 8 CLAUDE -->
+<section class="slide">
+  <div class="kicker">How we used Claude</div>
+  <h1 class="anim">Claude built, tested and coordinated the solution — <span class="acc">no LLM runs at solve time</span></h1>
+  <div class="rule"></div>
+  <div class="grid2">
+    <div class="card anim d1"><h3>Solve time</h3><p>Deterministic Python + pdftotext: fast and reproducible. Same input, same output.</p></div>
+    <div class="card anim d2"><h3>Parallel lanes</h3><p>Agents worked in parallel, each on one area; a liaison agent reviewed every branch.</p></div>
+    <div class="card anim d3"><h3>Regression gates</h3><p>Every change scored with the official scorer. <span class="acc">Nothing kept unless measured.</span></p></div>
+    <div class="card anim d4"><h3>Fast cross-pollination</h3><p>Ideas from any member were ported and credited <span class="acc">within the hour</span> — e.g. the entity-first payer filter (dc4690e).</p></div>
+  </div>
+  <div class="foot"><span>Source: team process, GitHub issue #3</span><span class="pg"></span></div>
+</section>
+
+<!-- 9 NEXT STEPS -->
+<section class="slide">
+  <div class="kicker">Next steps</div>
+  <h1 class="anim">Three targeted next steps would close the remaining gaps</h1>
+  <div class="rule"></div>
+  <ul class="list">
+    <li class="anim d1"><span class="n">1</span><div><b>Returned direct debits (MD06)</b><br><span class="d">link refund requests to the right monthly collection</span></div></li>
+    <li class="anim d2"><span class="n">2</span><div><b>English bank wording for the new South African company (ZA01)</b><br><span class="d">so a line like "BANK CHARGES" becomes a bank fee</span></div></li>
+    <li class="anim d3"><span class="n">3</span><div><b>More PDF-only facts</b><br><span class="d">instalments, retentions, advances that only the PDF states</span></div></li>
+  </ul>
+  <div class="foot"><span>Source: team validation reports</span><span class="pg"></span></div>
+</section>
+
+<!-- 10 CLOSE -->
+<section class="slide">
+  <div class="title-wrap">
+    <h1 class="anim" style="font-size:110px">Thank you — <span class="acc">Team 10</span></h1>
+    <div class="names anim d1">Vitalii · Luke · Ivan · Marina</div>
+    <div class="tag anim d2" style="font-size:34px;color:#fff">github.com/vitalio-sh/CLOSE-THE-BOOK</div>
+  </div>
+  <div class="foot"><span></span><span class="pg"></span></div>
+</section>
+
+</div>
+<div class="hint">← → navigate · F fullscreen</div>
+
+<script>
+(function () {
+  const ACC = '#E6FF00', MUTE = '#8a8a8a', LINE = '#2a2a2a';
+  const NS = 'http://www.w3.org/2000/svg';
+  function el(tag, attrs, parent, text) {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (text !== undefined) e.textContent = text;
+    parent.appendChild(e); return e;
+  }
+  // Step chart of official LIVE scores
+  const live = [['first', 81.13], ['', 84.06], ['', 87.81], ['r7', 92.96], ['r8', 93.41],
+                ['r11', 94.76], ['r12', 94.82], ['r13', 94.87], ['r14', 94.91]];
+  const s = document.getElementById('steps');
+  const W = 1000, H = 560, L = 70, R = 30, T = 40, B = 60, lo = 80, hi = 96;
+  const x = i => L + i * (W - L - R) / (live.length - 1);
+  const y = v => T + (hi - v) / (hi - lo) * (H - T - B);
+  [80, 85, 90, 95].forEach(v => {
+    el('line', {x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: LINE, 'stroke-width': 1}, s);
+    el('text', {x: L - 14, y: y(v) + 7, fill: MUTE, 'font-size': 20, 'text-anchor': 'end'}, s, v);
+  });
+  let d = `M ${x(0)} ${y(live[0][1])}`;
+  for (let i = 1; i < live.length; i++) d += ` H ${x(i)} V ${y(live[i][1])}`;
+  const path = el('path', {d, fill: 'none', stroke: '#fff', 'stroke-width': 4}, s);
+  live.forEach(([lab, v], i) => {
+    const last = i === live.length - 1;
+    el('circle', {cx: x(i), cy: y(v), r: last ? 10 : 6, fill: last ? ACC : '#fff'}, s);
+    el('text', {x: x(i), y: H - 22, fill: MUTE, 'font-size': 20, 'text-anchor': 'middle'}, s, lab);
+    if (i === 0 || i === 3 || last)
+      el('text', {x: x(i) + (last ? -6 : 0), y: y(v) - 22, fill: (i === 0 || last) ? ACC : '#fff',
+                  'font-size': last ? 34 : 24, 'font-weight': 700, 'text-anchor': last ? 'end' : 'middle'}, s,
+         v.toFixed(2));
+  });
+  el('text', {x: x(live.length - 1), y: y(94.91) + 50, fill: ACC, 'font-size': 26, 'font-weight': 800,
+              'text-anchor': 'end', 'letter-spacing': 2}, s, 'RANK 2');
+  el('text', {x: L, y: 22, fill: MUTE, 'font-size': 18}, s, 'Official LIVE score by submission');
+  const len = path.getTotalLength ? path.getTotalLength() : 3000;
+  path.style.strokeDasharray = len; path.style.strokeDashoffset = len;
+  path.style.transition = 'stroke-dashoffset 1.6s ease .3s';
+
+  // March 2025 holdout bars
+  const m = document.getElementById('march');
+  const mar = [['r9', 93.51], ['r11', 94.20], ['r14', 94.31]];
+  const bl = 93.0, bh = 94.5, mx = i => 40 + i * 165, my = v => 30 + (bh - v) / (bh - bl) * 220;
+  el('line', {x1: 20, x2: 510, y1: 250, y2: 250, stroke: LINE, 'stroke-width': 2}, m);
+  mar.forEach(([lab, v], i) => {
+    el('rect', {x: mx(i), y: my(v), width: 110, height: 250 - my(v), fill: i === 2 ? ACC : '#fff',
+                opacity: i === 2 ? 1 : 0.85}, m);
+    el('text', {x: mx(i) + 55, y: my(v) - 12, fill: i === 2 ? ACC : '#fff', 'font-size': 26, 'font-weight': 700,
+                'text-anchor': 'middle'}, m, v.toFixed(2));
+    el('text', {x: mx(i) + 55, y: 282, fill: MUTE, 'font-size': 22, 'text-anchor': 'middle'}, m, lab);
+  });
+  el('text', {x: 510, y: 18, fill: MUTE, 'font-size': 16, 'text-anchor': 'end'}, m, 'axis starts at 93.0');
+
+  // Navigation
+  const slides = [...document.querySelectorAll('.slide')];
+  slides.forEach((sl, i) => sl.querySelectorAll('.pg').forEach(p => p.textContent = `${i + 1} / ${slides.length}`));
+  let cur = 0;
+  function show(i) {
+    cur = Math.max(0, Math.min(slides.length - 1, i));
+    slides.forEach((sl, j) => sl.classList.toggle('active', j === cur));
+    path.style.strokeDashoffset = slides[cur].contains(s) ? 0 : len;
+    document.getElementById('prog').style.width = ((cur + 1) / slides.length * 100) + '%';
+    history.replaceState(null, '', '#' + (cur + 1));
+  }
+  document.addEventListener('keydown', e => {
+    if (['ArrowRight', 'PageDown', ' ', 'Enter'].includes(e.key)) { e.preventDefault(); show(cur + 1); }
+    else if (['ArrowLeft', 'PageUp', 'Backspace'].includes(e.key)) { e.preventDefault(); show(cur - 1); }
+    else if (e.key === 'Home') show(0);
+    else if (e.key === 'End') show(slides.length - 1);
+    else if (e.key === 'f' || e.key === 'F') {
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+      else document.exitFullscreen();
+    }
+  });
+  document.addEventListener('click', e => { show(cur + (e.clientX > innerWidth / 3 ? 1 : -1)); });
+  function fit() {
+    const k = Math.min(innerWidth / 1920, innerHeight / 1080);
+    document.getElementById('stage').style.transform = `translate(-50%, -50%) scale(${k})`;
+  }
+  addEventListener('resize', fit); fit();
+  show((parseInt(location.hash.slice(1), 10) || 1) - 1);
+})();
+</script>
+</body>
+</html>
