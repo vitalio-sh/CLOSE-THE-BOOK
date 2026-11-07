@@ -67,16 +67,23 @@ def reconcile_homonym_month(txn, ctx):
     following month) and exactly one open invoice of those same-named customers has exactly
     the amount for that month, that invoice is paid.  Last resort only.
     """
-    from .matching import (_index, _party_entity_ok, _stated_service_month, _invoice_service_month,
+    from .matching import (_index, _party_entity_ok, _SERVICE_RE, _service_month_word, _invoice_service_month,
                            party_candidates, text_of, words)
     amount = Decimal(str(txn.get('amount') or 0))
     if amount <= 0:
         return None
     raw = text_of(txn)
-    stated = _stated_service_month(raw, txn.get('booking_date'))
-    if not stated or not stated[1]:
+    # Every month mention with an explicit year ("SERVICE SEPTEMBER 2024"); the bank text
+    # often repeats the remittance cut before the year ("SERVICE SEPTEMBER |").
+    dated = set()
+    for match in _SERVICE_RE.finditer(words(raw)):
+        month = _service_month_word(match[1])
+        if month and match[2]:
+            year = int(match[2]) if len(match[2]) == 4 else 2000 + int(match[2])
+            dated.add(f'{year:04d}-{month:02d}')
+    if len(dated) != 1:
         return None
-    wanted = stated[0]
+    wanted = dated.pop()
     _, _, _, _, parties = _index(ctx)
     shorts = getattr(ctx, '_matching_shorts', None) or {}
     owner, day = txn.get('entity'), txn['booking_date']
@@ -87,6 +94,17 @@ def reconcile_homonym_month(txn, ctx):
             key = ''.join(tokens[i:i + size])
             if 6 <= len(key) <= 9 and key in shorts:
                 pids |= {pid for pid in shorts[key] if _party_entity_ok(parties.get(pid, {}), owner)}
+    # Every customer whose master name is exactly the stated payer name (more homonyms than
+    # party resolution keeps).
+    names = getattr(ctx, '_exact_customer_names', None)
+    if names is None:
+        names = {}
+        for pid, party in (getattr(ctx, 'customers', {}) or {}).items():
+            names.setdefault(norm(party.get('name')), set()).add(pid)
+        ctx._exact_customer_names = names
+    explicit = norm(txn.get('counterparty_name'))
+    if len(explicit) >= 6:
+        pids |= {pid for pid in names.get(explicit, ()) if _party_entity_ok(parties.get(pid, {}), owner)}
     candidates = []
     for pid in pids:
         for iid in ctx.by_party.get(pid, ()):
@@ -105,3 +123,81 @@ def reconcile_homonym_month(txn, ctx):
     return [{'bank_txn_id': txn['bank_txn_id'], 'item_id': item['item_id'],
              'amount': format(item['open_amount'].quantize(Decimal('0.01')), '.2f'),
              'category': '', 'exception': ''}]
+
+
+_AGENCY_FILE = re.compile(r'\bEXPTE\s+\d+\s+(.+?)\s+(\d{6,7})\b')
+
+
+def reconcile_agency(txn, ctx):
+    """Collection-agency receipts "EXPTE <file> <customer name cut> <invoice-number suffix>".
+
+    The agency pays on behalf of the customer (POLICIES §5 third-party payers).  The suffix
+    is the last digits of one open invoice of that customer; the name cut must start that
+    customer's master name.  The receipt settles that invoice when it pays exactly its open
+    amount, or the customer's whole open account when it pays exactly that total.
+    Last resort only; any other cash difference abstains.
+    """
+    amount = Decimal(str(txn.get('amount') or 0))
+    if amount <= 0:
+        return None
+    match = None
+    for field in ('remittance_info', 'text', 'ref2'):
+        match = _AGENCY_FILE.search(str(txn.get(field) or '').upper())
+        if match:
+            break
+    if not match:
+        return None
+    prefix, suffix = norm(match.group(1)), match.group(2)
+    if len(prefix) < 8:
+        return None
+    entity, day = txn.get('entity'), txn['booking_date']
+    customers = getattr(ctx, 'customers', {}) or {}
+    index = getattr(ctx, '_ar_number_tails', None)
+    if index is None:
+        index = {}
+        for iid, item in ctx.items.items():
+            if item.get('side') == 'AR' and item.get('kind') == 'invoice':
+                index.setdefault(str(item.get('document_number') or '')[-6:], []).append(iid)
+        ctx._ar_number_tails = index
+    anchors = [ctx.items[iid] for iid in index.get(suffix[-6:], ())
+               if str(ctx.items[iid].get('document_number') or '').endswith(suffix)]
+    anchors = [item for item in anchors
+               if item['open_amount'] > 0 and item.get('issue_date', '') <= day and item.get('entity') == entity
+               and (norm(customers.get(item.get('party_id'), {}).get('name')).startswith(prefix)
+                    or norm(customers.get(item.get('party_id'), {}).get('trade_name')).startswith(prefix))]
+    if len(anchors) != 1:
+        return None
+    anchor = anchors[0]
+    if anchor.get('currency', txn.get('currency')) != txn.get('currency'):
+        return None
+    account = [ctx.items[iid] for iid in ctx.by_party.get(anchor['party_id'], ())
+               if ctx.items[iid].get('side') == 'AR' and ctx.items[iid].get('kind') == 'invoice'
+               and ctx.items[iid].get('entity') == entity and ctx.items[iid]['open_amount'] > 0
+               and ctx.items[iid].get('issue_date', '') <= day]
+    if abs(anchor['open_amount'] - amount) <= Decimal('0.005'):
+        chosen = [anchor]
+    elif abs(sum((i['open_amount'] for i in account), Decimal(0)) - amount) <= Decimal('0.005'):
+        chosen = account
+    else:
+        explained = _explained_difference(anchor, amount, txn, ctx)
+        if not explained:
+            return None
+        exc, applied = explained
+        return [{'bank_txn_id': txn['bank_txn_id'], 'item_id': anchor['item_id'],
+                 'amount': format(Decimal(str(applied)).quantize(Decimal('0.01')), '.2f'),
+                 'category': '', 'exception': exc}]
+    return [{'bank_txn_id': txn['bank_txn_id'], 'item_id': item['item_id'],
+             'amount': format(item['open_amount'].quantize(Decimal('0.01')), '.2f'),
+             'category': '', 'exception': ''} for item in sorted(chosen, key=lambda i: i['item_id'])]
+
+
+_EXPLAINED = {'OVERPAYMENT', 'SHORT_DISCOUNT', 'SHORT_WITHHOLDING', 'SHORT_BANK_CHARGES', 'SHORT_DISPUTE'}
+
+
+def _explained_difference(item, amount, txn, ctx):
+    """POLICIES §3 exception of the anchor invoice when the agency pays it with a documented
+    difference (early-payment discount, 1 %/10 %/round overpayment, withholding, bank charges,
+    stated dispute).  An unexplained difference (PARTIAL or an unknown excess) returns None."""
+    from .matching import _exception
+    exc, applied = _exception(item, amount, txn, ctx)
+    return (exc, applied) if exc in _EXPLAINED else None

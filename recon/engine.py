@@ -40,6 +40,9 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         # matching: an exact unreferenced subset of old invoices must not take them.
         from .residual_fees import ResidualFees
         handlers.append(('residual_fees', ResidualFees(ctx).reconcile))
+        # Unreferenced receipt = one invoice less its terms discount (POLICIES §3 SHORT_DISCOUNT).
+        from .residual_fees import ResidualDiscounts
+        handlers.append(('residual_discounts', ResidualDiscounts(ctx).reconcile))
         # A later 'SETTLEMENT <invoice>' receipt pays a disputed remainder (POLICIES 3).
         from .matching import dispute_settlement
         handlers.append(('dispute_settlement', lambda txn: dispute_settlement(txn, ctx)))
@@ -75,6 +78,18 @@ def build_handlers(ctx, enabled=('batches', 'documents', 'matching')):
         # Same-named payers told apart by the stated service month (POLICIES 5.6).
         from .third_party import reconcile_homonym_month
         handlers.append(('homonym_month', lambda txn: reconcile_homonym_month(txn, ctx)))
+        # Collection agencies quoting the customer's file, name cut and invoice-number tail.
+        from .third_party import reconcile_agency
+        handlers.append(('agency_file', lambda txn: reconcile_agency(txn, ctx)))
+        # Last: same-named payers told apart by the single exact open amount (POLICIES 5.5, 5.6).
+        from . import namesakes
+        handlers.append(('namesakes', lambda txn: namesakes.reconcile(txn, ctx)))
+        # FX receipts whose instructed amount is exactly a unique set of the payer's invoices.
+        from .matching import fx_invoice_set
+        handlers.append(('fx_set', lambda txn: fx_invoice_set(txn, ctx)))
+        # Last resort: remainders of earlier partial payments plus a unique fresh rest.
+        from .matching import residual_group
+        handlers.append(('residual_group', lambda txn: residual_group(txn, ctx)))
     return handlers, document_stats
 
 

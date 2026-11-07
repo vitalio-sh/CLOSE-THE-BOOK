@@ -254,6 +254,12 @@ class MatchingTests(unittest.TestCase):
         b=invoice('I2','FV25-00002');b['issue_date']='2025-01-01'
         t=txn('100','Alice Water Works MANT. DICIEMBRE')
         self.assertEqual(reconcile(t,context([a,b]))[0]['item_id'],'I2')
+    def test_service_month_with_cut_year_digits(self):
+        # Bank text cut after '20' of '2024': the month still selects the invoice.
+        a=invoice();a['issue_date']='2024-11-01'
+        b=invoice('I2','FV25-00002');b['issue_date']='2024-12-02'
+        t=txn('100','Alice Water Works SERVICE OCTOBER 20');t['booking_date']='2025-01-02'
+        self.assertEqual(reconcile(t,context([a,b]))[0]['item_id'],'I1')
     def test_service_month_ambiguous_or_missing_does_not_guess_fifo(self):
         a=invoice();b=invoice('I2','FV25-00002');b['issue_date']='2025-01-02'
         c=context([a,b])
@@ -412,6 +418,18 @@ class MatchingTests(unittest.TestCase):
         self.assertIsNone(dispute_settlement(txn('120','ALICE WATER WORKS PAGO FV25-00001'),c))
         self.assertIsNone(dispute_settlement(txn('120','CARD SETTLEMENT 20250101 FV25-00001'),c))
         self.assertIsNone(dispute_settlement(txn('120','ALICE WATER WORKS SETTLEMENT 2025'),c))
+    def test_residual_group_remainder_plus_one_invoice(self):
+        from recon.matching import residual_group
+        items=[invoice('A','INV24-0110001','100.10'),invoice('B','INV24-0110002','400.50'),invoice('C','INV24-0110003','37.00'),
+               invoice('D','INV24-0110004','55.55')]
+        items[1]['open_amount']=D('160.20')   # 60 % of B was paid earlier: the remainder is open
+        rows=residual_group(txn('197.20','Alice Water Works PAYMENT'),context(items))   # B remainder + C
+        self.assertEqual({(r['item_id'],r['amount'],r['exception']) for r in rows},{('B','160.20',''),('C','37.00','')})
+        # A pair of fresh invoices (A+C) is not this rule.
+        self.assertIsNone(residual_group(txn('137.10','Alice Water Works PAYMENT'),context(items)))
+        # A competing fresh triple of the same total (A+D+E = 197.20) abstains.
+        e=invoice('E','INV24-0110005','41.55')
+        self.assertIsNone(residual_group(txn('197.20','Alice Water Works PAYMENT'),context(items+[e])))
 if __name__=='__main__':unittest.main()
 
 

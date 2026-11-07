@@ -449,8 +449,13 @@ def _stated_service_month(raw, booking_date):
             continue
         try:
             booked = date.fromisoformat(booking_date)
-            year = (int(match[2]) if len(match[2]) == 4 else 2000 + int(match[2])) if match[2] else booked.year - (month >= booked.month)
-            return f'{year:04d}-{month:02d}', bool(match[2])
+            stated_year = (int(match[2]) if len(match[2]) == 4 else 2000 + int(match[2])) if match[2] else None
+            # A bank text cut after '20' of '2024' ('SERVICE OCTOBER 20') is not the year 2020:
+            # a two-digit year more than a year before the booking is read as no year.
+            if stated_year is not None and len(match[2]) == 2 and stated_year < booked.year - 1:
+                stated_year = None
+            year = stated_year if stated_year is not None else booked.year - (month >= booked.month)
+            return f'{year:04d}-{month:02d}', stated_year is not None
         except (TypeError, ValueError):
             return None
     return None
@@ -1405,6 +1410,79 @@ _REST_WINDOW_DAYS = 180
 _NM_MAX_ITEMS = 20
 
 
+_FX_SET_MAX_ITEMS = 30
+
+
+def fx_invoice_set(txn, ctx):
+    """Last resort: a receipt whose statement prints the instructed amount in another currency
+    (orig_amount/orig_currency) settles a set of the payer's open invoices in that currency
+    whose open amounts add up to the instructed amount exactly (POLICIES 3 FX_DIFFERENCE:
+    the payer pays the invoice amounts in the invoice currency; the bank converts). Every
+    invoice row carries FX_DIFFERENCE at its full open amount. For payers in MX/BR/MA the
+    instructed amount may also be net of tax withheld per invoice (1.25 %, 1.5 % or 10 %).
+
+    The payer must be identified, and the set must be the only exact one across every payer
+    candidate. A payer with more than 30 candidate invoices is searched among those issued
+    in the last 180 days; a larger pool abstains (never a free subset search).
+    """
+    cash = dec(txn.get('amount'))
+    ccy, orig = txn.get('orig_currency') or '', txn.get('orig_amount')
+    if cash <= 0 or not ccy or ccy == txn.get('currency') or not orig or classify(txn, ctx):
+        return None
+    target = dec(orig)
+    if target <= 0 or re.search(_RETURN_RE, words(text_of(txn))):
+        return None
+    parties = party_candidates(txn, ctx)
+    if not parties:
+        return None
+    try:
+        limit = (date.fromisoformat(txn['booking_date']) - timedelta(days=_REST_WINDOW_DAYS)).isoformat()
+    except (KeyError, TypeError, ValueError):
+        return None
+    customers = getattr(ctx, 'customers', {})
+    found = []
+    for pid in parties:
+        pool = [ctx.items[i] for i in ctx.by_party.get(pid, ()) if i in ctx.items]
+        pool = [i for i in pool if i.get('kind') != 'credit' and i.get('side') == 'AR'
+                and i.get('currency') == ccy and i.get('entity') == txn.get('entity')
+                and _eligible(i, txn) and dec(i.get('open_amount')) > 0]
+        if len(pool) > _FX_SET_MAX_ITEMS:
+            pool = [i for i in pool if i.get('issue_date', '') >= limit]
+        if len(pool) > _FX_SET_MAX_ITEMS:
+            return None
+        if not pool:
+            continue
+        pool.sort(key=lambda i: i['item_id'])
+        # Customers in Mexico, Brazil and Morocco may also withhold tax at source on each
+        # invoice total (POLICIES 3 SHORT_WITHHOLDING, replaced by FX_DIFFERENCE on FX lines).
+        rates = [D(0)]
+        if customers.get(pid, {}).get('country') in ('MX', 'BR', 'MA'):
+            rates += [D('0.0125'), D('0.015'), D('0.10')]
+        for rate in rates:
+            members, values = [], []
+            for item in pool:
+                opened, total = dec(item['open_amount']), dec(item.get('total_amount') or 0)
+                if rate:
+                    if opened != total:
+                        continue
+                    opened = total - (total * rate).quantize(CENT, rounding=ROUND_HALF_UP)
+                if D(0) < opened <= target:
+                    members.append(item)
+                    values.append(int(opened * 100))
+            if not members:
+                continue
+            sets = positive_subsets(values, int(target * 100), maximum_items=_FX_SET_MAX_ITEMS)
+            if sets is None:
+                return None
+            found += [[members[k] for k in ids] for ids in sets]
+            if len(found) > 1:
+                return None
+    if len(found) != 1:
+        return None
+    return [row(txn, i['item_id'], i['open_amount'], 'FX_DIFFERENCE')
+            for i in sorted(found[0], key=lambda i: i['item_id'])]
+
+
 def party_partial_subset(txn, ctx):
     """Last resort: a receipt of an identified payer that pays several open invoices, one of
     them at a TRAIN partial share (40/50/60 % of its total, PARTIAL with the applied amount)
@@ -1526,3 +1604,59 @@ def dispute_settlement(txn, ctx):
         return None
     fx = item.get('currency') != txn.get('currency')
     return [dict(rows[0], exception='FX_DIFFERENCE' if fx else '')]
+
+
+def residual_group(txn, ctx):
+    """Last resort: a receipt of an identified payer that pays the open remainder of an earlier
+    partially paid invoice (open < total; POLICIES 2/3, the remainder of a PARTIAL is settled
+    later) together with one more open invoice, both in full (TRAIN ar_n_to_m second payments).
+
+    Accepted only when that pair is the single combination of one, two or three of the
+    payer's open invoices that makes up the cash exactly; a related credit note abstains.
+    """
+    cash = dec(txn['amount'])
+    if cash <= 0 or classify(txn, ctx):
+        return None
+    if re.search(_RETURN_RE, words(text_of(txn))):
+        return None
+    parties = party_candidates(txn, ctx)
+    if not parties:
+        return None
+    cents = lambda amount: int((amount * 100).to_integral_value())
+    target = cents(cash)
+    readings = []
+    for pid in parties:
+        pool = [ctx.items[i] for i in ctx.by_party.get(pid, ()) if i in ctx.items]
+        pool = sorted((i for i in pool if i.get('kind') != 'credit' and i.get('side') == 'AR'
+                       and i.get('currency') == txn.get('currency') and i.get('entity') == txn.get('entity')
+                       and _eligible(i, txn) and D(0) < dec(i.get('open_amount')) <= cash),
+                      key=lambda i: i['item_id'])
+        if not any(dec(i['open_amount']) < dec(i.get('total_amount')) for i in pool):
+            continue
+        if len(pool) > 400 or _related_credit(ctx, txn, pid):
+            return None
+        values = [cents(dec(i['open_amount'])) for i in pool]
+        where = defaultdict(list)
+        for k, v in enumerate(values):
+            where[v].append(k)
+        found = [(k,) for k in where.get(target, ())]
+        for a in range(len(pool)):
+            found += [(a, b) for b in where.get(target - values[a], ()) if b > a]
+            if len(found) > 1:
+                return None
+        for a in range(len(pool)):
+            for b in range(a + 1, len(pool)):
+                rest = target - values[a] - values[b]
+                if rest > 0:
+                    found += [(a, b, c) for c in where.get(rest, ()) if c > b]
+            if len(found) > 1:
+                return None
+        readings += [[pool[k] for k in combo] for combo in found]
+        if len(readings) > 1:
+            return None
+    if len(readings) != 1 or len(readings[0]) != 2:
+        return None
+    pair = readings[0]
+    if not any(dec(i['open_amount']) < dec(i.get('total_amount')) for i in pair):
+        return None
+    return [row(txn, i['item_id'], i['open_amount']) for i in pair]
