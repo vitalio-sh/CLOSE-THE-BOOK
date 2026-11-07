@@ -22,7 +22,7 @@ Congelar el código **a las 17:00**. Lo que no esté probado en dev a esa hora n
 | dev + `remittance.py` | 40,31 | agente A |
 | dev + `payments.py` | 42,02 | agente C (ap_direct_debit 94,5 %, ap_supplier_refund 99,5 %) |
 | sample con `receipts.py` a medias + `docref.py` | 64,94 | acierto por línea 0,83 (antes 44,45) |
-| **dev con todo junto** | **sin medir** | pendiente: ver "Bloqueo actual" |
+| **dev con todo junto (receipts optimizado + docref)** | **53,93** | 13:30. F1 0,581, acierto línea 0,656, exc. F1 0,260. receipts n=70.870 acc 0,920; docref acc 0,998. Total 461 s (receipts 227 s) con la máquina cargada (load ~13) |
 | LIVE leaderboard "Team 10" | 82,14 | **es de otro pipeline (ChatGPT, otro compañero)**, no de este código |
 
 Dev es nuestro simulador de LIVE (tiene golden). **No se itera contra el leaderboard.**
@@ -46,7 +46,15 @@ receipts, payments, nonitem, docref. **La primera línea que se reclama gana.**
   anterior acertaba el 98 % sobre unas 19.500 líneas de dev que quedaban sin reclamar.
 - `pdfs.py`: **no existe**. Plazos, retenciones, anticipos y "anula y sustituye" siguen sin cubrir.
 
-## Bloqueo actual (lo primero que hay que resolver)
+## Estado 13:30
+
+- `.venv` venía de otra máquina (`/Users/eivr.mac/...`): repuntado a `/opt/homebrew/bin/python3.12` (symlink + `pyvenv.cfg`).
+- `receipts.py` optimizado sin cambiar reglas: índice global de claves de documento (antes `keys_for` por partida y línea),
+  listas por pagador podadas de partidas cerradas, caché de `_name_rank` por conjunto de palabras, memo de importes por
+  línea, búsqueda difusa de referencias solo si hay ≤ 3.000 candidatos (`FUZZY_MAX`).
+- Pendiente: bajar de 5 min (hoy 461 s) y generar LIVE v3.
+
+## Bloqueo anterior (resuelto en parte)
 
 La versión nueva de `receipts.py` **es muy lenta en dev**. La etapa `receipts` pasaba de 84 segundos a más de 6 minutos
 sin terminar, y el pipeline completo no acaba. Sample sí funciona (25 s). Antes de mezclar más cambios:

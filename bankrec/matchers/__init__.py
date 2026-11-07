@@ -7,6 +7,7 @@ Ownership (one person / one agent per file, to avoid merge conflicts):
   payments.py    AP payments not covered by payment runs (single transfers, supplier DD, refunds)
   nonitem.py     lines that settle no item -> category
 """
+
 from . import batches, nonitem
 
 MATCHERS = [
@@ -20,19 +21,29 @@ MATCHERS = [
 # optional modules: registered when present so people can work in parallel
 try:
     from . import remittance
+
     MATCHERS.insert(4, ("remittance", remittance.match))
 except ImportError:
     pass
 try:
     from . import receipts
+
     MATCHERS.insert(-1, ("receipts", receipts.match))
 except ImportError:
     pass
 try:
+    from . import ar_multi
+
+    MATCHERS.insert(-1, ("ar_multi", ar_multi.match))
+except ImportError:
+    pass
+try:
     from . import payments
+
     MATCHERS.insert(-1, ("payments", payments.match))
 except ImportError:
     pass
 # last: document numbers in the text that add up exactly to the cash, on lines nobody else claimed
 from . import docref
+
 MATCHERS.append(("docref", docref.match))
