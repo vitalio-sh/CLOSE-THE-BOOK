@@ -20,6 +20,7 @@ The module proposes rows only; it never reads labels and never changes balances.
 """
 from decimal import Decimal as D, ROUND_DOWN, ROUND_HALF_UP
 import re
+import subprocess
 import unicodedata
 
 from .matching import CENT, dec, norm, party_candidates, row, text_of, words, _cash, _eligible
@@ -27,8 +28,23 @@ from .matching import CENT, dec, norm, party_candidates, row, text_of, words, _c
 INDEX_RE = re.compile(
     r'(?<![A-Z0-9])(?:PLAZO|PLAZOS|INSTAL+MENT|INSTAL+MENTS|VENCIMIENTO|VTO|CUOTA|ECHEANCE|'
     r'ECHEANCES|RATE|RATA|TEILZAHLUNG|PRESTACAO|TERM)\.?\s*(?:NO\.?\s*|N\s*)?(\d{1,2})\s*/\s*(\d{1,2})(?![0-9])')
+# TRAIN: the proforma advance is 30, 40 or 50 % of the total, rounded down (793 of 793).
+ADVANCE_SHARES = (D('0.3'), D('0.4'), D('0.5'))
+GROUPED_MONEY = r'\d{1,3}(?:[ .,]\d{3})*[.,]\d{2}'
+ADVANCE_RE = re.compile(r'(?:LESS ADVANCE RECEIVED AGAINST PROFORMA|A DEDUCIR ANTICIPO RECIBIDO SEGUN PROFORMA)'
+                        r'\s+[A-Z0-9/_-]+(?:\s+DE|:)?\s+(' + GROUPED_MONEY + r')')
 SKIP_WORDS = ('DISPUT', 'RECLAM', 'DAMAGED', 'PENALTY', 'DEDUCCION', 'DEVOLUCION RECIBO',
               'RUECKLASTSCHRIFT', 'RETURNED', 'CHARGEBACK', 'IMPAYE')
+
+
+def grouped_amount(text):
+    """'1 629,09' / '1.629,09' / '1,629.09' -> Decimal('1629.09')."""
+    text = text.replace(' ', '')
+    if ',' in text and '.' in text:
+        text = text.replace('.', '').replace(',', '.') if text.rfind(',') > text.rfind('.') else text.replace(',', '')
+    elif ',' in text:
+        text = text.replace(',', '.')
+    return D(text)
 
 
 def instalment_plan(item, facts):
@@ -52,7 +68,7 @@ def stated_index(txn):
     return found.pop() if len(found) == 1 else None
 
 
-def instalment_label(plan, cash, opened, index=None):
+def instalment_label(plan, cash, opened, index=None, last_paid=False):
     """POLICIES §3: PARTIAL for every instalment but the last of the plan."""
     n, share, last = plan
     if index is not None and index[1] == n:
@@ -60,6 +76,9 @@ def instalment_label(plan, cash, opened, index=None):
     if last != share:
         # Exact: the remainder often differs from the share by a single cent.
         return '' if cash == last else 'PARTIAL'
+    if last_paid:
+        # The last instalment of the plan was already paid out of order.
+        return 'PARTIAL'
     return '' if abs(cash - opened) <= CENT else 'PARTIAL'
 
 
@@ -101,6 +120,8 @@ class Schedules:
     def __init__(self, ctx):
         self.ctx = ctx
         self.facts = getattr(ctx, 'pdf_facts', None)
+        self._plans = None
+        self._advance_text = {}
 
     def facts_of(self, item):
         if self.facts is None or not getattr(self.facts, 'enabled', False):
@@ -115,19 +136,24 @@ class Schedules:
 
     def expected(self, item, txn, index):
         """(applied amount, exception) when the cash fits the documented contract, else None."""
-        facts = self.facts_of(item)
-        if not facts:
+        if self.facts is None or not getattr(self.facts, 'enabled', False):
             return None
+        if item.get('side') != 'AR' or item.get('kind') != 'invoice':
+            return None
+        facts = self.facts_of(item)
         cash, fx = _cash(item, txn)
         opened = dec(item.get('open_amount'))
         total = dec(item.get('total_amount'))
         if cash is None or opened <= 0 or cash > opened + CENT:
             return None
-        plan = instalment_plan(item, facts)
+        plan = instalment_plan(item, facts) if facts else None
         if plan and cash in (plan[1], plan[2]):
             if index is not None and index[1] != plan[0]:
                 return None
-            label = instalment_label(plan, cash, opened, index)
+            total_paid = [h for h in getattr(self.ctx, 'history', {}).get(item['item_id'], ())
+                          if h.get('exception') == '' and dec(h.get('amount')) in (plan[1], plan[2])
+                          and dec(h.get('amount')) < total]
+            label = instalment_label(plan, cash, opened, index, bool(total_paid))
             if fx and label == '':
                 # FX_DIFFERENCE belongs only to an invoice row that is fully cleared.
                 if abs(cash - opened) > CENT:
@@ -138,9 +164,16 @@ class Schedules:
         # and the first payment of an invoice with a guarantee retention, are PARTIAL.
         if opened != total:
             return None
-        if facts.get('advance_amount') and facts.get('net_due'):
-            net = dec(facts['net_due'])
-            if abs(total - dec(facts['advance_amount']) - net) <= CENT and abs(cash - net) <= CENT:
+        advance = dec(facts.get('advance_amount')) if facts.get('advance_amount') else None
+        if advance is None and any(abs(cash - total + (total * p).quantize(CENT, rounding=ROUND_DOWN)) <= CENT
+                                   for p in ADVANCE_SHARES):
+            # The advance clause in a space-grouped amount ('1 629,09 EUR') is not in
+            # the cached facts; the ratio only shortlists, the PDF clause decides.
+            advance = self.advance_from_text(item)
+        if advance is not None:
+            net = total - advance
+            printed = facts.get('net_due')
+            if (not printed or abs(dec(printed) - net) <= CENT) and abs(cash - net) <= CENT:
                 return cash, 'PARTIAL'
         if facts.get('retention_pct'):
             pct = dec(facts['retention_pct'])
@@ -184,6 +217,8 @@ class Schedules:
             opened = dec(item.get('open_amount'))
             if cash is not None and opened > 0 and abs(cash - opened) <= CENT:
                 exact_other.append(item)
+        if not candidates and index is not None and not cited_other and not exact_other:
+            candidates = self.stated_plan_candidates(txn, index)
         if not candidates:
             return None
         cited = [c for c in candidates if c[2]]
@@ -203,6 +238,50 @@ class Schedules:
             return None
         item, (amount, exception) = candidates[0][:2]
         return [row(txn, item['item_id'], amount, exception)]
+
+    def advance_from_text(self, item):
+        iid = item['item_id']
+        if iid in self._advance_text:
+            return self._advance_text[iid]
+        self._advance_text[iid] = None
+        records = getattr(self.facts, 'by_item', {}).get(iid, [])
+        tool = getattr(self.facts, 'tool', None)
+        if len(records) != 1 or not tool:
+            return None
+        try:
+            text = subprocess.run([tool, '-layout', str(records[0]['path']), '-'], capture_output=True,
+                                  text=True, timeout=5, check=True).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        flat = unicodedata.normalize('NFKD', re.sub(r'\s+', ' ', text)).encode('ascii', 'ignore').decode().upper()
+        found = ADVANCE_RE.search(flat)
+        if found:
+            self._advance_text[iid] = grouped_amount(found[1])
+        return self._advance_text[iid]
+
+    def stated_plan_candidates(self, txn, index):
+        """The payer states 'INSTALMENT k/n' but its name is not recognised: the only open
+        plan of the entity with n instalments whose instalment amount equals the cash."""
+        if self._plans is None:
+            self._plans = {}
+            for iid, item in self.ctx.items.items():
+                if item.get('side') != 'AR' or item.get('kind') != 'invoice' or dec(item.get('open_amount')) <= 0:
+                    continue
+                plan = self.plan(item)
+                if plan:
+                    for amount in {plan[1], plan[2]}:
+                        self._plans.setdefault((item.get('entity'), item.get('currency'), amount), []).append(iid)
+        found = []
+        for currency, cash in {(txn.get('currency'), abs(dec(txn['amount']))),
+                               (txn.get('orig_currency'), abs(dec(txn.get('orig_amount') or 0)))}:
+            for iid in self._plans.get((txn.get('entity'), currency, cash), ()):
+                item = self.ctx.items[iid]
+                if not _eligible(item, txn):
+                    continue
+                fit = self.expected(item, txn, index)
+                if fit is not None and self.plan(item)[0] == index[1]:
+                    found.append((item, fit, False, False))
+        return found if len({c[0]['item_id'] for c in found}) == 1 else []
 
     def reconcile(self, txn):
         return self.contract(txn)

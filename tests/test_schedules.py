@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import unittest
 
 from test_matching import invoice, txn, context
-from recon.schedules import Schedules, instalment_plan, instalment_label, stated_index
+from recon.schedules import Schedules, instalment_plan, instalment_label, stated_index, grouped_amount, ADVANCE_RE
 
 
 def matcher(items, facts):
@@ -94,6 +94,23 @@ class InstalmentTests(unittest.TestCase):
         r = m.reconcile(txn('20852.34', 'ALICE WATER WORKS INSTALMENT 1/4', orig_amount='2964.14', orig_currency='USD'))
         self.assertEqual((r[0]['amount'], r[0]['exception']), ('2964.14', 'PARTIAL'))
 
+    def test_stated_instalment_of_unrecognised_payer(self):
+        items = [invoice(amount='4257.72'), invoice('I2', 'FV25-00002', '3000')]
+        items[0]['party_id'] = 'C9'
+        c, m = matcher(items, {'I1': {'instalments_count': 3}, 'I2': {'instalments_count': 2}})
+        r = m.reconcile(txn('1419.24', 'FP KINGSMERE POOL INSTALMENT 1/3 PAY'))
+        self.assertEqual((r[0]['item_id'], r[0]['exception']), ('I1', 'PARTIAL'))
+        self.assertIsNone(m.reconcile(txn('1419.24', 'FP KINGSMERE POOL PAY')))
+        self.assertIsNone(m.reconcile(txn('1419.24', 'FP KINGSMERE POOL INSTALMENT 1/2 PAY')))
+
+    def test_last_paid_out_of_order_makes_equal_remainder_partial(self):
+        a = invoice(amount='2928.54')
+        a['open_amount'] = D('976.18')
+        c, m = matcher([a], {'I1': {'instalments_count': 3}})
+        c.history = {'I1': [{'amount': '976.18', 'exception': ''}]}
+        r = m.reconcile(txn('976.18', 'PAGO FV25-00001'))
+        self.assertEqual(r[0]['exception'], 'PARTIAL')
+
     def test_stated_plan_size_must_agree(self):
         c, m = matcher([invoice(amount='3440.78')], {'I1': {'instalments_count': 3}})
         self.assertIsNone(m.reconcile(txn('1146.92', 'ALICE WATER WORKS PLAZO 1/4')))
@@ -110,6 +127,17 @@ class AdvanceAndRetentionTests(unittest.TestCase):
         c, m = matcher([invoice(amount='2395.10')], facts)
         r = m.reconcile(txn('1676.57', 'DIRECT CREDIT ALICE WATER WORKS'))
         self.assertEqual((r[0]['item_id'], r[0]['amount'], r[0]['exception']), ('I1', '1676.57', 'PARTIAL'))
+
+    def test_space_grouped_advance_clause_verified_from_text(self):
+        flat = 'LESS ADVANCE RECEIVED AGAINST PROFORMA PF24-0100016: 1 629,09 EUR. NET AMOUNT DUE 3 801,23 EUR.'
+        self.assertEqual(grouped_amount(ADVANCE_RE.search(flat)[1]), D('1629.09'))
+        self.assertEqual(grouped_amount('1.018,76'), D('1018.76'))
+        c, m = matcher([invoice(amount='5430.32')], {})
+        m.advance_from_text = lambda item: D('1629.09')
+        r = m.reconcile(txn('3801.23', 'VIR SEPA RECU ALICE WATER WORKS'))
+        self.assertEqual((r[0]['amount'], r[0]['exception']), ('3801.23', 'PARTIAL'))
+        m.advance_from_text = lambda item: None
+        self.assertIsNone(m.reconcile(txn('3801.23', 'VIR SEPA RECU ALICE WATER WORKS')))
 
     def test_advance_fx_keeps_partial(self):
         a = invoice(amount='3053.71')
