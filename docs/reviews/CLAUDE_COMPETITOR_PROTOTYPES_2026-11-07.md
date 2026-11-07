@@ -119,3 +119,23 @@ Upload command (main chat only, without `--dry-run`; FINAL is not authorized):
 ```sh
 python3 scripts/submit_live.py --submission outputs/review_coordination/live_claude_competitor_ideas/submission.csv.gz --candidate experiment/2026-11-07-claude-competitor-ideas --evidence outputs/platform/evidence/claude_competitor_ideas.json
 ```
+
+## Official LIVE result (uploaded 13:40 Madrid at the user's explicit request, from the Claude session)
+
+**84.06 → 87.81 (+3.75).** Submission `s_1f87e13b9152373c06f0`, artifact `9658a299…8e79`. The record is `reports/live_official_e5b565e3-1be5-4082-bf20-83caac4b7153_b168e59f6d3e.json`, made through `scripts/submit_live.py`, so it is in the registry.
+
+| metric | R1v5 | this |
+|---|---:|---:|
+| allocation precision | 0.9898 | 0.9906 |
+| allocation recall | 0.8064 | 0.8222 |
+| allocation F1 | 0.8888 | 0.8985 |
+| txn accuracy | 0.8825 | 0.9027 |
+| exception macro-F1 | 0.6572 | 0.7901 |
+
+Biggest segment gains: `ar_dd_returned` 0.608 → 0.957, `ar_dd_batch` 0.646 → 0.946, `ar_dd_represented_transfer` 0.613 → 0.932, `ar_overpayment` 0.478 → 0.953, `ar_short_bank_charges` 0.190 → 0.755, `ar_same_amount_month` 0.867 → 0.953, `nonitem_fx_deal` 0.627 → 1.000 and `ar_ref_noise` 0.839 → 0.863.
+
+Small drops:
+- `ar_cheque_returned` 0.889 → 0.778 (n = 72, about 8 lines). This is likely the strict "return after collection" date or the deposit-id preference applied to cheques. It is the first follow-up to check.
+- `ar_1toN_credit_note`, `ar_discount_late`, `ar_short_discount` and `ar_short_dispute` each lose fewer than 8 lines.
+
+The main chat must not re-upload these bytes. The next candidate's baseline is now this artifact.
